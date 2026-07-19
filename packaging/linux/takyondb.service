@@ -1,0 +1,17 @@
+[Unit]
+Description=TakyonDB Zero-Copy In-Memory Storage Daemon
+After=network.target
+Documentation=https://github.com/joacokhzyx/takyondb
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/takyondb 67108864
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
