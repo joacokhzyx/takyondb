@@ -1,0 +1,33 @@
+{
+  "name": "takyondb-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK wrapper for the ultra-low-latency TakyonDB storage engine",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "build:addon": "cd ../../../ && zig build",
+    "lint": "eslint 'src/**/*.ts'",
+    "format": "prettier --write 'src/**/*.ts'"
+  },
+  "keywords": [
+    "database",
+    "zero-copy",
+    "shared-memory",
+    "typescript",
+    "zig"
+  ],
+  "author": "TakyonDB Team",
+  "license": "AGPL-3.0-only OR LicenseRef-Commercial",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "node-api-headers": "^1.9.0",
+    "node-gyp": "^12.4.0",
+    "prettier": "^3.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
