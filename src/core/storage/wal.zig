@@ -112,8 +112,8 @@ pub const WalManager = struct {
         std.mem.writeInt(u32, self.sector_buffer[4092..4096][0..4], crc, .little);
         
         if (builtin.os.tag == .windows) {
-            var writtin: std.os.windows.DWORD = 0;
-            if (std.os.windows.kernel32.WriteFile(self.fd, self.sector_buffer.ptr, 4096, &writtin, null) == 0) {
+            var written: std.os.windows.DWORD = 0;
+            if (std.os.windows.kernel32.WriteFile(self.fd, self.sector_buffer.ptr, 4096, &written, null) == 0) {
                 std.debug.print("[WAL] WriteFile failed with error: {d}\n", .{std.os.windows.kernel32.GetLastError()});
                 return error.WriteFailed;
             }
@@ -240,7 +240,7 @@ test "WAL Lock-Free Flusher Integration" {
     }
     
     const elapsed = timer.read();
-    std.debug.print("\n[TakyonDB-Test] 100,000 deltas persistidas in {} ms.\n", .{elapsed / std.time.ns_per_ms});
+    std.debug.print("\n[TakyonDB-Test] 100,000 deltas persisted in {} ms.\n", .{elapsed / std.time.ns_per_ms});
     
     wal.shutdown();
 }

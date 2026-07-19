@@ -47,16 +47,16 @@ function spawnDaemon(expectWarning: boolean = false): Promise<any> {
 }
 
 async function runCorruptionTest() {
-    console.log('[E2E] Iniciando test de Corrupción Física y CRC32...');
+    console.log('[E2E] Starting Physical Corruption & CRC32 Test...');
     
     if (existsSync(DB_PATH)) {
         rmSync(DB_PATH);
     }
     
-    console.log('[E2E] Arrancando demonio inicial...');
+    console.log('[E2E] Starting initial daemon...');
     let { daemon } = await spawnDaemon();
     
-    console.log('[E2E] Conectando cliente y escribiindo deltas sanos...');
+    console.log('[E2E] Connecting client and writing healthy deltas...');
     let client = new TakyonClient(bindings, 65536);
     const UserSchema = new TakyonSchema({
         id: 'uint32',
@@ -70,7 +70,7 @@ async function runCorruptionTest() {
     
     await sleep(500); // Dar tiempo al flusher
     
-    console.log('[E2E] Apagando demonio limpio...');
+    console.log('[E2E] Shutting down daemon cleanly...');
     daemon.kill('SIGKILL');
     await sleep(1000);
     
@@ -82,12 +82,12 @@ async function runCorruptionTest() {
     fsyncSync(fd);
     closeSync(fd);
     
-    console.log('[E2E] Arrancando demonio para rehidratación...');
+    console.log('[E2E] Starting daemon for rehydration...');
     let res = await spawnDaemon(true);
     let daemon2 = res.daemon;
     
     if (res.warningFound) {
-        console.log('✅ [E2E SUCCESS] El demonio detectó el CRC32 inválido y truncó el sector sin hacer panic.');
+        console.log('✅ [E2E SUCCESS] The daemon detected invalid CRC32 and truncated the sector without panicking.');
     } else {
         console.error('❌ [E2E FAILED] El demonio no detectó la corrupción de CRC32 o no emitió el Warning.');
         process.exitCode = 1;

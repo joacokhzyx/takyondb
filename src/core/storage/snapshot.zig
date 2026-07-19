@@ -17,7 +17,7 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         active_lin = 2056;
     }
 
-    std.debug.print("[TakyonDB-Snapshot] Ginerando snapshot de {} bytes...\n", .{active_lin});
+    std.debug.print("[TakyonDB-Snapshot] Generating snapshot of {} bytes...\n", .{active_lin});
 
     // We allocate an aligned 4KB buffer for direct I/O
     const allocator = std.heap.page_allocator;
@@ -44,7 +44,7 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
             null
         );
         if (handle == std.os.windows.INVALID_HANDLE_VALUE) {
-            std.debug.print("[TakyonDB-Snapshot] Error al crear snapshot.\n", .{});
+            std.debug.print("[TakyonDB-Snapshot] Error creating snapshot.\n", .{});
             return error.FileCreateError;
         }
         fd = handle;
@@ -66,8 +66,8 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         hasher.update(buf[0..4096]);
 
         if (builtin.os.tag == .windows) {
-            var writtin: std.os.windows.DWORD = 0;
-            _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &writtin, null);
+            var written: std.os.windows.DWORD = 0;
+            _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &written, null);
         } else {
             _ = try std.posix.write(fd.?, buf[0..4096]);
         }
@@ -83,15 +83,15 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     std.mem.writeInt(u32, buf[4..8], active_lin, .little);
     
     if (builtin.os.tag == .windows) {
-        var writtin: std.os.windows.DWORD = 0;
-        _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &writtin, null);
+        var written: std.os.windows.DWORD = 0;
+        _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &written, null);
         _ = std.os.windows.CloseHandle(fd.?);
     } else {
         _ = try std.posix.write(fd.?, buf[0..4096]);
         std.posix.close(fd.?);
     }
 
-    std.debug.print("[TakyonDB-Snapshot] Snapshot guardado y validado. Rotando WAL...\n", .{});
+    std.debug.print("[TakyonDB-Snapshot] Snapshot saved and validated. Rotating WAL...\n", .{});
 
     // 2. Log Rotation
     // The RingBuffer is already "locked" from the flusher's perspective because the flusher is executing this.
@@ -123,5 +123,5 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     }
     wal.sector_pos = 0;
     
-    std.debug.print("[TakyonDB-Snapshot] WAL truncado exitosaminte. Continuando operaciones.\n", .{});
+    std.debug.print("[TakyonDB-Snapshot] WAL truncated successfully. Resuming operations.\n", .{});
 }

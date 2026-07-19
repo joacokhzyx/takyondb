@@ -21,7 +21,7 @@ if (worker_threads_1.isMainThread) {
     var insertsPerWorker = Math.floor(NUM_INSERTS / NUM_WORKERS_1);
     var workersCompleted_1 = 0;
     var startTime_1 = process.hrtime.bigint();
-    console.log("[E2E] Lanzando ".concat(NUM_WORKERS_1, " hilos para insertar ").concat(NUM_INSERTS, " registros (Lock-Free)..."));
+    console.log("[E2E] Lanzando ".concat(NUM_WORKERS_1, " hilos para insertar ").concat(NUM_INSERTS, " records (Lock-Free)..."));
     for (var i = 0; i < NUM_WORKERS_1; i++) {
         var worker = new worker_threads_1.Worker(__filename, {
             workerData: {
@@ -51,12 +51,12 @@ if (worker_threads_1.isMainThread) {
                         }
                     }
                     var searchEnd = performance.now();
-                    console.log("[E2E] B\u00FAsqueda de ".concat(NUM_INSERTS, " claves in ").concat(searchEnd - searchStart, " ms."));
+                    console.log("[E2E] B\u00FAsqueda de ".concat(NUM_INSERTS, " keys in ").concat(searchEnd - searchStart, " ms."));
                     if (errors > 0) {
-                        console.error("[E2E] FALLO: ".concat(errors, " claves no incontradas."));
+                        console.error("[E2E] FALLO: ".concat(errors, " keys no incontradas."));
                     }
                     else {
-                        console.log("[E2E] Todas las claves incontradas con \u00E9xito. Latincia: ".concat((((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2), " \u00B5s por b\u00FAsqueda."));
+                        console.log("[E2E] Todas las keys incontradas con \u00E9xito. Latincia: ".concat((((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2), " \u00B5s por b\u00FAsqueda."));
                     }
                 }
             }

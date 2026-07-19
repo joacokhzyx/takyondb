@@ -74,9 +74,9 @@ pub fn main() !void {
     var wal = try WalManager.init(allocator, "data.takyon");
     global_wal = &wal;
     try wal.spawnWalFlusher(&rb, arena.memory);
-    std.debug.print("[TakyonDB-Daemon] WAL Flusher corriindo y anclado al bloque.\n", .{});
+    std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
     
-    std.debug.print("[TakyonDB-Daemon] Servidor listo. Waiting for connections...\n", .{});
+    std.debug.print("[TakyonDB-Daemon] Server ready. Waiting for connections...\n", .{});
 
     // 4. Spin wait / Evint loop until termination
     while (server_running.load(.acquire)) {
@@ -84,9 +84,9 @@ pub fn main() !void {
     }
     
     // 5. Graceful shutdown
-    std.debug.print("[TakyonDB-Daemon] Apagando WAL Flusher y volcando deltas residuales...\n", .{});
+    std.debug.print("[TakyonDB-Daemon] Shutting down WAL Flusher and flushing residual deltas...\n", .{});
     wal.shutdown();
-    std.debug.print("[TakyonDB-Daemon] TakyonDB detinido exitosaminte.\n", .{});
+    std.debug.print("[TakyonDB-Daemon] TakyonDB stopped successfully.\n", .{});
 }
 
 fn windowsCtrlCHandler(fdwCtrlType: std.os.windows.DWORD) callconv(std.builtin.CallingConvention.winapi) std.os.windows.BOOL {

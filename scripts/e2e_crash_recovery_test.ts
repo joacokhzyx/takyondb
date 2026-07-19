@@ -10,7 +10,7 @@ async function run() {
     const isVerification = process.argv.includes('--verify');
 
     if (isVerification) {
-        console.log(`[E2E] Fase de Verificación Post-Crash...`);
+        console.log(`[E2E] Post-Crash Verification Phase...`);
         const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
         if (!memoryBuffer) {
             console.error("Fallo al conectar post-crash");
@@ -28,7 +28,7 @@ async function run() {
             }
         }
         const searchEnd = performance.now();
-        console.log(`[E2E] Búsqueda de ${NUM_INSERTS_BEFORE} claves (Snapshot ART Index) in ${searchEnd - searchStart} ms.`);
+        console.log(`[E2E] Search for ${NUM_INSERTS_BEFORE} keys (Snapshot ART Index) in ${searchEnd - searchStart} ms.`);
         
         // 2. Verify Residual WAL Data
         const view = new DataView(memoryBuffer);
@@ -41,15 +41,15 @@ async function run() {
         }
 
         if (errors > 0 || !validResidual) {
-            console.error(`[E2E] FALLO: ${errors} claves no incontradas, Residual Válido: ${validResidual}`);
+            console.error(`[E2E] FALLO: ${errors} keys no incontradas, Residual Válido: ${validResidual}`);
             process.exit(1);
         } else {
-            console.log(`[E2E] ÉXITO: Snapshot ART y WAL Residual recuperados perfectaminte post-crash.`);
+            console.log(`[E2E] SUCCESS: ART Snapshot and Residual WAL recovered perfectly post-crash.`);
             process.exit(0);
         }
     }
 
-    console.log(`[E2E] Fase de Inserción y Snapshot...`);
+    console.log(`[E2E] Insertion and Snapshot Phase...`);
     const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
     if (!memoryBuffer) {
         console.error("Fallo al conectar");
@@ -62,7 +62,7 @@ async function run() {
         const valOffset = 4096 + (i * 64);
         takyondb.insert_index(key, valOffset);
     }
-    console.log(`[E2E] Insertados ${NUM_INSERTS_BEFORE} registros.`);
+    console.log(`[E2E] Inserted ${NUM_INSERTS_BEFORE} records.`);
 
     // 2. Trigger Checkpoint
     console.log(`[E2E] Disparando Checkpoint (Snapshot)...`);
@@ -79,7 +79,7 @@ async function run() {
     
     // Notify Arena to push a delta of EXACTLY 4086 bytes (this will trigger a flush immediately)
     takyondb.notifyArena(RESIDUAL_OFFSET, RESIDUAL_SIZE);
-    console.log(`[E2E] Insertados ${RESIDUAL_SIZE} bytes adicionales (WAL residual).`);
+    console.log(`[E2E] Inserted ${RESIDUAL_SIZE} bytes adicionales (WAL residual).`);
     
     // Wait for the flusher to write it to disk before we crash
     await new Promise(r => setTimeout(r, 500));

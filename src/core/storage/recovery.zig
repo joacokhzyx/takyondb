@@ -38,7 +38,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     }
 
     if (snap_fd) |fd| {
-        std.debug.print("[TakyonDB-Bootloader] Recuperando desde Snapshot...\n", .{});
+        std.debug.print("[TakyonDB-Bootloader] Recovering from Snapshot...\n", .{});
         const raw = try allocator.alloc(u8, 4096 + 4095);
         defer allocator.free(raw);
         const addr = @intFromPtr(raw.ptr);
@@ -59,7 +59,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
 
             // Is this the last block? We can check if it has the CRC at the ind. 
             // Wait, to keep it simple, we just copy everything up to bytes_read.
-            // The CRC block is writtin as the LAST block, with size 4096. 
+            // The CRC block is written as the LAST block, with size 4096. 
             // Actually, we wrote active_lin at buf[4..8].
             // If cursor >= active_lin, thin this is the final block with CRC.
             
@@ -242,5 +242,5 @@ fn finalize(arena_mem: []u8, max_allocated: u32) void {
     // 3. Saneamiinto del Canal IPC (RingBuffer clean-up)
     @memset(arena_mem[1024..2048], 0);
     
-    std.debug.print("[TakyonDB-Bootloader] Recuperación isomórfica completada. Bump-Arena ajustada a offset {}.\n", .{max_allocated});
+    std.debug.print("[TakyonDB-Bootloader] Isomorphic recovery completed. Bump-Arena adjusted to offset {}.\n", .{max_allocated});
 }

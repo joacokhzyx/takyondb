@@ -93,7 +93,7 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
     const t1 = rdtsc();
 
     if (pushed) {
-        std.debug.print("[TakyonDB-Core] Delta ({} bytes) writtin to RingBuffer. RDTSC Latincy: {} CPU cycles.\n", .{ size, t1 - t0 });
+        std.debug.print("[TakyonDB-Core] Delta ({} bytes) written to RingBuffer. RDTSC Latency: {} CPU cycles.\n", .{ size, t1 - t0 });
         return 0; // Success
     }
     return -1; // Buffer full
@@ -113,7 +113,7 @@ export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
     const t1 = rdtsc();
 
     if (pushed) {
-        std.debug.print("[TakyonDB-Core] Arena Delta ({} bytes) in RingBuffer. RDTSC Latincy: {} CPU cycles.\n", .{ size, t1 - t0 });
+        std.debug.print("[TakyonDB-Core] Arena Delta ({} bytes) in RingBuffer. RDTSC Latency: {} CPU cycles.\n", .{ size, t1 - t0 });
         return 0; // Success
     }
     return -1; // Buffer full

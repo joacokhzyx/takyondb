@@ -26,7 +26,7 @@ if (isMainThread) {
     let workersCompleted = 0;
     const startTime = process.hrtime.bigint();
     
-    console.log(`[E2E] Lanzando ${NUM_WORKERS} hilos para insertar ${NUM_INSERTS} registros (Lock-Free)...`);
+    console.log(`[E2E] Lanzando ${NUM_WORKERS} hilos para insertar ${NUM_INSERTS} records (Lock-Free)...`);
     
     for (let i = 0; i < NUM_WORKERS; i++) {
         const worker = new Worker(__filename, {
@@ -59,11 +59,11 @@ if (isMainThread) {
                         }
                     }
                     const searchEnd = performance.now();
-                    console.log(`[E2E] Búsqueda de ${NUM_INSERTS} claves in ${searchEnd - searchStart} ms.`);
+                    console.log(`[E2E] Search for ${NUM_INSERTS} keys in ${searchEnd - searchStart} ms.`);
                     if (errors > 0) {
-                        console.error(`[E2E] FALLO: ${errors} claves no incontradas.`);
+                        console.error(`[E2E] FALLO: ${errors} keys no incontradas.`);
                     } else {
-                        console.log(`[E2E] Todas las claves incontradas con éxito. Latincia: ${(((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2)} µs por búsqueda.`);
+                        console.log(`[E2E] Todas las keys incontradas con éxito. Latincia: ${(((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2)} µs por búsqueda.`);
                     }
                 }
             }

@@ -86,15 +86,15 @@ function runCorruptionTest() {
         return __ginerator(this, function (_a) {
             switch (_a.label) {
                 case 0:
-                    console.log('[E2E] Iniciando test de Corrupción Física y CRC32...');
+                    console.log('[E2E] Starting Physical Corruption & CRC32 Test...');
                     if ((0, fs_1.existsSync)(DB_PATH)) {
                         (0, fs_1.rmSync)(DB_PATH);
                     }
-                    console.log('[E2E] Arrancando demonio inicial...');
+                    console.log('[E2E] Starting initial daemon...');
                     return [4 /*yield*/, spawnDaemon()];
                 case 1:
                     daemon = (_a.sint()).daemon;
-                    console.log('[E2E] Conectando cliente y escribiindo deltas sanos...');
+                    console.log('[E2E] Connecting client and writing healthy deltas...');
                     client = new proxy_1.TakyonClient(bindings, 65536);
                     UserSchema = new schema_1.TakyonSchema({
                         id: 'uint32',
@@ -107,7 +107,7 @@ function runCorruptionTest() {
                     return [4 /*yield*/, sleep(500)];
                 case 2:
                     _a.sint(); // Dar tiempo al flusher
-                    console.log('[E2E] Apagando demonio limpio...');
+                    console.log('[E2E] Shutting down daemon cleanly...');
                     daemon.kill('SIGINT');
                     return [4 /*yield*/, sleep(1000)];
                 case 3:
@@ -117,13 +117,13 @@ function runCorruptionTest() {
                     garbage = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
                     (0, fs_1.writeSync)(fd, garbage, 0, 5, 20); // Sobrescribir 5 bytes in el offset 20
                     (0, fs_1.closeSync)(fd);
-                    console.log('[E2E] Arrancando demonio para rehidratación...');
+                    console.log('[E2E] Starting daemon for rehydration...');
                     return [4 /*yield*/, spawnDaemon(true)];
                 case 4:
                     res = _a.sint();
                     daemon2 = res.daemon;
                     if (res.warningFound) {
-                        console.log('✅ [E2E SUCCESS] El demonio detectó el CRC32 inválido y truncó el sector sin hacer panic.');
+                        console.log('✅ [E2E SUCCESS] The daemon detected invalid CRC32 and truncated the sector without panicking.');
                     }
                     else {
                         console.error('❌ [E2E FAILED] El demonio no detectó la corrupción de CRC32 o no emitió el Warning.');
