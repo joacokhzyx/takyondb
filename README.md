@@ -3,7 +3,7 @@
   <h1>TakyonDB</h1>
   <p><strong>Insanely fast, zero-copy, lock-free in-memory database bridging Zig and Node.js</strong></p>
   
-  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+  [![License: AGPLv3 / Commercial](https://img.shields.io/badge/License-AGPLv3%20%2F%20Commercial-blue.svg)](#-license--pricing)
   [![Platform: Windows | Linux | macOS](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
   [![Zig](https://img.shields.io/badge/Zig-0.12+-orange.svg)]()
   [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)]()
@@ -96,8 +96,15 @@ In our `Chaos Engine` stress test using 4 concurrent V8 `worker_threads` (100% s
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see `CONTRIBUTING.md` for our code of conduct and development guidelines. 
-Ensure all commits follow the **Conventional Commits** specification.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for our code of conduct and development guidelines. 
+Ensure all commits follow the **Conventional Commits** specification. Note that all contributors must sign a Contributor License Agreement (CLA) to retain our dual-licensing model.
 
-## 📄 License
-Released under the [MIT License](LICENSE).
+## 📄 License & Pricing
+
+TakyonDB uses a **Dual-Licensing Model**:
+
+1. **Open Source (Free)**: Licensed under the [GNU AGPLv3](LICENSE). 
+   Ideal for independent developers, students, and open-source projects. *Note: If you modify and run TakyonDB as part of a SaaS or cloud service, the AGPLv3 requires you to open-source your entire application stack.*
+   
+2. **Commercial License ($10 / month)**: 
+   For companies and closed-source projects that do not wish to open-source their proprietary code. By paying the monthly license fee, you receive an explicit legal exception to the AGPLv3, allowing you to use TakyonDB in a commercial/private setting without the copyleft obligations.

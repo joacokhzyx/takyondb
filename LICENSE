@@ -1,4 +1,27 @@
-                    GNU AFFERO GENERAL PUBLIC LICENSE
+======================================================================
+                  TakyonDB Dual-Licensing Model
+======================================================================
+
+TakyonDB is distributed under a dual-licensing model to support both
+open-source developers and commercial enterprises:
+
+1. Open Source License (GNU AGPLv3)
+   Free for independent developers, students, and open-source projects. 
+   Under the AGPLv3, if you modify and run TakyonDB as part of a 
+   network service (SaaS), you MUST release the source code of your 
+   entire application stack to your users under the AGPLv3.
+
+2. Commercial License ($10 / month)
+   For companies and closed-source projects that do not wish to 
+   open-source their proprietary code. By purchasing the commercial 
+   license, you are granted an explicit legal exception to the AGPLv3. 
+   This allows you to use TakyonDB in a commercial/private network 
+   setting without any copyleft obligations to share your source code.
+
+For commercial licensing, please visit our website.
+
+----------------------------------------------------------------------
+                  GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
