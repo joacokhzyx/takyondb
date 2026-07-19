@@ -16,12 +16,12 @@ var global_wal: ?*WalManager = null;
 
 fn handleSigInt(sig: c_int) callconv(.C) void {
     _ = sig;
-    std.debug.print("\n[TakyonDB-Daemon] Señal SIGINT recibida. Apagando servidor...\n", .{});
+    std.debug.print("\n[TakyonDB-Daemon] SIGINT signal received. Shutting down server...\n", .{});
     server_running.store(false, .release);
 }
 
 pub fn main() !void {
-    std.debug.print("[TakyonDB-Daemon] Iniciando TakyonDB Standalone Server...\n", .{});
+    std.debug.print("[TakyonDB-Daemon] Starting TakyonDB Standalone Server...\n", .{});
     
     // Register SIGINT handler (stub for Windows - Windows needs SetConsoleCtrlHandler usually)
     const builtin = @import("builtin");
@@ -40,12 +40,26 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Read memory size from CLI arguments (Default 64MB)
+    var mem_size: usize = 64 * 1024 * 1024;
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+    _ = args.skip(); // skip executable name
+    if (args.next()) |arg_size| {
+        if (std.fmt.parseInt(usize, arg_size, 10)) |parsed_size| {
+            mem_size = parsed_size;
+            std.debug.print("[TakyonDB-Daemon] Dynamic Memory Limit set to: {d} bytes\n", .{mem_size});
+        } else |_| {
+            std.debug.print("[TakyonDB-Daemon] Invalid memory size provided, defaulting to 64MB\n", .{});
+        }
+    }
+
     // 1. Create Named Shared Memory Block
     // In cross-platform mode we use Local\TakyonDB_Master on Windows and /dev/shm on POSIX
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
     
-    std.debug.print("[TakyonDB-Daemon] Solicitando bloque de memoria compartida: {s}\n", .{shm_name});
-    var arena = try SharedArena.init(shm_name, 64 * 1024 * 1024, true);
+    std.debug.print("[TakyonDB-Daemon] Requesting shared memory block: {s}\n", .{shm_name});
+    var arena = try SharedArena.init(shm_name, mem_size, true);
     
     // 2. Bootloader: Recover from disk
     const recoverWal = core.recovery.recoverWal;
@@ -54,7 +68,7 @@ pub fn main() !void {
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
     var rb = try RingBuffer.init(arena.memory[1024..], 16, true);
-    std.debug.print("[TakyonDB-Daemon] RingBuffer inicializado in cabecera de memoria.\n", .{});
+    std.debug.print("[TakyonDB-Daemon] RingBuffer initialized in memory header.\n", .{});
     
     // 4. Start WAL Flusher
     var wal = try WalManager.init(allocator, "data.takyon");

@@ -80,8 +80,25 @@ pub const SharedArena = struct {
             
             mem = @as([*]u8, @ptrCast(ptr))[0..size];
         } else {
-            // Stub for POSIX
-            mem = &[_]u8{};
+            const posix = std.posix;
+            
+            var name_buf: [256]u8 = undefined;
+            const posix_name = if (name[0] != '/')
+                std.fmt.bufPrintZ(&name_buf, "/{s}", .{name}) catch return error.SystemResources
+            else
+                std.fmt.bufPrintZ(&name_buf, "{s}", .{name}) catch return error.SystemResources;
+
+            const oflag = if (is_server) posix.O{ .ACCMODE = .RDWR, .CREAT = true } else posix.O{ .ACCMODE = .RDWR };
+            
+            const fd = posix.shm_open(posix_name, oflag, 0o666) catch return error.MapFailed;
+            
+            if (is_server) {
+                posix.ftruncate(fd, size) catch return error.MapFailed;
+            }
+            
+            const ptr = posix.mmap(null, size, posix.PROT.READ | posix.PROT.WRITE, posix.MAP{ .TYPE = .SHARED }, fd, 0) catch return error.MapFailed;
+            
+            mem = @as([*]u8, @ptrCast(ptr.ptr))[0..size];
         }
 
         return SharedArena{
