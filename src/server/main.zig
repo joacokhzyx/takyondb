@@ -20,7 +20,7 @@ fn handleSigInt(sig: c_int) callconv(.C) void {
     server_running.store(false, .release);
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     std.debug.print("[TakyonDB-Daemon] Starting TakyonDB Standalone Server...\n", .{});
     
     // Register SIGINT handler (stub for Windows - Windows needs SetConsoleCtrlHandler usually)
@@ -36,13 +36,11 @@ pub fn main() !void {
         }, null);
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = init.gpa;
 
     // Read memory size from CLI arguments (Default 64MB)
     var mem_size: usize = 64 * 1024 * 1024;
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.skip(); // skip executable name
     if (args.next()) |arg_size| {

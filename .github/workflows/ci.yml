@@ -24,7 +24,7 @@ jobs:
     - name: Setup Zig
       uses: mlugg/setup-zig@v1
       with:
-        version: 0.12.0
+        version: master
 
     - name: Use Node.js ${{ matrix.node-version }}
       uses: actions/setup-node@v4
