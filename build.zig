@@ -10,13 +10,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const addon = b.addLibrary(.{
-        .linkage = .dynamic,
+    const addon = b.addSharedLibrary(.{
         .name = "takyondb_bridge",
-        .root_module = core_mod,
+        .root_source_file = b.path("src/core/lib.zig"),
+        .target = target,
+        .optimize = optimize,
     });
     addon.linker_allow_shlib_undefined = true; // Essential for N-API on POSIX
-    // Force the output name to have .node extinsion
+
+    // Force the output name to have .node extension
     if (target.result.os.tag == .windows) {
         addon.out_filename = b.fmt("{s}.node", .{addon.name});
     } else {
@@ -24,19 +26,19 @@ pub fn build(b: *std.Build) void {
     }
 
     // Compile C++ Bridge
-    addon.root_module.addCSourceFile(.{
+    addon.addCSourceFile(.{
         .file = b.path("src/sdk/bindings/binding.cc"),
         .flags = &[_][]const u8{"-std=c++17"},
     });
-    addon.root_module.link_libc = true;
-    addon.root_module.link_libcpp = true;
+    addon.linkLibc();
+    addon.linkLibCpp();
     
     // Add Node-API headers
-    addon.root_module.addIncludePath(b.path("src/sdk/ts/node_modules/node-api-headers/include"));
+    addon.addIncludePath(b.path("src/sdk/ts/node_modules/node-api-headers/include"));
 
     // On Windows, link against our local copy of node.lib
     if (target.result.os.tag == .windows) {
-        addon.root_module.addObjectFile(b.path("lib/node.lib"));
+        addon.addObjectFile(b.path("lib/node.lib"));
     }
 
     b.installArtifact(addon);
@@ -44,23 +46,18 @@ pub fn build(b: *std.Build) void {
     // 3. Standalone Daemon (Server)
     const exe = b.addExecutable(.{
         .name = "takyondb",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/server/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_source_file = b.path("src/server/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
     exe.root_module.addImport("core", core_mod);
     b.installArtifact(exe);
 
     // Tests module
-    const test_module = b.createModule(.{
+    const core_tests = b.addTest(.{
         .root_source_file = b.path("src/core/test.zig"),
         .target = target,
         .optimize = optimize,
-    });
-    const core_tests = b.addTest(.{
-        .root_module = test_module,
     });
     const run_core_tests = b.addRunArtifact(core_tests);
     const test_step = b.step("test", "Run library tests");
