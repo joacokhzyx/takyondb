@@ -1,5 +1,5 @@
 {
-  "name": "takyondb-sdk",
+  "name": "takyondb",
   "version": "0.1.0",
   "description": "TypeScript SDK wrapper for the ultra-low-latency TakyonDB storage engine",
   "main": "dist/index.js",

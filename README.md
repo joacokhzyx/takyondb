@@ -49,9 +49,14 @@ The storage engine runs as an independent daemon.
 zig build run -Doptimize=ReleaseSafe
 ```
 
-### 2. Connect via TypeScript (Node.js)
+### 2. Install & Connect via TypeScript (Node.js)
+
+```bash
+npm install takyondb
+```
+
 ```typescript
-import { TakyonClient } from './sdk/takyon';
+import { TakyonClient } from 'takyondb';
 
 const schema = {
     name: 'users',
