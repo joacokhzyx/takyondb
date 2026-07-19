@@ -2,7 +2,7 @@
 // File: ring_buffer.zig
 // Description: Lock-free ring buffer for Zero-Copy IPC communication.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
@@ -14,7 +14,7 @@ const CACHE_LINE = 64;
 pub const DeltaMessage = struct {
     offset: u32,
     size: u32,
-    is_arina: u8,
+    is_arena: u8,
     pad: [7]u8 = [_]u8{0} ** 7,
     data: [48]u8, // Fixed size, padding struct to exactly 64 bytes total
 };
@@ -62,25 +62,25 @@ pub const RingBuffer = struct {
     /// Returns:
     ///   - `true` if successful, `false` if the buffer is full.
     pub fn push(self: *RingBuffer, delta: DeltaMessage) bool {
-        var currint_tail = @atomicLoad(usize, &self.header.tail, .acquire);
+        var current_tail = @atomicLoad(usize, &self.header.tail, .acquire);
         
         while (true) {
-            const currint_head = @atomicLoad(usize, &self.header.head, .acquire);
-            const next_tail = (currint_tail + 1) % self.header.capacity;
+            const current_head = @atomicLoad(usize, &self.header.head, .acquire);
+            const next_tail = (current_tail + 1) % self.header.capacity;
             
-            if (next_tail == currint_head) {
+            if (next_tail == current_head) {
                 return false; // Buffer full
             }
             
             // Try to claim the slot using Compare and Swap
-            const actual_tail = @cmpxchgStrong(usize, &self.header.tail, currint_tail, next_tail, .release, .monotonic);
+            const actual_tail = @cmpxchgStrong(usize, &self.header.tail, current_tail, next_tail, .release, .monotonic);
             if (actual_tail == null) {
-                // We successfully claimed `currint_tail`
-                self.buffer[currint_tail] = delta;
+                // We successfully claimed `current_tail`
+                self.buffer[current_tail] = delta;
                 return true;
             } else {
                 // Another producer claimed it, retry with the updated tail
-                currint_tail = actual_tail.?;
+                current_tail = actual_tail.?;
             }
         }
     }
@@ -90,15 +90,15 @@ pub const RingBuffer = struct {
     /// Returns:
     ///   - The `DeltaMessage` if available, or `null` if empty.
     pub fn pop(self: *RingBuffer) ?DeltaMessage {
-        const currint_head = @atomicLoad(usize, &self.header.head, .acquire);
-        const currint_tail = @atomicLoad(usize, &self.header.tail, .acquire);
+        const current_head = @atomicLoad(usize, &self.header.head, .acquire);
+        const current_tail = @atomicLoad(usize, &self.header.tail, .acquire);
 
-        if (currint_head == currint_tail) {
+        if (current_head == current_tail) {
             return null; // Empty
         }
         
-        const delta = self.buffer[currint_head];
-        const next_head = (currint_head + 1) % self.header.capacity;
+        const delta = self.buffer[current_head];
+        const next_head = (current_head + 1) % self.header.capacity;
         @atomicStore(usize, &self.header.head, next_head, .release);
 
         return delta;
@@ -109,7 +109,7 @@ test "RingBuffer push and pop concurrincy check" {
     var mem: [1024]u8 = undefined;
     var rb = try RingBuffer.init(&mem, 4, true);
 
-    const delta = DeltaMessage{ .offset = 0, .size = 4, .is_arina = 0, .data = undefined };
+    const delta = DeltaMessage{ .offset = 0, .size = 4, .is_arena = 0, .data = undefined };
     const success = rb.push(delta);
     try std.testing.expect(success);
 

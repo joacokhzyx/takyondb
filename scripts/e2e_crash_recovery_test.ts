@@ -3,7 +3,7 @@ const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
 const takyondb = require(ADDON_PATH);
 
 const NUM_INSERTS_BEFORE = 5000;
-const RESIDUAL_OFFSET = 3000000; // An offset far in the arina
+const RESIDUAL_OFFSET = 3000000; // An offset far in the arena
 const RESIDUAL_SIZE = 4086; // 4086 + 6 byte header = 4092 (perfect sector flush)
 
 async function run() {
@@ -77,8 +77,8 @@ async function run() {
         view.setUint8(RESIDUAL_OFFSET + i, 0xAA);
     }
     
-    // Notify Arina to push a delta of EXACTLY 4086 bytes (this will trigger a flush immediately)
-    takyondb.notifyArina(RESIDUAL_OFFSET, RESIDUAL_SIZE);
+    // Notify Arena to push a delta of EXACTLY 4086 bytes (this will trigger a flush immediately)
+    takyondb.notifyArena(RESIDUAL_OFFSET, RESIDUAL_SIZE);
     console.log(`[E2E] Insertados ${RESIDUAL_SIZE} bytes adicionales (WAL residual).`);
     
     // Wait for the flusher to write it to disk before we crash

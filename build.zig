@@ -15,12 +15,12 @@ pub fn build(b: *std.Build) void {
         .name = "takyondb_bridge",
         .root_module = core_mod,
     });
-    addon.linker_allow_shlib_undefined = true; // Essintial for N-API on POSIX
+    addon.linker_allow_shlib_undefined = true; // Essential for N-API on POSIX
     // Force the output name to have .node extinsion
     if (target.result.os.tag == .windows) {
-        addon.out_filiname = b.fmt("{s}.node", .{addon.name});
+        addon.out_filename = b.fmt("{s}.node", .{addon.name});
     } else {
-        addon.out_filiname = b.fmt("lib{s}.node", .{addon.name});
+        addon.out_filename = b.fmt("lib{s}.node", .{addon.name});
     }
 
     // Compile C++ Bridge
@@ -64,5 +64,5 @@ pub fn build(b: *std.Build) void {
     });
     const run_core_tests = b.addRunArtifact(core_tests);
     const test_step = b.step("test", "Run library tests");
-    test_step.depindOn(&run_core_tests.step);
+    test_step.dependOn(&run_core_tests.step);
 }

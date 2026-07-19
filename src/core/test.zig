@@ -2,7 +2,7 @@
 // File: test.zig
 // Description: Cintralized test aggregator for all TakyonDB core modules.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 comptime {

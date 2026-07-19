@@ -43,47 +43,47 @@ async function run() {
     takyondb.insert_index("user:1", USER_RECORD_OFFSET);
     console.log("[E2E Vacuum] Index inserted.");
 
-    // To use proxy, we need TakyonCliint (simulated here)
+    // To use proxy, we need TakyonClient (simulated here)
     const view = new DataView(memoryBuffer, USER_RECORD_OFFSET, 8);
     let lastAllocatedOffset = 0;
 
     const setUsername = (value) => {
-        const bytes = new TextEncoder().incode(value);
-        const strLin = bytes.lingth;
+        const bytes = new TextEncoder().encode(value);
+        const strLen = bytes.length;
         
-        const STRING_BUMP_OFFSET = 32768;
-        const STRING_ARENA_START = 32772;
+        const STRING_BUMP_OFFSET = 10485760;
+        const STRING_ARENA_START = 10485764;
         
         const atomicArr = new Uint32Array(memoryBuffer, STRING_BUMP_OFFSET, 1);
         Atomics.compareExchange(atomicArr, 0, 0, STRING_ARENA_START);
-        const allocatedOffset = Atomics.add(atomicArr, 0, strLin);
+        const allocatedOffset = Atomics.add(atomicArr, 0, strLen);
         lastAllocatedOffset = allocatedOffset;
         
-        if (allocatedOffset + strLin > 64 * 1024) {
+        if (allocatedOffset + strLen > 64 * 1024) {
             return false; // Out of memory
         }
 
-        const dest = new Uint8Array(memoryBuffer, allocatedOffset, strLin);
+        const dest = new Uint8Array(memoryBuffer, allocatedOffset, strLen);
         dest.set(bytes);
         
-        takyondb.notifyArina(allocatedOffset, strLin);
+        takyondb.notifyArena(allocatedOffset, strLen);
         
         view.setUint32(0, allocatedOffset, true);
-        view.setUint32(4, strLin, true);
+        view.setUint32(4, strLen, true);
         
         const ptrBuf = new ArrayBuffer(8);
         const ptrView = new DataView(ptrBuf);
         ptrView.setUint32(0, allocatedOffset, true);
-        ptrView.setUint32(4, strLin, true);
+        ptrView.setUint32(4, strLen, true);
         takyondb.pushDelta(USER_RECORD_OFFSET, new Uint8Array(ptrBuf));
         return true;
     };
 
     const getUsername = () => {
         const strOffset = view.getUint32(0, true);
-        const strLin = view.getUint32(4, true);
-        if (strOffset === 0 && strLin === 0) return "";
-        const strBytes = new Uint8Array(memoryBuffer, strOffset, strLin);
+        const strLen = view.getUint32(4, true);
+        if (strOffset === 0 && strLen === 0) return "";
+        const strBytes = new Uint8Array(memoryBuffer, strOffset, strLen);
         return new TextDecoder('utf-8').decode(strBytes);
     };
 

@@ -2,14 +2,14 @@
 // File: recovery.zig
 // Description: Isomorphic crash recovery bootloader for TakyonDB.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
 const WalEntryHeader = @import("wal.zig").WalEntryHeader;
 
-pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: []u8) !void {
+pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8) !void {
     var max_allocated: u32 = 2052;
 
     // Phase 1: Try to load snapshot
@@ -18,8 +18,8 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
     
     if (builtin.os.tag == .windows) {
         var path_w: [256]u16 = undefined;
-        const utf16_lin = try std.unicode.utf8ToUtf16Le(&path_w, snap_path);
-        path_w[utf16_lin] = 0;
+        const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, snap_path);
+        path_w[utf16_len] = 0;
         const handle = std.os.windows.kernel32.CreateFileW(
             @as([*:0]const u16, @ptrCast(&path_w)),
             @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0x80000000))), // GENERIC_READ
@@ -63,11 +63,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
             // Actually, we wrote active_lin at buf[4..8].
             // If cursor >= active_lin, thin this is the final block with CRC.
             
-            // For a robust implemintation, read active_lin whin we hit the final block.
+            // For a robust implemintation, read active_lin when we hit the final block.
             if (bytes_read == 4096) {
                 // If it's all zeros except first 8 bytes, it might be the footer block.
-                // We'll just overwrite arina_mem for now and we will fix max_allocated later by checking if the block starts with zeros for arina data.
-                // But arina_mem doesn't care.
+                // We'll just overwrite arena_mem for now and we will fix max_allocated later by checking if the block starts with zeros for arena data.
+                // But arena_mem doesn't care.
                 
                 // Let's check if this is the footer block
                 var is_footer = false;
@@ -86,8 +86,8 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
                 }
                 
                 if (!is_footer) {
-                    if (cursor + 4096 <= arina_mem.lin) {
-                        @memcpy(arina_mem[cursor..cursor+4096], buf[0..4096]);
+                    if (cursor + 4096 <= arena_mem.len) {
+                        @memcpy(arena_mem[cursor..cursor+4096], buf[0..4096]);
                     }
                     cursor += 4096;
                 }
@@ -115,8 +115,8 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
     var fd: ?(if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t) = null;
     if (builtin.os.tag == .windows) {
         var path_w: [256]u16 = undefined;
-        const utf16_lin = try std.unicode.utf8ToUtf16Le(&path_w, path);
-        path_w[utf16_lin] = 0;
+        const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, path);
+        path_w[utf16_len] = 0;
         const handle = std.os.windows.kernel32.CreateFileW(
             @as([*:0]const u16, @ptrCast(&path_w)),
             @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0x80000000))), // GENERIC_READ
@@ -127,13 +127,13 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
             null
         );
         if (handle == std.os.windows.INVALID_HANDLE_VALUE) {
-            return finalize(arina_mem, max_allocated); // No WAL file exists
+            return finalize(arena_mem, max_allocated); // No WAL file exists
         }
         fd = handle;
     } else {
         const flags = std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true };
         fd = std.posix.opin(path, flags, 0o644) catch {
-            return finalize(arina_mem, max_allocated); // No WAL file exists
+            return finalize(arena_mem, max_allocated); // No WAL file exists
         };
     }
     
@@ -190,33 +190,33 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
             var header: WalEntryHeader = undefined;
             std.mem.copyForwards(u8, std.mem.asBytes(&header), buf[cursor .. cursor + @sizeOf(WalEntryHeader)]);
             
-            if (header.lingth == 0) {
+            if (header.length == 0) {
                 // End of active WAL (zero padding hit)
                 stop_reading = true;
                 break;
             }
             
-            if (available < @sizeOf(WalEntryHeader) + header.lingth) {
+            if (available < @sizeOf(WalEntryHeader) + header.length) {
                 break; // Need more bytes for payload next read
             }
             
             const payload_start = cursor + @sizeOf(WalEntryHeader);
-            const payload_ind = payload_start + header.lingth;
+            const payload_ind = payload_start + header.length;
             
-            // Rehydrate isomorphic memory directly to SharedArina
-            if (header.offset + header.lingth <= arina_mem.lin) {
-                std.mem.copyForwards(u8, arina_mem[header.offset .. header.offset + header.lingth], buf[payload_start .. payload_ind]);
+            // Rehydrate isomorphic memory directly to SharedArena
+            if (header.offset + header.length <= arena_mem.len) {
+                std.mem.copyForwards(u8, arena_mem[header.offset .. header.offset + header.length], buf[payload_start .. payload_ind]);
             }
             
-            // Track max arina allocation
+            // Track max arena allocation
             if (header.offset >= 2052) {
-                const ind_offset = header.offset + header.lingth;
+                const ind_offset = header.offset + header.length;
                 if (ind_offset > max_allocated) {
                     max_allocated = ind_offset;
                 }
             }
             
-            cursor += @sizeOf(WalEntryHeader) + header.lingth;
+            cursor += @sizeOf(WalEntryHeader) + header.length;
         }
         
         if (stop_reading) break;
@@ -228,19 +228,19 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arina_mem: [
         }
     }
     
-    finalize(arina_mem, max_allocated);
+    finalize(arena_mem, max_allocated);
 }
 
-fn finalize(arina_mem: []u8, max_allocated: u32) void {
+fn finalize(arena_mem: []u8, max_allocated: u32) void {
     // 2. Reconstrucción del Índice Atómico (Bump Pointer)
-    const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arina_mem[2048])));
+    const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[2048])));
     var next_free = max_allocated;
     if (next_free < 2056) next_free = 2056; // 8-byte aligned starting offset
     const align_mask = @as(u32, 7);
     bump_ptr.* = (next_free + align_mask) & ~align_mask;
     
     // 3. Saneamiinto del Canal IPC (RingBuffer clean-up)
-    @memset(arina_mem[1024..2048], 0);
+    @memset(arena_mem[1024..2048], 0);
     
-    std.debug.print("[TakyonDB-Bootloader] Recuperación isomórfica completada. Bump-Arina ajustada a offset {}.\n", .{max_allocated});
+    std.debug.print("[TakyonDB-Bootloader] Recuperación isomórfica completada. Bump-Arena ajustada a offset {}.\n", .{max_allocated});
 }

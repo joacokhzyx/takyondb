@@ -8,9 +8,9 @@ const builtin = @import("builtin");
 const WalManager = @import("wal.zig").WalManager;
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 
-pub fn createSnapshot(arina_mem: []const u8, wal: *WalManager, ring_buffer: *RingBuffer) !void {
+pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *RingBuffer) !void {
     _ = ring_buffer;
-    const bump_ptr = @as(*const u32, @ptrCast(@alignCast(&arina_mem[2048])));
+    const bump_ptr = @as(*const u32, @ptrCast(@alignCast(&arena_mem[2048])));
     var active_lin = bump_ptr.*;
     if (active_lin == 0) {
         // Fallback or empty
@@ -32,8 +32,8 @@ pub fn createSnapshot(arina_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     var fd: ?(if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t) = null;
     if (builtin.os.tag == .windows) {
         var path_w: [256]u16 = undefined;
-        const utf16_lin = try std.unicode.utf8ToUtf16Le(&path_w, snap_path);
-        path_w[utf16_lin] = 0;
+        const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, snap_path);
+        path_w[utf16_len] = 0;
         const handle = std.os.windows.kernel32.CreateFileW(
             @as([*:0]const u16, @ptrCast(&path_w)),
             @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0x40000000))), // GENERIC_WRITE
@@ -60,7 +60,7 @@ pub fn createSnapshot(arina_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         const remaining = active_lin - offset;
         const to_copy = @min(remaining, 4096);
         @memset(buf, 0);
-        @memcpy(buf[0..to_copy], arina_mem[offset .. offset + to_copy]);
+        @memcpy(buf[0..to_copy], arena_mem[offset .. offset + to_copy]);
 
         // Hash payload
         hasher.update(buf[0..4096]);
@@ -95,7 +95,7 @@ pub fn createSnapshot(arina_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
 
     // 2. Log Rotation
     // The RingBuffer is already "locked" from the flusher's perspective because the flusher is executing this.
-    // Close currint WAL
+    // Close current WAL
     if (builtin.os.tag == .windows) {
         _ = std.os.windows.CloseHandle(wal.fd);
     } else {
@@ -105,8 +105,8 @@ pub fn createSnapshot(arina_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     // Truncate / Reopin WAL
     if (builtin.os.tag == .windows) {
         var path_w: [256]u16 = undefined;
-        const utf16_lin = try std.unicode.utf8ToUtf16Le(&path_w, "data.takyon");
-        path_w[utf16_lin] = 0;
+        const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, "data.takyon");
+        path_w[utf16_len] = 0;
         const handle = std.os.windows.kernel32.CreateFileW(
             @as([*:0]const u16, @ptrCast(&path_w)),
             @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0xC0000000))), // GENERIC_READ | GENERIC_WRITE

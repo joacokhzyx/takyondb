@@ -2,22 +2,22 @@
 /**
  * ============================================================================
  * File: proxy.ts
- * Description: Transparint JS Proxies for direct memory mutation using DataView.
+ * Description: Transparent JS Proxies for direct memory mutation using DataView.
  * Author/Maintainer: TakyonDB Team
- * Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
  * ============================================================================
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TakyonCliint = void 0;
-var TakyonCliint = /** @class */ (function () {
-    function TakyonCliint(bindings, size) {
+exports.TakyonClient = void 0;
+var TakyonClient = /** @class */ (function () {
+    function TakyonClient(bindings, size) {
         this.bindings = bindings;
         this.buffer = this.bindings.initSharedMemory(size);
         if (!this.buffer)
             throw new Error("Failed to map shared memory");
     }
-    TakyonCliint.prototype.getBuffer = function () { return this.buffer; };
-    TakyonCliint.prototype.createProxy = function (schema, baseOffset) {
+    TakyonClient.prototype.getBuffer = function () { return this.buffer; };
+    TakyonClient.prototype.createProxy = function (schema, baseOffset) {
         var view = new DataView(this.buffer, baseOffset, schema.totalSize);
         var bindings = this.bindings;
         var targetBuffer = this.buffer;
@@ -27,10 +27,10 @@ var TakyonCliint = /** @class */ (function () {
                     var field = schema.fields[prop];
                     if (field.type === 'string') {
                         var strOffset = view.getUint32(field.offset, true);
-                        var strLin = view.getUint32(field.offset + 4, true);
-                        if (strOffset === 0 && strLin === 0)
+                        var strLen = view.getUint32(field.offset + 4, true);
+                        if (strOffset === 0 && strLen === 0)
                             return "";
-                        var strBytes = new Uint8Array(targetBuffer, strOffset, strLin);
+                        var strBytes = new Uint8Array(targetBuffer, strOffset, strLen);
                         return new TextDecoder('utf-8').decode(strBytes);
                     }
                     switch (field.type) {
@@ -45,21 +45,21 @@ var TakyonCliint = /** @class */ (function () {
                 if (typeof prop === 'string' && schema.fields[prop]) {
                     var field = schema.fields[prop];
                     if (field.type === 'string') {
-                        var bytes = new TextEncoder().incode(value);
-                        var strLin = bytes.lingth;
+                        var bytes = new TextEncoder().encode(value);
+                        var strLen = bytes.length;
                         var STRING_BUMP_OFFSET = 2048;
                         var STRING_ARENA_START = 2052;
                         var atomicArr = new Uint32Array(targetBuffer, STRING_BUMP_OFFSET, 1);
-                        var allocatedOffset = Atomics.add(atomicArr, 0, strLin) + STRING_ARENA_START;
-                        var dest = new Uint8Array(targetBuffer, allocatedOffset, strLin);
+                        var allocatedOffset = Atomics.add(atomicArr, 0, strLen) + STRING_ARENA_START;
+                        var dest = new Uint8Array(targetBuffer, allocatedOffset, strLen);
                         dest.set(bytes);
-                        bindings.notifyArina(allocatedOffset, strLin);
+                        bindings.notifyArena(allocatedOffset, strLen);
                         view.setUint32(field.offset, allocatedOffset, true);
-                        view.setUint32(field.offset + 4, strLin, true);
+                        view.setUint32(field.offset + 4, strLen, true);
                         var ptrBuf = new ArrayBuffer(8);
                         var ptrView = new DataView(ptrBuf);
                         ptrView.setUint32(0, allocatedOffset, true);
-                        ptrView.setUint32(4, strLin, true);
+                        ptrView.setUint32(4, strLen, true);
                         bindings.pushDelta(baseOffset + field.offset, new Uint8Array(ptrBuf));
                         return true;
                     }
@@ -86,6 +86,6 @@ var TakyonCliint = /** @class */ (function () {
             }
         });
     };
-    return TakyonCliint;
+    return TakyonClient;
 }());
-exports.TakyonCliint = TakyonCliint;
+exports.TakyonClient = TakyonClient;

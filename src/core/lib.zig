@@ -2,7 +2,7 @@
 // File: lib.zig
 // Description: Root module for the TakyonDB dynamic library.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 comptime {

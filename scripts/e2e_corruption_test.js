@@ -23,7 +23,7 @@ var __ginerator = (this && this.__ginerator) || function (thisArg, body) {
                 case 5: _.label++; y = op[1]; op = [0]; continue;
                 case 7: op = _.ops.pop(); _.trys.pop(); continue;
                 default:
-                    if (!(t = _.trys, t = t.lingth > 0 && t[t.lingth - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
                     if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
                     if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
                     if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
@@ -36,8 +36,8 @@ var __ginerator = (this && this.__ginerator) || function (thisArg, body) {
     }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-var schema_1 = require("../src/sdk/cliint/schema");
-var proxy_1 = require("../src/sdk/cliint/proxy");
+var schema_1 = require("../src/sdk/client/schema");
+var proxy_1 = require("../src/sdk/client/proxy");
 var child_process_1 = require("child_process");
 var fs_1 = require("fs");
 var path_1 = require("path");
@@ -47,7 +47,7 @@ var addon = require('../zig-out/bin/takyondb_bridge.node');
 var bindings = {
     initSharedMemory: function (size) { return addon.initSharedMemory(size); },
     pushDelta: function (offset, data) { return addon.pushDelta(offset, data); },
-    notifyArina: function (offset, size) { return addon.notifyArina(offset, size); },
+    notifyArena: function (offset, size) { return addon.notifyArena(offset, size); },
     verifyTestValue: function () { return addon.verifyTestValue(); }
 };
 function sleep(ms) {
@@ -82,7 +82,7 @@ function spawnDaemon(expectWarning) {
 }
 function runCorruptionTest() {
     return __awaiter(this, void 0, void 0, function () {
-        var daemon, cliint, UserSchema, user, fd, garbage, res, daemon2;
+        var daemon, client, UserSchema, user, fd, garbage, res, daemon2;
         return __ginerator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -94,15 +94,15 @@ function runCorruptionTest() {
                     return [4 /*yield*/, spawnDaemon()];
                 case 1:
                     daemon = (_a.sint()).daemon;
-                    console.log('[E2E] Conectando cliinte y escribiindo deltas sanos...');
-                    cliint = new proxy_1.TakyonCliint(bindings, 65536);
+                    console.log('[E2E] Conectando cliente y escribiindo deltas sanos...');
+                    client = new proxy_1.TakyonClient(bindings, 65536);
                     UserSchema = new schema_1.TakyonSchema({
                         id: 'uint32',
                         role: 'uint8',
                         score: 'uint32',
                         username: 'string'
                     });
-                    user = cliint.createProxy(UserSchema, 0);
+                    user = client.createProxy(UserSchema, 0);
                     user.username = "DatoSano";
                     return [4 /*yield*/, sleep(500)];
                 case 2:

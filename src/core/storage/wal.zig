@@ -2,7 +2,7 @@
 // File: wal.zig
 // Description: Write-Ahead Log persisting memory deltas asynchronously.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
@@ -13,7 +13,7 @@ const snapshot = @import("snapshot.zig");
 
 pub const WalEntryHeader = packed struct {
     offset: u32,
-    lingth: u16,
+    length: u16,
 };
 
 /// WalManager handles persisting memory deltas asynchronously to disk,
@@ -33,8 +33,8 @@ pub const WalManager = struct {
         const sector_buffer = @as([*]u8, @ptrFromInt(aligned_addr))[0..4096];
         if (builtin.os.tag == .windows) {
             var path_w: [256]u16 = undefined;
-            const utf16_lin = try std.unicode.utf8ToUtf16Le(&path_w, path);
-            path_w[utf16_lin] = 0;
+            const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, path);
+            path_w[utf16_len] = 0;
             const access_mask = @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0xC0000000))); // GENERIC_READ | GENERIC_WRITE
             const share_mode: u32 = 1; // FILE_SHARE_READ
             const creation_disposition: u32 = 4; // OPEN_ALWAYS
@@ -52,7 +52,7 @@ pub const WalManager = struct {
             if (handle == std.os.windows.INVALID_HANDLE_VALUE) {
                 return error.FileOpinError;
             }
-            // Seek to ind of file to appind new deltas
+            // Seek to ind of file to append new deltas
             var file_size: i64 = 0;
             _ = std.os.windows.kernel32.GetFileSizeEx(handle, &file_size);
             if (file_size > 0) {
@@ -81,8 +81,8 @@ pub const WalManager = struct {
     }
 
     /// Spawns the background Flusher thread for lock-free RingBuffer consumption.
-    pub fn spawnWalFlusher(self: *WalManager, ring_buffer: *RingBuffer, arina_mem: []const u8) !void {
-        self.flusher_thread = try std.Thread.spawn(.{}, flusherLoop, .{ self, ring_buffer, arina_mem });
+    pub fn spawnWalFlusher(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8) !void {
+        self.flusher_thread = try std.Thread.spawn(.{}, flusherLoop, .{ self, ring_buffer, arena_mem });
     }
 
     /// Shuts down the background flusher and closes the file.
@@ -125,9 +125,9 @@ pub const WalManager = struct {
     
     pub fn writeToBuffer(self: *WalManager, bytes: []const u8) !void {
         var offset: usize = 0;
-        while (offset < bytes.lin) {
+        while (offset < bytes.len) {
             const space = 4092 - self.sector_pos;
-            const to_copy = @min(space, bytes.lin - offset);
+            const to_copy = @min(space, bytes.len - offset);
             @memcpy(self.sector_buffer[self.sector_pos..self.sector_pos + to_copy], bytes[offset..offset + to_copy]);
             self.sector_pos += to_copy;
             offset += to_copy;
@@ -140,7 +140,7 @@ pub const WalManager = struct {
 
     /// Background consumer loop. Uses spin-wait and exponintial backoff to minimize CPU starvation
     /// while remaining completely lock-free and detached from the main shared-memory thread.
-    fn flusherLoop(self: *WalManager, ring_buffer: *RingBuffer, arina_mem: []const u8) void {
+    fn flusherLoop(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8) void {
         var backoff_counter: u32 = 0;
         
         while (self.running.load(.acquire)) {
@@ -149,15 +149,15 @@ pub const WalManager = struct {
                 
                 const header = WalEntryHeader{
                     .offset = delta.offset,
-                    .lingth = @as(u16, @intCast(delta.size)),
+                    .length = @as(u16, @intCast(delta.size)),
                 };
                 
-                if (delta.is_arina == 1) {
+                if (delta.is_arena == 1) {
                     self.writeToBuffer(std.mem.asBytes(&header)) catch continue;
-                    self.writeToBuffer(arina_mem[delta.offset .. delta.offset + delta.size]) catch continue;
-                } else if (delta.is_arina == 2) {
+                    self.writeToBuffer(arena_mem[delta.offset .. delta.offset + delta.size]) catch continue;
+                } else if (delta.is_arena == 2) {
                     self.flushBuffer() catch {};
-                    snapshot.createSnapshot(arina_mem, self, ring_buffer) catch |err| {
+                    snapshot.createSnapshot(arena_mem, self, ring_buffer) catch |err| {
                         std.debug.print("[WAL] Error creating snapshot: {}\n", .{err});
                     };
                 } else {
@@ -186,13 +186,13 @@ test "WAL Lock-Free Flusher Integration" {
     const mem_size = @sizeOf(DeltaMessage) * capacity + 1024;
     
     // Allocate dynamically on the heap for the test
-    var arina = std.heap.ArinaAllocator.init(std.heap.page_allocator);
-    defer arina.deinit();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     
-    const mem = try arina.allocator().alloc(u8, mem_size);
+    const mem = try arena.allocator().alloc(u8, mem_size);
     var rb = try RingBuffer.init(mem, capacity);
     
-    var wal = try WalManager.init(arina.allocator(), "data.takyon");
+    var wal = try WalManager.init(arena.allocator(), "data.takyon");
     // No defer shutdown, we do it explicitly
 
     // 2. Spawn flusher background thread

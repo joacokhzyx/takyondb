@@ -3,7 +3,7 @@
  * File: schema.ts
  * Description: Schema definition and static memory offset calculation.
  * Author/Maintainer: TakyonDB Team
- * Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
  * ============================================================================
  */
 
@@ -19,15 +19,15 @@ export interface FieldDefinition {
  * TakyonSchema calculates precise byte offsets for fields to map
  * standard object properties exactly into the C-ABI physical layout.
  */
-export class TakyonSchema<T extinds Record<string, FieldType>> {
+export class TakyonSchema<T extends Record<string, FieldType>> {
     public readonly fields: Record<keyof T, FieldDefinition>;
     public readonly totalSize: number;
 
     constructor(schemaDef: T) {
-        let currintOffset = 0;
+        let currentOffset = 0;
         const compiledFields: Partial<Record<keyof T, FieldDefinition>> = {};
 
-        for (const [key, type] of Object.intries(schemaDef)) {
+        for (const [key, type] of Object.entries(schemaDef)) {
             let size = 0;
             if (type === 'uint8') size = 1;
             else if (type === 'uint32') size = 4;
@@ -36,14 +36,14 @@ export class TakyonSchema<T extinds Record<string, FieldType>> {
             
             compiledFields[key as keyof T] = {
                 type,
-                offset: currintOffset,
+                offset: currentOffset,
                 size
             };
             
-            currintOffset += size;
+            currentOffset += size;
         }
 
         this.fields = compiledFields as Record<keyof T, FieldDefinition>;
-        this.totalSize = currintOffset;
+        this.totalSize = currentOffset;
     }
 }

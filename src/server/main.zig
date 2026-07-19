@@ -2,12 +2,12 @@
 // File: main.zig
 // Description: TakyonDB Standalone Daemon (Server) Entrypoint.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
 const core = @import("core");
-const SharedArina = core.shm.SharedArina;
+const SharedArena = core.shm.SharedArena;
 const RingBuffer = core.ring_buffer.RingBuffer;
 const WalManager = core.wal.WalManager;
 
@@ -36,7 +36,7 @@ pub fn main() !void {
         }, null);
     }
 
-    var gpa = std.heap.GineralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -45,21 +45,21 @@ pub fn main() !void {
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
     
     std.debug.print("[TakyonDB-Daemon] Solicitando bloque de memoria compartida: {s}\n", .{shm_name});
-    var arina = try SharedArina.init(shm_name, 16 * 1024 * 1024, true);
+    var arena = try SharedArena.init(shm_name, 64 * 1024 * 1024, true);
     
     // 2. Bootloader: Recover from disk
     const recoverWal = core.recovery.recoverWal;
-    try recoverWal(allocator, "data.takyon", arina.memory);
+    try recoverWal(allocator, "data.takyon", arena.memory);
     
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
-    var rb = try RingBuffer.init(arina.memory[1024..], 16, true);
+    var rb = try RingBuffer.init(arena.memory[1024..], 16, true);
     std.debug.print("[TakyonDB-Daemon] RingBuffer inicializado in cabecera de memoria.\n", .{});
     
     // 4. Start WAL Flusher
     var wal = try WalManager.init(allocator, "data.takyon");
     global_wal = &wal;
-    try wal.spawnWalFlusher(&rb, arina.memory);
+    try wal.spawnWalFlusher(&rb, arena.memory);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher corriindo y anclado al bloque.\n", .{});
     
     std.debug.print("[TakyonDB-Daemon] Servidor listo. Waiting for connections...\n", .{});
@@ -75,7 +75,7 @@ pub fn main() !void {
     std.debug.print("[TakyonDB-Daemon] TakyonDB detinido exitosaminte.\n", .{});
 }
 
-fn windowsCtrlCHandler(fdwCtrlType: std.os.windows.DWORD) callconv(std.builtin.CallingConvintion.winapi) std.os.windows.BOOL {
+fn windowsCtrlCHandler(fdwCtrlType: std.os.windows.DWORD) callconv(std.builtin.CallingConvention.winapi) std.os.windows.BOOL {
     _ = fdwCtrlType;
     std.debug.print("\n[TakyonDB-Daemon] Señal CTRL+C recibida. Apagando servidor...\n", .{});
     server_running.store(false, .release);

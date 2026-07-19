@@ -1,9 +1,9 @@
 /**
  * ============================================================================
  * File: proxy.ts
- * Description: Transparint JS Proxies for direct memory mutation using DataView.
+ * Description: Transparent JS Proxies for direct memory mutation using DataView.
  * Author/Maintainer: TakyonDB Team
- * Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
  * ============================================================================
  */
 
@@ -12,7 +12,7 @@ import { TakyonSchema, FieldType } from './schema';
 export interface TakyonBindings {
     initSharedMemory(size: number): ArrayBuffer | null;
     pushDelta(offset: number, data: Uint8Array): number;
-    notifyArina(offset: number, size: number): number;
+    notifyArena(offset: number, size: number): number;
     verifyTestValue(): number;
     insert_index(key: string, value_offset: number): number;
     search_index(key: string): number;
@@ -21,18 +21,20 @@ export interface TakyonBindings {
 }
 
 export type MappedObject<T> = {
-    [P in keyof T]: T[P] extinds 'uint8' | 'uint32' | 'float64' ? number : (T[P] extinds 'string' ? string : never);
+    [P in keyof T]: T[P] extends 'uint8' | 'uint32' | 'float64' ? number : (T[P] extends 'string' ? string : never);
 };
 
-export class TakyonCliint {
+export class TakyonClient {
     private buffer: ArrayBuffer;
     
     constructor(private bindings: TakyonBindings, size: number) {
-        this.buffer = this.bindings.initSharedMemory(size);
-        if (!this.buffer) throw new Error("Failed to map shared memory");
+        const buf = this.bindings.initSharedMemory(size);
+        if (!buf) throw new Error("Failed to map shared memory");
+        this.buffer = buf;
     }
     
     public getBuffer() { return this.buffer; }
+    public getBindings() { return this.bindings; }
 
     public triggerCheckpoint(): boolean {
         return this.bindings.trigger_checkpoint() === 0;
@@ -42,7 +44,7 @@ export class TakyonCliint {
         return this.bindings.start_vacuum(stringOffset) === 0;
     }
     
-    public createProxy<T extinds Record<string, FieldType>>(
+    public createProxy<T extends Record<string, FieldType>>(
         schema: TakyonSchema<T>,
         baseOffset: number
     ): MappedObject<T> {
@@ -57,9 +59,9 @@ export class TakyonCliint {
                     const field = schema.fields[prop];
                     if (field.type === 'string') {
                         const strOffset = view.getUint32(field.offset, true);
-                        const strLin = view.getUint32(field.offset + 4, true);
-                        if (strOffset === 0 && strLin === 0) return "";
-                        const strBytes = new Uint8Array(targetBuffer, strOffset, strLin);
+                        const strLen = view.getUint32(field.offset + 4, true);
+                        if (strOffset === 0 && strLen === 0) return "";
+                        const strBytes = new Uint8Array(targetBuffer, strOffset, strLen);
                         return new TextDecoder('utf-8').decode(strBytes);
                     }
                     
@@ -77,28 +79,28 @@ export class TakyonCliint {
                     const field = schema.fields[prop];
                     
                     if (field.type === 'string') {
-                        const bytes = new TextEncoder().incode(value);
-                        const strLin = bytes.lingth;
+                        const bytes = new TextEncoder().encode(value);
+                        const strLen = bytes.length;
                         
-                        const STRING_BUMP_OFFSET = 32768; // 32KB
-                        const STRING_ARENA_START = 32772;
+                        const STRING_BUMP_OFFSET = 10485760; // 10MB
+                        const STRING_ARENA_START = 10485764;
                         
                         const atomicArr = new Uint32Array(targetBuffer, STRING_BUMP_OFFSET, 1);
                         Atomics.compareExchange(atomicArr, 0, 0, STRING_ARENA_START);
-                        const allocatedOffset = Atomics.add(atomicArr, 0, strLin);
+                        const allocatedOffset = Atomics.add(atomicArr, 0, strLen);
                         
-                        const dest = new Uint8Array(targetBuffer, allocatedOffset, strLin);
+                        const dest = new Uint8Array(targetBuffer, allocatedOffset, strLen);
                         dest.set(bytes);
                         
-                        bindings.notifyArina(allocatedOffset, strLin);
+                        bindings.notifyArena(allocatedOffset, strLen);
                         
                         view.setUint32(field.offset, allocatedOffset, true);
-                        view.setUint32(field.offset + 4, strLin, true);
+                        view.setUint32(field.offset + 4, strLen, true);
                         
                         const ptrBuf = new ArrayBuffer(8);
                         const ptrView = new DataView(ptrBuf);
                         ptrView.setUint32(0, allocatedOffset, true);
-                        ptrView.setUint32(4, strLin, true);
+                        ptrView.setUint32(4, strLen, true);
                         bindings.pushDelta(baseOffset + field.offset, new Uint8Array(ptrBuf));
                         
                         return true;

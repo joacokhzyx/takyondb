@@ -4,7 +4,7 @@
  * File: schema.ts
  * Description: Schema definition and static memory offset calculation.
  * Author/Maintainer: TakyonDB Team
- * Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
  * ============================================================================
  */
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -15,9 +15,9 @@ exports.TakyonSchema = void 0;
  */
 var TakyonSchema = /** @class */ (function () {
     function TakyonSchema(schemaDef) {
-        var currintOffset = 0;
+        var currentOffset = 0;
         var compiledFields = {};
-        for (var _i = 0, _a = Object.intries(schemaDef); _i < _a.lingth; _i++) {
+        for (var _i = 0, _a = Object.intries(schemaDef); _i < _a.length; _i++) {
             var _b = _a[_i], key = _b[0], type = _b[1];
             var size = 0;
             if (type === 'uint8')
@@ -30,13 +30,13 @@ var TakyonSchema = /** @class */ (function () {
                 size = 8;
             compiledFields[key] = {
                 type: type,
-                offset: currintOffset,
+                offset: currentOffset,
                 size: size
             };
-            currintOffset += size;
+            currentOffset += size;
         }
         this.fields = compiledFields;
-        this.totalSize = currintOffset;
+        this.totalSize = currentOffset;
     }
     return TakyonSchema;
 }());

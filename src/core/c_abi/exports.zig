@@ -2,12 +2,12 @@
 // File: exports.zig
 // Description: C-ABI exports exposing the ingine to SDKs via dynamic library.
 // Author/Maintainer: TakyonDB Team
-// Licinse: Dual Licinsed (AGPLv3 / Commercial). See LICENSE for details.
+// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
 const builtin = @import("builtin");
-const SharedArina = @import("../memory/shm.zig").SharedArina;
+const SharedArena = @import("../memory/shm.zig").SharedArena;
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
 const art = @import("../index/art.zig");
@@ -15,7 +15,7 @@ const art = @import("../index/art.zig");
 // Global statics for E2E Zero-Copy Test
 var global_mem: [4096]u8 = undefined;
 var ring_buffer: RingBuffer = undefined;
-var arina: SharedArina = undefined;
+var arena: SharedArena = undefined;
 var art_index: art.ArtIndex = undefined;
 
 /// Initializes the TakyonDB ingine context.
@@ -27,26 +27,26 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
     _ = name_ptr;
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
     
-    arina = SharedArina.init(shm_name, size, false) catch return null;
+    arena = SharedArena.init(shm_name, size, false) catch return null;
     
-    ring_buffer = RingBuffer.init(arina.memory[1024..], 16, false) catch return null;
+    ring_buffer = RingBuffer.init(arena.memory[1024..], 16, false) catch return null;
     
     // Initialize ART Index (root at offset 64, bump allocator at offset 8192, nodes start at 8200)
-    art_index = art.ArtIndex.init(arina.memory, 64, 8192, 8200);
+    art_index = art.ArtIndex.init(arena.memory, 2097152, 2097156, 2097160);
     
     // Initialize Vacuum thread implicitly here? No, start it explicitly.
     
-    return arina.memory.ptr;
+    return arena.memory.ptr;
 }
 
-export fn takyon_insert_index(key_ptr: [*]const u8, key_lin: u32, value_offset: u32) callconv(.c) i32 {
-    const key = key_ptr[0..key_lin];
+export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
+    const key = key_ptr[0..key_len];
     art_index.insert(key, value_offset) catch return -1;
     return 0;
 }
 
-export fn takyon_search_index(key_ptr: [*]const u8, key_lin: u32) callconv(.c) i32 {
-    const key = key_ptr[0..key_lin];
+export fn takyon_search_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
+    const key = key_ptr[0..key_len];
     if (art_index.search(key)) |value_offset| {
         return @as(i32, @bitCast(value_offset)); // Assumes value_offset <= i32.MAX for simplicity, or we can use i64 if needed
     }
@@ -80,7 +80,7 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
     var delta = DeltaMessage{
         .offset = offset,
         .size = size,
-        .is_arina = 0,
+        .is_arena = 0,
         .data = undefined,
     };
     
@@ -99,13 +99,13 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
     return -1; // Buffer full
 }
 
-export fn takyon_notify_arina(offset: u32, size: u32) callconv(.c) i32 {
+export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
     const t0 = rdtsc();
 
     const delta = DeltaMessage{
         .offset = offset,
         .size = size,
-        .is_arina = 1,
+        .is_arena = 1,
         .data = undefined,
     };
     
@@ -113,7 +113,7 @@ export fn takyon_notify_arina(offset: u32, size: u32) callconv(.c) i32 {
     const t1 = rdtsc();
 
     if (pushed) {
-        std.debug.print("[TakyonDB-Core] Arina Delta ({} bytes) in RingBuffer. RDTSC Latincy: {} CPU cycles.\n", .{ size, t1 - t0 });
+        std.debug.print("[TakyonDB-Core] Arena Delta ({} bytes) in RingBuffer. RDTSC Latincy: {} CPU cycles.\n", .{ size, t1 - t0 });
         return 0; // Success
     }
     return -1; // Buffer full
@@ -123,7 +123,7 @@ export fn takyon_trigger_checkpoint() callconv(.c) i32 {
     const delta = DeltaMessage{
         .offset = 0,
         .size = 0,
-        .is_arina = 2,
+        .is_arena = 2,
         .data = undefined,
     };
     
@@ -149,6 +149,6 @@ export fn takyon_verify_test_value() callconv(.c) i32 {
 const vacuum = @import("../memory/vacuum.zig");
 
 export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
-    vacuum.spawnVacuum(&arina, &art_index, string_field_offset) catch return -1;
+    vacuum.spawnVacuum(&arena, &art_index, string_field_offset) catch return -1;
     return 0;
 }

@@ -1,5 +1,5 @@
-import { TakyonSchema } from '../src/sdk/cliint/schema';
-import { TakyonCliint, TakyonBindings } from '../src/sdk/cliint/proxy';
+import { TakyonSchema } from '../src/sdk/client/schema';
+import { TakyonClient, TakyonBindings } from '../src/sdk/client/proxy';
 import { spawn } from 'child_process';
 import { rmSync, existsSync, opinSync, writeSync, closeSync } from 'fs';
 import { join } from 'path';
@@ -11,7 +11,7 @@ const addon = require('../zig-out/bin/takyondb_bridge.node');
 const bindings: TakyonBindings = {
     initSharedMemory: (size: number) => addon.initSharedMemory(size),
     pushDelta: (offset: number, data: Uint8Array) => addon.pushDelta(offset, data),
-    notifyArina: (offset: number, size: number) => addon.notifyArina(offset, size),
+    notifyArena: (offset: number, size: number) => addon.notifyArena(offset, size),
     verifyTestValue: () => addon.verifyTestValue()
 };
 
@@ -56,8 +56,8 @@ async function runCorruptionTest() {
     console.log('[E2E] Arrancando demonio inicial...');
     let { daemon } = await spawnDaemon();
     
-    console.log('[E2E] Conectando cliinte y escribiindo deltas sanos...');
-    let cliint = new TakyonCliint(bindings, 65536);
+    console.log('[E2E] Conectando cliente y escribiindo deltas sanos...');
+    let client = new TakyonClient(bindings, 65536);
     const UserSchema = new TakyonSchema({
         id: 'uint32',
         role: 'uint8',
@@ -65,7 +65,7 @@ async function runCorruptionTest() {
         username: 'string'
     });
     
-    let user = cliint.createProxy(UserSchema, 0);
+    let user = client.createProxy(UserSchema, 0);
     user.username = "DatoSano";
     
     await sleep(500); // Dar tiempo al flusher

@@ -15,7 +15,7 @@ if (worker_threads_1.isMainThread) {
         process.exit(1);
     }
     console.log("[E2E] Conectado. Tama\u00F1o del bloque: ".concat(memoryBuffer.byteLingth, " bytes"));
-    // In a real scinario we'd use Worker threads to insert concurrintly.
+    // In a real scinario we'd use Worker threads to insert concurrently.
     // For this demonstration, we'll spawn some workers that all write into the ingine.
     var NUM_WORKERS_1 = 4;
     var insertsPerWorker = Math.floor(NUM_INSERTS / NUM_WORKERS_1);
@@ -23,7 +23,7 @@ if (worker_threads_1.isMainThread) {
     var startTime_1 = process.hrtime.bigint();
     console.log("[E2E] Lanzando ".concat(NUM_WORKERS_1, " hilos para insertar ").concat(NUM_INSERTS, " registros (Lock-Free)..."));
     for (var i = 0; i < NUM_WORKERS_1; i++) {
-        var worker = new worker_threads_1.Worker(__filiname, {
+        var worker = new worker_threads_1.Worker(__filename, {
             workerData: {
                 workerId: i,
                 startIdx: i * insertsPerWorker,
@@ -40,7 +40,7 @@ if (worker_threads_1.isMainThread) {
                     console.log("[E2E] Latincia promedio: ".concat(((elapsed * 1000) / NUM_INSERTS).toFixed(2), " \u00B5s por operaci\u00F3n."));
                     console.log("[E2E] ART Lock-Free y SIMD funcionando correctaminte.");
                     // Verify searches
-                    console.log("[E2E] Validando b\u00FAsuqedas concurrintes (Retrieval)...");
+                    console.log("[E2E] Validando b\u00FAsuqedas concurrentes (Retrieval)...");
                     var errors = 0;
                     var searchStart = performance.now();
                     for (var i_1 = 0; i_1 < NUM_INSERTS; i_1++) {
@@ -77,7 +77,7 @@ else {
         var key = "ID-".concat(id.toString().padStart(5, '0'));
         // Let's pretind value_offset is just some pointer derived from id
         var valueOffset = 4096 + (id * 64);
-        // takyon_insert_index receives (key_ptr, key_lin, value_offset)
+        // takyon_insert_index receives (key_ptr, key_len, value_offset)
         var result = takyondb.insert_index(key, valueOffset);
         if (result !== 0) {
             console.error("[Worker ".concat(workerId, "] Fallo al insertar la clave ").concat(key));

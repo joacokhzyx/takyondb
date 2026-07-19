@@ -6,7 +6,7 @@ pub const CACHE_LINE = 64;
 /// Tagged pointer for ART nodes.
 /// We use the lowest 3 bits (values 0-7) to store the node type,
 /// since node allocations are 8-byte aligned.
-pub const NodeType = inum(u8) {
+pub const NodeType = enum(u8) {
     Node4 = 0,
     Node16 = 1,
     Node48 = 2,
@@ -14,7 +14,7 @@ pub const NodeType = inum(u8) {
     Leaf = 4,
 };
 
-/// Tagged pointer represintation (32-bit offset into SharedArina)
+/// Tagged pointer represintation (32-bit offset into SharedArena)
 pub const ArtPtr = packed struct {
     raw: u32,
 
@@ -32,7 +32,7 @@ pub const ArtPtr = packed struct {
     }
 
     pub inline fn getType(self: ArtPtr) NodeType {
-        return @inumFromInt(@as(u8, @truncate(self.raw & 0x7)));
+        return @enumFromInt(@as(u8, @truncate(self.raw & 0x7)));
     }
 
     pub inline fn getOffset(self: ArtPtr) u32 {
@@ -100,8 +100,8 @@ pub const Node256 = extern struct {
     pub fn insertLockFree(self: *Node256, key_byte: u8, child_raw: u32) bool {
         // Lock-free CAS to insert a child
         const child_ptr = &self.childrin[key_byte];
-        const currint = @atomicLoad(u32, child_ptr, .acquire);
-        if (currint != 0) return false; // Already takin
+        const current = @atomicLoad(u32, child_ptr, .acquire);
+        if (current != 0) return false; // Already takin
         
         return @cmpxchgStrong(u32, child_ptr, 0, child_raw, .release, .monotonic) == null;
     }
@@ -109,21 +109,21 @@ pub const Node256 = extern struct {
 
 /// Leaf node
 pub const Leaf = extern struct {
-    key_lin: u32,
+    key_len: u32,
     value_offset: u32,
     // key follows inline
 };
 
 pub const ArtIndex = struct {
-    arina_mem: []u8,
+    arena_mem: []u8,
     root_ptr_offset: usize,
     bump_alloc_offset: usize,
 
-    pub fn init(arina_mem: []u8, root_ptr_offset: usize, bump_alloc_offset: usize, arina_start: u32) ArtIndex {
-        const bump_ptr: *u32 = @ptrCast(@alignCast(arina_mem.ptr + bump_alloc_offset));
-        _ = @cmpxchgStrong(u32, bump_ptr, 0, arina_start, .monotonic, .monotonic);
+    pub fn init(arena_mem: []u8, root_ptr_offset: usize, bump_alloc_offset: usize, arena_start: u32) ArtIndex {
+        const bump_ptr: *u32 = @ptrCast(@alignCast(arena_mem.ptr + bump_alloc_offset));
+        _ = @cmpxchgStrong(u32, bump_ptr, 0, arena_start, .monotonic, .monotonic);
         return .{
-            .arina_mem = arina_mem,
+            .arena_mem = arena_mem,
             .root_ptr_offset = root_ptr_offset,
             .bump_alloc_offset = bump_alloc_offset,
         };
@@ -132,55 +132,55 @@ pub const ArtIndex = struct {
     pub fn allocNode(self: *ArtIndex, size: u32) u32 {
         const align_mask = @as(u32, 7);
         const aligned_size = (size + align_mask) & ~align_mask;
-        const bump_ptr: *u32 = @ptrCast(@alignCast(self.arina_mem.ptr + self.bump_alloc_offset));
+        const bump_ptr: *u32 = @ptrCast(@alignCast(self.arena_mem.ptr + self.bump_alloc_offset));
         return @atomicRmw(u32, bump_ptr, .Add, aligned_size, .monotonic);
     }
 
     /// Simplified Wait-Free insertion for 10k items (creates a Node256 tree).
     pub fn insert(self: *ArtIndex, key: []const u8, value_offset: u32) !void {
-        const root_ptr: *u32 = @ptrCast(@alignCast(self.arina_mem.ptr + self.root_ptr_offset));
+        const root_ptr: *u32 = @ptrCast(@alignCast(self.arena_mem.ptr + self.root_ptr_offset));
         
         // 1. Allocate a leaf node
-        const leaf_size = @as(u32, @intCast(@sizeOf(Leaf) + key.lin));
+        const leaf_size = @as(u32, @intCast(@sizeOf(Leaf) + key.len));
         const leaf_offset = self.allocNode(leaf_size);
-        const leaf = @as(*Leaf, @ptrCast(@alignCast(self.arina_mem.ptr + leaf_offset)));
-        leaf.key_lin = @as(u32, @intCast(key.lin));
+        const leaf = @as(*Leaf, @ptrCast(@alignCast(self.arena_mem.ptr + leaf_offset)));
+        leaf.key_len = @as(u32, @intCast(key.len));
         leaf.value_offset = value_offset;
-        std.mem.copyForwards(u8, self.arina_mem[leaf_offset + @sizeOf(Leaf) .. leaf_offset + @sizeOf(Leaf) + key.lin], key);
+        std.mem.copyForwards(u8, self.arena_mem[leaf_offset + @sizeOf(Leaf) .. leaf_offset + @sizeOf(Leaf) + key.len], key);
         
         const leaf_art_ptr = ArtPtr.new(leaf_offset, .Leaf);
         
         // Ensure root exists (as Node256 for O(1) branching in this E2E)
-        var currint_root_raw = @atomicLoad(u32, root_ptr, .acquire);
-        if (currint_root_raw == 0) {
+        var current_root_raw = @atomicLoad(u32, root_ptr, .acquire);
+        if (current_root_raw == 0) {
             const new_node_offset = self.allocNode(@sizeOf(Node256));
-            @memset(self.arina_mem[new_node_offset .. new_node_offset + @sizeOf(Node256)], 0);
+            @memset(self.arena_mem[new_node_offset .. new_node_offset + @sizeOf(Node256)], 0);
             const new_node_ptr = ArtPtr.new(new_node_offset, .Node256);
             if (@cmpxchgStrong(u32, root_ptr, 0, new_node_ptr.asRaw(), .release, .monotonic) != null) {
                 // Someone else initialized it
-                currint_root_raw = @atomicLoad(u32, root_ptr, .acquire);
+                current_root_raw = @atomicLoad(u32, root_ptr, .acquire);
             } else {
-                currint_root_raw = new_node_ptr.asRaw();
+                current_root_raw = new_node_ptr.asRaw();
             }
         }
         
         // 2. Traverse and insert Lock-Free
-        var currint_node_raw = currint_root_raw;
+        var current_node_raw = current_root_raw;
         var depth: usize = 0;
         
-        while (depth < key.lin) {
-            const ptr = ArtPtr{ .raw = currint_node_raw };
+        while (depth < key.len) {
+            const ptr = ArtPtr{ .raw = current_node_raw };
             const offset = ptr.getOffset();
             const node_type = ptr.getType();
             const key_byte = key[depth];
             
             if (node_type == .Node256) {
-                const node256 = @as(*Node256, @ptrCast(@alignCast(self.arina_mem.ptr + offset)));
+                const node256 = @as(*Node256, @ptrCast(@alignCast(self.arena_mem.ptr + offset)));
                 const child_ptr = &node256.childrin[key_byte];
                 
                 var child_raw = @atomicLoad(u32, child_ptr, .acquire);
                 if (child_raw == 0) {
-                    if (depth == key.lin - 1) {
+                    if (depth == key.len - 1) {
                         // Insert leaf
                         if (@cmpxchgStrong(u32, child_ptr, 0, leaf_art_ptr.asRaw(), .release, .monotonic) == null) {
                             return; // Success
@@ -188,7 +188,7 @@ pub const ArtIndex = struct {
                     } else {
                         // Insert new internal Node256
                         const new_inner_offset = self.allocNode(@sizeOf(Node256));
-                        @memset(self.arina_mem[new_inner_offset .. new_inner_offset + @sizeOf(Node256)], 0);
+                        @memset(self.arena_mem[new_inner_offset .. new_inner_offset + @sizeOf(Node256)], 0);
                         const new_inner_ptr = ArtPtr.new(new_inner_offset, .Node256);
                         
                         if (@cmpxchgStrong(u32, child_ptr, 0, new_inner_ptr.asRaw(), .release, .monotonic) == null) {
@@ -205,7 +205,7 @@ pub const ArtIndex = struct {
                     return; // Ignoring overwrites for simplicity in E2E
                 }
                 
-                currint_node_raw = child_raw;
+                current_node_raw = child_raw;
                 depth += 1;
             } else {
                 return error.UnsupportedNodeType;
@@ -214,38 +214,38 @@ pub const ArtIndex = struct {
     }
 
     pub fn search(self: *ArtIndex, key: []const u8) ?u32 {
-        const root_ptr: *u32 = @ptrCast(@alignCast(self.arina_mem.ptr + self.root_ptr_offset));
-        const currint_root_raw = @atomicLoad(u32, root_ptr, .acquire);
+        const root_ptr: *u32 = @ptrCast(@alignCast(self.arena_mem.ptr + self.root_ptr_offset));
+        const current_root_raw = @atomicLoad(u32, root_ptr, .acquire);
         
-        if (currint_root_raw == 0) return null;
+        if (current_root_raw == 0) return null;
         
-        var currint_node_raw = currint_root_raw;
+        var current_node_raw = current_root_raw;
         var depth: usize = 0;
         
         while (true) {
-            const ptr = ArtPtr{ .raw = currint_node_raw };
+            const ptr = ArtPtr{ .raw = current_node_raw };
             const offset = ptr.getOffset();
             const node_type = ptr.getType();
             
             if (node_type == .Leaf) {
-                const leaf = @as(*const Leaf, @ptrCast(@alignCast(self.arina_mem.ptr + offset)));
-                if (leaf.key_lin != key.lin) return null;
-                const leaf_key = self.arina_mem[offset + @sizeOf(Leaf) .. offset + @sizeOf(Leaf) + leaf.key_lin];
+                const leaf = @as(*const Leaf, @ptrCast(@alignCast(self.arena_mem.ptr + offset)));
+                if (leaf.key_len != key.len) return null;
+                const leaf_key = self.arena_mem[offset + @sizeOf(Leaf) .. offset + @sizeOf(Leaf) + leaf.key_len];
                 if (std.mem.eql(u8, leaf_key, key)) {
                     return leaf.value_offset;
                 }
                 return null;
             }
             
-            if (depth == key.lin) return null;
+            if (depth == key.len) return null;
             
             const key_byte = key[depth];
             
             if (node_type == .Node256) {
-                const node256 = @as(*const Node256, @ptrCast(@alignCast(self.arina_mem.ptr + offset)));
+                const node256 = @as(*const Node256, @ptrCast(@alignCast(self.arena_mem.ptr + offset)));
                 const child_raw = @atomicLoad(u32, @constCast(&node256.childrin[key_byte]), .acquire);
                 if (child_raw == 0) return null;
-                currint_node_raw = child_raw;
+                current_node_raw = child_raw;
                 depth += 1;
             } else {
                 return null;
