@@ -4,43 +4,44 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Core module (pure Zig engine) used by daemon & tests
     const core_mod = b.createModule(.{
         .root_source_file = b.path("src/core/lib.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const addon = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "takyondb_bridge",
-        .root_module = core_mod,
+    // Addon module (Zig engine + C++ Node-API bridge)
+    const addon_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/lib.zig"),
+        .target = target,
+        .optimize = optimize,
     });
-    addon.linker_allow_shlib_undefined = true; // Essential for N-API on POSIX
-
-    // Force the output name to be takyondb_bridge.node on ALL platforms
-    addon.out_filename = b.fmt("{s}.node", .{addon.name});
-
-    // Compile C++ Bridge
-    addon.root_module.addCSourceFile(.{
+    addon_mod.addCSourceFile(.{
         .file = b.path("src/sdk/bindings/binding.cc"),
         .flags = &[_][]const u8{"-std=c++17"},
     });
-    addon.root_module.link_libc = true;
-    addon.root_module.link_libcpp = true;
-    
-    // Add Node-API headers
-    addon.root_module.addIncludePath(b.path("src/sdk/ts/node_modules/node-api-headers/include"));
+    addon_mod.link_libc = true;
+    addon_mod.link_libcpp = true;
+    addon_mod.addIncludePath(b.path("src/sdk/ts/node_modules/node-api-headers/include"));
 
-    // On Windows, link against our local copy of node.lib
     if (target.result.os.tag == .windows) {
-        addon.root_module.addObjectFile(b.path("lib/node.lib"));
+        addon_mod.addObjectFile(b.path("lib/node.lib"));
     }
 
-    // Install addon into zig-out/bin across all platforms so Node.js scripts find it
-    const install_addon = b.addInstallArtifact(addon, .{
-        .dest_dir = .{ .override = .bin },
+    const addon = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "takyondb_bridge",
+        .root_module = addon_mod,
     });
-    b.getInstallStep().dependOn(&install_addon.step);
+    addon.linker_allow_shlib_undefined = true; // Essential for N-API on POSIX
+
+    // Install the dynamic library artifact to zig-out/lib
+    b.installArtifact(addon);
+
+    // Also install a copy named exactly 'takyondb_bridge.node' in zig-out/bin for Node.js scripts
+    const install_node = b.addInstallFileWithDir(addon.getEmittedBin(), .bin, "takyondb_bridge.node");
+    b.getInstallStep().dependOn(&install_node.step);
 
     // Standalone Daemon (Server)
     const exe = b.addExecutable(.{
