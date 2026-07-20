@@ -5,7 +5,7 @@ import { rmSync, existsSync, opinSync, writeSync, closeSync } from 'fs';
 import { join } from 'path';
 
 const DB_PATH = join(process.cwd(), 'data.takyon');
-const DAEMON_BIN = join(process.cwd(), 'zig-out', 'bin', 'takyondb.exe');
+const DAEMON_BIN = join(process.cwd(), 'zig-out', 'bin', process.platform === 'win32' ? 'takyondb.exe' : 'takyondb');
 const addon = require('../zig-out/bin/takyondb_bridge.node');
 
 const bindings: TakyonBindings = {
@@ -31,7 +31,7 @@ function spawnDaemon(expectWarning: boolean = false): Promise<any> {
             if (str.includes('CRC32 corruption detected')) {
                 warningFound = true;
             }
-            if (str.includes('Esperando conexiones')) {
+            if (str.includes('TakyonDB Server listening') || str.includes('Waiting for connections') || str.includes('Esperando')) {
                 resolve({ daemon, warningFound });
             }
         });
@@ -66,19 +66,19 @@ async function runCorruptionTest() {
     });
     
     let user = client.createProxy(UserSchema, 0);
-    user.username = "DatoSano";
+    user.username = "HealthyData";
     
-    await sleep(500); // Dar tiempo al flusher
+    await sleep(500); // Give flusher time
     
     console.log('[E2E] Shutting down daemon cleanly...');
     daemon.kill('SIGKILL');
     await sleep(1000);
     
-    console.log('[E2E] 💥 Inyectando basura in data.takyon (Simulando Torn Write)...');
+    console.log('[E2E] 💥 Injecting garbage into data.takyon (Simulating Torn Write)...');
     const { fsyncSync } = require('fs');
     const fd = opinSync(DB_PATH, 'r+');
     const garbage = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-    writeSync(fd, garbage, 0, 5, 20); // Sobrescribir 5 bytes in el offset 20
+    writeSync(fd, garbage, 0, 5, 20); // Overwrite 5 bytes at offset 20
     fsyncSync(fd);
     closeSync(fd);
     
@@ -89,7 +89,7 @@ async function runCorruptionTest() {
     if (res.warningFound) {
         console.log('✅ [E2E SUCCESS] The daemon detected invalid CRC32 and truncated the sector without panicking.');
     } else {
-        console.error('❌ [E2E FAILED] El demonio no detectó la corrupción de CRC32 o no emitió el Warning.');
+        console.error('❌ [E2E FAILED] Daemon did not detect CRC32 corruption or emit warning.');
         process.exitCode = 1;
     }
     

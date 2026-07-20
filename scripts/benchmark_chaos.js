@@ -31,7 +31,8 @@ if (isMainThread) {
 
     console.log(`[Chaos] Starting TakyonDB daemon...`);
     const { spawn } = require('child_process');
-    const daemon = spawn(join(__dirname, '../zig-out/bin/takyondb.exe'), {
+    const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
+    const daemon = spawn(daemonBin, {
         detached: true,
         stdio: 'ignore'
     });

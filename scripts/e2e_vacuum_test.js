@@ -19,20 +19,20 @@ async function run() {
 
     console.log(`[E2E Vacuum] Starting TakyonDB daemon in background...`);
     const { spawn } = require('child_process');
-    const daemon = spawn(join(__dirname, '../zig-out/bin/takyondb.exe'), {
+    const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
+    const daemon = spawn(daemonBin, {
         detached: true,
         stdio: 'ignore'
     });
     daemon.unref();
 
-    // Esperar un poco a que el demonio cree la memoria compartida
+    // Wait for daemon to initialize shared memory
     await new Promise(r => setTimeout(r, 1000));
 
     console.log(`[E2E Vacuum] Initializing 64KB shared memory...`);
-    // Note: The TakyonDB daemon should be running with 64KB, but we just init it here
     const memoryBuffer = takyondb.initSharedMemory(64 * 1024);
     if (!memoryBuffer) {
-        console.error("Fallo al conectar");
+        console.error("Failed to connect to shared memory");
         process.exit(1);
     }
     console.log("[E2E Vacuum] Init done.");
@@ -94,9 +94,9 @@ async function run() {
     
     let iterations = 0;
     for (let i = 0; i < 20000; i++) {
-        const success = setUsername(`Gineración_X_${i}`);
+        const success = setUsername(`Generation_X_${i}`);
         if (!success) {
-            console.error(`[E2E Vacuum] CRASH! Out of memory in la iteración ${i}. El Vacuum no está compactando a tiempo.`);
+            console.error(`[E2E Vacuum] CRASH! Out of memory at iteration ${i}. Vacuum is not compacting fast enough.`);
             process.exit(1);
         }
         iterations++;
@@ -110,14 +110,14 @@ async function run() {
 
     const atomicArr = new Uint32Array(memoryBuffer, 32768, 1);
     const bumpValue = Atomics.load(atomicArr, 0);
-    console.log(`[E2E Vacuum] Currint Bump Pointer size: ${bumpValue} bytes (within 64KB limit).`);
+    console.log(`[E2E Vacuum] Current Bump Pointer size: ${bumpValue} bytes (within 64KB limit).`);
 
     const searchStart = performance.now();
     const finalValue = getUsername();
     const searchEnd = performance.now();
 
-    if (finalValue !== `Gineración_X_19999`) {
-        console.error(`[E2E Vacuum] VALOR INCORRECTO. Se esperaba 'Gineración_X_19999', se obtuvo '${finalValue}'`);
+    if (finalValue !== `Generation_X_19999`) {
+        console.error(`[E2E Vacuum] INCORRECT VALUE. Expected 'Generation_X_19999', got '${finalValue}'`);
         process.exit(1);
     }
 

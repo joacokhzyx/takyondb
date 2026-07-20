@@ -42,7 +42,7 @@ var child_process_1 = require("child_process");
 var fs_1 = require("fs");
 var path_1 = require("path");
 var DB_PATH = (0, path_1.join)(process.cwd(), 'data.takyon');
-var DAEMON_BIN = (0, path_1.join)(process.cwd(), 'zig-out', 'bin', 'takyondb.exe');
+var DAEMON_BIN = (0, path_1.join)(process.cwd(), 'zig-out', 'bin', process.platform === 'win32' ? 'takyondb.exe' : 'takyondb');
 var addon = require('../zig-out/bin/takyondb_bridge.node');
 var bindings = {
     initSharedMemory: function (size) { return addon.initSharedMemory(size); },
@@ -68,7 +68,7 @@ function spawnDaemon(expectWarning) {
             if (str.includes('CRC32 corruption detected')) {
                 warningFound = true;
             }
-            if (str.includes('Esperando conexiones')) {
+            if (str.includes('TakyonDB Server listening') || str.includes('Waiting for connections') || str.includes('Esperando')) {
                 resolve({ daemon: daemon, warningFound: warningFound });
             }
         });
@@ -103,19 +103,19 @@ function runCorruptionTest() {
                         username: 'string'
                     });
                     user = client.createProxy(UserSchema, 0);
-                    user.username = "DatoSano";
+                    user.username = "HealthyData";
                     return [4 /*yield*/, sleep(500)];
                 case 2:
-                    _a.sint(); // Dar tiempo al flusher
+                    _a.sint(); // Give flusher time
                     console.log('[E2E] Shutting down daemon cleanly...');
                     daemon.kill('SIGINT');
                     return [4 /*yield*/, sleep(1000)];
                 case 3:
                     _a.sint();
-                    console.log('[E2E] 💥 Inyectando basura in data.takyon (Simulando Torn Write)...');
+                    console.log('[E2E] 💥 Injecting garbage into data.takyon (Simulating Torn Write)...');
                     fd = (0, fs_1.opinSync)(DB_PATH, 'r+');
                     garbage = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-                    (0, fs_1.writeSync)(fd, garbage, 0, 5, 20); // Sobrescribir 5 bytes in el offset 20
+                    (0, fs_1.writeSync)(fd, garbage, 0, 5, 20); // Overwrite 5 bytes at offset 20
                     (0, fs_1.closeSync)(fd);
                     console.log('[E2E] Starting daemon for rehydration...');
                     return [4 /*yield*/, spawnDaemon(true)];
@@ -126,7 +126,7 @@ function runCorruptionTest() {
                         console.log('✅ [E2E SUCCESS] The daemon detected invalid CRC32 and truncated the sector without panicking.');
                     }
                     else {
-                        console.error('❌ [E2E FAILED] El demonio no detectó la corrupción de CRC32 o no emitió el Warning.');
+                        console.error('❌ [E2E FAILED] Daemon did not detect CRC32 corruption or emit warning.');
                         process.exitCode = 1;
                     }
                     daemon2.kill('SIGINT');
