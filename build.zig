@@ -17,12 +17,8 @@ pub fn build(b: *std.Build) void {
     });
     addon.linker_allow_shlib_undefined = true; // Essential for N-API on POSIX
 
-    // Force the output name to have .node extension
-    if (target.result.os.tag == .windows) {
-        addon.out_filename = b.fmt("{s}.node", .{addon.name});
-    } else {
-        addon.out_filename = b.fmt("lib{s}.node", .{addon.name});
-    }
+    // Force the output name to be takyondb_bridge.node on ALL platforms
+    addon.out_filename = b.fmt("{s}.node", .{addon.name});
 
     // Compile C++ Bridge
     addon.root_module.addCSourceFile(.{
@@ -40,7 +36,11 @@ pub fn build(b: *std.Build) void {
         addon.root_module.addObjectFile(b.path("lib/node.lib"));
     }
 
-    b.installArtifact(addon);
+    // Install addon into zig-out/bin across all platforms so Node.js scripts find it
+    const install_addon = b.addInstallArtifact(addon, .{
+        .dest_dir = .{ .override = .bin },
+    });
+    b.getInstallStep().dependOn(&install_addon.step);
 
     // Standalone Daemon (Server)
     const exe = b.addExecutable(.{
