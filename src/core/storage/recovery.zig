@@ -33,13 +33,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
             snap_fd = handle;
         }
     } else {
-        // std.c.open flag type differs by platform in Zig master:
-        //   Linux: takes c_int flags  |  macOS: takes std.c.O (packed struct)
-        // O_RDONLY=0 universally; O_DIRECT (0o40000) is Linux-only.
-        const raw_fd = if (comptime builtin.os.tag == .linux)
-            std.c.open(snap_path.ptr, @as(c_int, 0o40000), @as(c_uint, 0o644))
+        const flags = if (comptime builtin.os.tag == .linux)
+            std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true }
         else
-            std.c.open(snap_path.ptr, std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0o644));
+            std.posix.O{ .ACCMODE = .RDONLY };
+        const raw_fd = std.c.open(snap_path.ptr, flags, @as(c_uint, 0o644));
         snap_fd = if (raw_fd < 0) null else @as(std.posix.fd_t, raw_fd);
     }
 
@@ -141,11 +139,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         }
         fd = handle;
     } else {
-        // posix.open / posix.opin not available on macOS in Zig master — use std.c directly.
-        const raw_fd = if (comptime builtin.os.tag == .linux)
-            std.c.open(path.ptr, @as(c_int, 0o40000), @as(c_uint, 0o644)) // O_RDONLY|O_DIRECT
+        const flags = if (comptime builtin.os.tag == .linux)
+            std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true }
         else
-            std.c.open(path.ptr, std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0o644));
+            std.posix.O{ .ACCMODE = .RDONLY };
+        const raw_fd = std.c.open(path.ptr, flags, @as(c_uint, 0o644));
         if (raw_fd < 0) {
             return finalize(arena_mem, max_allocated); // No WAL file exists
         }

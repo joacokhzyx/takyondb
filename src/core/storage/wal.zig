@@ -68,12 +68,11 @@ pub const WalManager = struct {
                 .sector_pos = 0,
             };
         } else {
-            // posix.opin not available on macOS in Zig master — use std.c.open with comptime platform branch.
-            // RDWR|CREAT|APPEND = 0o2|0o100|0o2000. O_DIRECT = 0o40000 (Linux-only).
-            const raw_fd = if (comptime builtin.os.tag == .linux)
-                std.c.open(path.ptr, @as(c_int, 0o2 | 0o100 | 0o2000 | 0o40000), @as(c_uint, 0o644))
+            const flags = if (comptime builtin.os.tag == .linux)
+                std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true, .DIRECT = true }
             else
-                std.c.open(path.ptr, std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true }, @as(c_uint, 0o644));
+                std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true };
+            const raw_fd = std.c.open(path.ptr, flags, @as(c_uint, 0o644));
             if (raw_fd < 0) return error.OpenFailed;
             const fd = @as(std.posix.fd_t, raw_fd);
             return WalManager{

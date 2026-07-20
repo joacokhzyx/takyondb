@@ -49,12 +49,11 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         }
         fd = handle;
     } else {
-        // posix.opin not available on macOS in Zig master — use std.c.open with comptime platform branch.
-        // WRONLY|CREAT|TRUNC = 0o1|0o100|0o1000 on Linux. O_DIRECT = 0o40000 (Linux-only).
-        const raw_fd = if (comptime builtin.os.tag == .linux)
-            std.c.open(snap_path.ptr, @as(c_int, 0o1 | 0o100 | 0o1000 | 0o40000), @as(c_uint, 0o644))
+        const flags = if (comptime builtin.os.tag == .linux)
+            std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .DIRECT = true }
         else
-            std.c.open(snap_path.ptr, std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o644));
+            std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true };
+        const raw_fd = std.c.open(snap_path.ptr, flags, @as(c_uint, 0o644));
         if (raw_fd < 0) return error.FileCreateError;
         fd = @as(std.posix.fd_t, raw_fd);
     }
@@ -131,10 +130,11 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         );
         wal.fd = handle;
     } else {
-        const raw_fd = if (comptime builtin.os.tag == .linux)
-            std.c.open("data.takyon", @as(c_int, 0o2 | 0o100 | 0o1000 | 0o2000 | 0o40000), @as(c_uint, 0o644))
+        const flags = if (comptime builtin.os.tag == .linux)
+            std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .APPEND = true, .DIRECT = true }
         else
-            std.c.open("data.takyon", std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .APPEND = true }, @as(c_uint, 0o644));
+            std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .APPEND = true };
+        const raw_fd = std.c.open("data.takyon", flags, @as(c_uint, 0o644));
         if (raw_fd < 0) return error.FileCreateError;
         wal.fd = @as(std.posix.fd_t, raw_fd);
     }

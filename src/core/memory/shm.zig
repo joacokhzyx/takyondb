@@ -108,17 +108,10 @@ pub const SharedArena = struct {
                 }
             }
             
-            // std.c.mmap: PROT type is macho.vm_prot_t (packed struct u32) on Darwin, c_int (i32) on Linux.
-            // MAP type is c_int (i32) on Linux.
-            const prot_val: std.c.PROT = if (comptime builtin.os.tag.isDarwin())
-                @bitCast(@as(u32, 1 | 2))
-            else
-                @as(c_int, 1 | 2);
-
-            const map_val: std.c.MAP = if (comptime builtin.os.tag.isDarwin())
-                @bitCast(@as(u32, 1))
-            else
-                @as(c_int, 1);
+            // std.c.mmap: In Zig master, std.c.PROT and std.c.MAP are packed struct(u32) on all POSIX platforms.
+            // Using @bitCast from u32 integer values (PROT_READ|PROT_WRITE=3, MAP_SHARED=1) works universally.
+            const prot_val = @as(std.c.PROT, @bitCast(@as(u32, 1 | 2)));
+            const map_val  = @as(std.c.MAP,  @bitCast(@as(u32, 1)));
 
             const raw_ptr = std.c.mmap(null, size, prot_val, map_val, fd, @as(i64, 0));
             if (@intFromPtr(raw_ptr) == std.math.maxInt(usize)) return error.MapFailed;
