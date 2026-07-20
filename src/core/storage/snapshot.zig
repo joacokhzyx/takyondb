@@ -58,8 +58,14 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         if (raw_fd < 0) return error.FileCreateError;
         fd = @as(std.posix.fd_t, raw_fd);
     }
+    const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
+        std.hash.crc.Crc32
+    else if (@hasDecl(std.hash.crc, "Crc32Ieee"))
+        std.hash.crc.Crc32Ieee
+    else
+        std.hash.Crc32;
 
-    var hasher = std.hash.crc.Crc32.init();
+    var hasher = Crc32.init();
 
     var offset: usize = 0;
     while (offset < active_lin) {

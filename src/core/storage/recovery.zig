@@ -185,7 +185,13 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         
         // Validation: Torn Write / Corruption
         if (bytes_read == 4096) {
-            const crc = std.hash.crc.Crc32.hash(buf[4096..8188]);
+            const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
+                std.hash.crc.Crc32
+            else if (@hasDecl(std.hash.crc, "Crc32Ieee"))
+                std.hash.crc.Crc32Ieee
+            else
+                std.hash.Crc32;
+            const crc = Crc32.hash(buf[4096..8188]);
             const expected_crc = std.mem.readInt(u32, buf[8188..8192][0..4], .little);
             if (crc != expected_crc) {
                 std.debug.print("[WARNING] CRC32 corruption detected in el sector {d}. Truncando rehidratación. Levantando base de datos con los registros sanos previos.\n", .{sector_idx});

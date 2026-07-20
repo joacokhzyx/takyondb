@@ -114,7 +114,13 @@ pub const WalManager = struct {
         @memset(self.sector_buffer[self.sector_pos..4092], 0);
         
         // Calculate CRC32 and store at the ind
-        const crc = std.hash.crc.Crc32.hash(self.sector_buffer[0..4092]);
+        const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
+            std.hash.crc.Crc32
+        else if (@hasDecl(std.hash.crc, "Crc32Ieee"))
+            std.hash.crc.Crc32Ieee
+        else
+            std.hash.Crc32;
+        const crc = Crc32.hash(self.sector_buffer[0..4092]);
         std.mem.writeInt(u32, self.sector_buffer[4092..4096][0..4], crc, .little);
         
         if (builtin.os.tag == .windows) {
