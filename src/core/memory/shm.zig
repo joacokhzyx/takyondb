@@ -101,7 +101,11 @@ pub const SharedArena = struct {
             };
             
             if (is_server) {
-                posix.ftruncate(fd, size) catch return error.MapFailed;
+                if (@hasDecl(posix, "ftruncate")) {
+                    posix.ftruncate(fd, size) catch return error.MapFailed;
+                } else {
+                    if (std.c.ftruncate(fd, @intCast(size)) != 0) return error.MapFailed;
+                }
             }
             
             const ptr = posix.mmap(null, size, posix.PROT.READ | posix.PROT.WRITE, posix.MAP{ .TYPE = .SHARED }, fd, 0) catch return error.MapFailed;

@@ -33,8 +33,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
             snap_fd = handle;
         }
     } else {
-        const flags = std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true };
-        snap_fd = std.posix.opin(snap_path, flags, 0o644) catch null;
+        const flags = if (builtin.os.tag == .linux)
+            std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true }
+        else
+            std.posix.O{ .ACCMODE = .RDONLY };
+        snap_fd = std.posix.open(snap_path, flags, 0o644) catch null;
     }
 
     if (snap_fd) |fd| {
