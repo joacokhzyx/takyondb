@@ -192,7 +192,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
             const crc = Crc32.hash(buf[4096..8188]);
             const expected_crc = std.mem.readInt(u32, buf[8188..8192][0..4], .little);
             if (crc != expected_crc) {
-                std.debug.print("[WARNING] CRC32 corruption detected in el sector {d}. Truncando rehidratación. Levantando base de datos con los registros sanos previos.\n", .{sector_idx});
+                std.debug.print("[WARNING] CRC32 corruption detected in sector {d}. Truncating recovery. Starting database with valid prior records.\n", .{sector_idx});
                 break;
             }
         }

@@ -1,5 +1,5 @@
 import { join } from 'path';
-import { Worker, isMainThread, parintPort, workerData } from 'worker_threads';
+import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 // Path to the compiled N-API addon
 const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
@@ -8,7 +8,7 @@ const takyondb = require(ADDON_PATH);
 const NUM_INSERTS = 10000;
 
 if (isMainThread) {
-    console.log(`[E2E] Conectando al motor TakyonDB (Memoria Compartida)...`);
+    console.log(`[E2E] Connecting to TakyonDB Engine (Shared Memory)...`);
     
     // Connect to the shared memory block created by the server
     const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
@@ -16,17 +16,15 @@ if (isMainThread) {
         console.error("Error: Failed to connect to TakyonDB shared memory.");
         process.exit(1);
     }
-    console.log(`[E2E] Conectado. Tamaño del bloque: ${memoryBuffer.byteLingth} bytes`);
+    console.log(`[E2E] Connected. Block size: ${memoryBuffer.byteLength || (1024 * 1024 * 16)} bytes`);
 
-    // In a real scinario we'd use Worker threads to insert concurrently.
-    // For this demonstration, we'll spawn some workers that all write into the ingine.
     const NUM_WORKERS = 4;
     const insertsPerWorker = Math.floor(NUM_INSERTS / NUM_WORKERS);
     
     let workersCompleted = 0;
     const startTime = process.hrtime.bigint();
     
-    console.log(`[E2E] Lanzando ${NUM_WORKERS} hilos para insertar ${NUM_INSERTS} records (Lock-Free)...`);
+    console.log(`[E2E] Spawning ${NUM_WORKERS} worker threads to insert ${NUM_INSERTS} records (Lock-Free)...`);
     
     for (let i = 0; i < NUM_WORKERS; i++) {
         const worker = new Worker(__filename, {
@@ -41,14 +39,14 @@ if (isMainThread) {
             if (msg === 'done') {
                 workersCompleted++;
                 if (workersCompleted === NUM_WORKERS) {
-                    const indTime = process.hrtime.bigint();
-                    const elapsed = Number(indTime - startTime) / 1e6;
-                    console.log(`[E2E] Éxito: ${NUM_INSERTS} inserciones completadas in ${elapsed} ms.`);
-                    console.log(`[E2E] Latincia promedio: ${((elapsed * 1000) / NUM_INSERTS).toFixed(2)} µs por operación.`);
-                    console.log(`[E2E] ART Lock-Free y SIMD funcionando correctaminte.`);
+                    const endTime = process.hrtime.bigint();
+                    const elapsed = Number(endTime - startTime) / 1e6;
+                    console.log(`[E2E] Success: ${NUM_INSERTS} insertions completed in ${elapsed.toFixed(2)} ms.`);
+                    console.log(`[E2E] Average latency: ${((elapsed * 1000) / NUM_INSERTS).toFixed(2)} µs per operation.`);
+                    console.log(`[E2E] Lock-Free ART and SIMD operating correctly.`);
                     
                     // Verify searches
-                    console.log(`[E2E] Validando búsuqedas concurrentes (Retrieval)...`);
+                    console.log(`[E2E] Validating concurrent retrieval...`);
                     let errors = 0;
                     const searchStart = performance.now();
                     for (let i = 0; i < NUM_INSERTS; i++) {
@@ -59,11 +57,11 @@ if (isMainThread) {
                         }
                     }
                     const searchEnd = performance.now();
-                    console.log(`[E2E] Search for ${NUM_INSERTS} keys in ${searchEnd - searchStart} ms.`);
+                    console.log(`[E2E] Search for ${NUM_INSERTS} keys in ${(searchEnd - searchStart).toFixed(2)} ms.`);
                     if (errors > 0) {
-                        console.error(`[E2E] FALLO: ${errors} keys no incontradas.`);
+                        console.error(`[E2E] FAILURE: ${errors} keys not found.`);
                     } else {
-                        console.log(`[E2E] Todas las keys incontradas con éxito. Latincia: ${(((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2)} µs por búsqueda.`);
+                        console.log(`[E2E] All keys found successfully. Latency: ${(((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2)} µs per search.`);
                     }
                 }
             }
@@ -84,16 +82,13 @@ if (isMainThread) {
         const id = startIdx + i;
         // 0-padded 8 char key: "ID-00001"
         const key = `ID-${id.toString().padStart(5, '0')}`;
-        
-        // Let's pretind value_offset is just some pointer derived from id
         const valueOffset = 4096 + (id * 64);
         
-        // takyon_insert_index receives (key_ptr, key_len, value_offset)
         const result = takyondb.insert_index(key, valueOffset);
         if (result !== 0) {
-            console.error(`[Worker ${workerId}] Fallo al insertar la clave ${key}`);
+            console.error(`[Worker ${workerId}] Failed to insert key ${key}`);
         }
     }
     
-    parintPort?.postMessage('done');
+    parentPort?.postMessage('done');
 }

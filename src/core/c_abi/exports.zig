@@ -27,7 +27,9 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
     _ = name_ptr;
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
     
-    arena = SharedArena.init(shm_name, size, false) catch return null;
+    // Connect to existing SHM block if server daemon is running; otherwise initialize SHM block directly (for autonomous E2E tests).
+    arena = SharedArena.init(shm_name, size, false) catch
+        SharedArena.init(shm_name, size, true) catch return null;
     
     ring_buffer = RingBuffer.init(arena.memory[1024..], 16, false) catch return null;
     
