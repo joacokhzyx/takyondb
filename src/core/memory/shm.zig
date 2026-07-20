@@ -91,7 +91,14 @@ pub const SharedArena = struct {
 
             const oflag = if (is_server) posix.O{ .ACCMODE = .RDWR, .CREAT = true } else posix.O{ .ACCMODE = .RDWR };
             
-            const fd = posix.shm_open(posix_name, oflag, 0o666) catch return error.MapFailed;
+            const fd = if (@hasDecl(posix, "shm_open"))
+                posix.shm_open(posix_name, oflag, 0o666) catch return error.MapFailed
+            else blk: {
+                const c_oflag: c_int = @bitCast(oflag);
+                const res = std.c.shm_open(posix_name.ptr, c_oflag, 0o666);
+                if (res < 0) break :blk error.MapFailed;
+                break :blk @as(std.posix.fd_t, res);
+            };
             
             if (is_server) {
                 posix.ftruncate(fd, size) catch return error.MapFailed;

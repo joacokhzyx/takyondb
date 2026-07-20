@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) !void {
         _ = std.os.windows.kernel32.SetConsoleCtrlHandler(windowsCtrlCHandler, std.os.windows.TRUE);
     } else {
         std.posix.sigaction(std.posix.SIG.INT, &std.posix.Sigaction{
-            .handler = .{ .handler = handleSigInt },
+            .handler = .{ .handler = @ptrCast(&handleSigInt) },
             .mask = std.posix.empty_sigset,
             .flags = 0,
         }, null);
