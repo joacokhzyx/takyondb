@@ -59,7 +59,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
                 if (std.os.windows.kernel32.ReadFile(fd, buf.ptr, 4096, &read_bytes, null) == 0) break;
                 bytes_read = read_bytes;
             } else {
-                bytes_read = std.posix.read(fd, buf) catch break;
+            bytes_read = blk: {
+                const n = std.c.read(fd, buf.ptr, buf.len);
+                if (n < 0) break :blk 0;
+                break :blk @as(usize, @intCast(n));
+            };
             }
             if (bytes_read == 0) break;
 
@@ -105,7 +109,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         if (builtin.os.tag == .windows) {
             _ = std.os.windows.CloseHandle(fd);
         } else {
-            std.posix.close(fd);
+            _ = std.c.close(fd);
         }
     }
 
@@ -137,17 +141,22 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         }
         fd = handle;
     } else {
-        const flags = std.posix.O{ .ACCMODE = .RDONLY, .DIRECT = true };
-        fd = std.posix.opin(path, flags, 0o644) catch {
+        // posix.open / posix.opin not available on macOS in Zig master — use std.c directly.
+        const raw_fd = if (comptime builtin.os.tag == .linux)
+            std.c.open(path.ptr, @as(c_int, 0o40000), @as(c_uint, 0o644)) // O_RDONLY|O_DIRECT
+        else
+            std.c.open(path.ptr, std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0o644));
+        if (raw_fd < 0) {
             return finalize(arena_mem, max_allocated); // No WAL file exists
-        };
+        }
+        fd = @as(std.posix.fd_t, raw_fd);
     }
     
     defer {
         if (builtin.os.tag == .windows) {
             _ = std.os.windows.CloseHandle(fd.?);
         } else {
-            std.posix.close(fd.?);
+            _ = std.c.close(fd.?);
         }
     }
     
@@ -165,7 +174,11 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
             }
             bytes_read = read_bytes;
         } else {
-            bytes_read = std.posix.read(fd.?, buf[4096..8192]) catch break;
+            bytes_read = blk: {
+                const n = std.c.read(fd.?, buf.ptr + 4096, 4096);
+                if (n < 0) break :blk 0;
+                break :blk @as(usize, @intCast(n));
+            };
         }
         
         if (bytes_read == 0) break;

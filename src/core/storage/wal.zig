@@ -68,8 +68,14 @@ pub const WalManager = struct {
                 .sector_pos = 0,
             };
         } else {
-            const flags = std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true, .DIRECT = true };
-            const fd = try std.posix.opin(path, flags, 0o644);
+            // posix.opin not available on macOS in Zig master — use std.c.open with comptime platform branch.
+            // RDWR|CREAT|APPEND = 0o2|0o100|0o2000. O_DIRECT = 0o40000 (Linux-only).
+            const raw_fd = if (comptime builtin.os.tag == .linux)
+                std.c.open(path.ptr, @as(c_int, 0o2 | 0o100 | 0o2000 | 0o40000), @as(c_uint, 0o644))
+            else
+                std.c.open(path.ptr, std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .APPEND = true }, @as(c_uint, 0o644));
+            if (raw_fd < 0) return error.OpenFailed;
+            const fd = @as(std.posix.fd_t, raw_fd);
             return WalManager{
                 .fd = fd,
                 .running = std.atomic.Value(bool).init(true),
@@ -97,7 +103,7 @@ pub const WalManager = struct {
         if (builtin.os.tag == .windows) {
             _ = std.os.windows.CloseHandle(self.fd);
         } else {
-            std.posix.close(self.fd);
+            _ = std.c.close(self.fd);
         }
     }
     
@@ -118,7 +124,8 @@ pub const WalManager = struct {
                 return error.WriteFailed;
             }
         } else {
-            _ = try std.posix.write(self.fd, self.sector_buffer[0..4096]);
+            const n = std.c.write(self.fd, self.sector_buffer.ptr, 4096);
+            if (n < 0) return error.WriteFailed;
         }
         self.sector_pos = 0;
     }

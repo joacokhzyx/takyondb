@@ -110,12 +110,12 @@ pub const SharedArena = struct {
             
             // std.c.mmap: PROT type is macho.vm_prot_t (packed struct u32) on Darwin, c_int (i32) on Linux.
             // MAP type is c_int (i32) on Linux.
-            const prot_val: std.c.PROT = if (comptime builtin.target.isDarwin())
+            const prot_val: std.c.PROT = if (comptime builtin.os.tag.isDarwin())
                 @bitCast(@as(u32, 1 | 2))
             else
                 @as(c_int, 1 | 2);
 
-            const map_val: std.c.MAP = if (comptime builtin.target.isDarwin())
+            const map_val: std.c.MAP = if (comptime builtin.os.tag.isDarwin())
                 @bitCast(@as(u32, 1))
             else
                 @as(c_int, 1);
