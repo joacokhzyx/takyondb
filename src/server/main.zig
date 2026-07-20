@@ -14,7 +14,7 @@ const WalManager = core.wal.WalManager;
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
 
-fn handleSigInt(sig: c_int) callconv(.C) void {
+fn handleSigInt(sig: c_int) callconv(.c) void {
     _ = sig;
     std.debug.print("\n[TakyonDB-Daemon] SIGINT signal received. Shutting down server...\n", .{});
     server_running.store(false, .release);

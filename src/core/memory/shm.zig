@@ -83,10 +83,11 @@ pub const SharedArena = struct {
             const posix = std.posix;
             
             var name_buf: [256]u8 = undefined;
-            const posix_name = if (name[0] != '/')
-                std.fmt.bufPrintZ(&name_buf, "/{s}", .{name}) catch return error.SystemResources
+            const slice = if (name[0] != '/')
+                std.fmt.bufPrint(&name_buf, "/{s}\x00", .{name}) catch return error.SystemResources
             else
-                std.fmt.bufPrintZ(&name_buf, "{s}", .{name}) catch return error.SystemResources;
+                std.fmt.bufPrint(&name_buf, "{s}\x00", .{name}) catch return error.SystemResources;
+            const posix_name: [:0]const u8 = slice[0 .. slice.len - 1 :0];
 
             const oflag = if (is_server) posix.O{ .ACCMODE = .RDWR, .CREAT = true } else posix.O{ .ACCMODE = .RDWR };
             
