@@ -96,7 +96,7 @@ pub const SharedArena = struct {
             else blk: {
                 const c_oflag: c_int = @bitCast(oflag);
                 const res = std.c.shm_open(posix_name.ptr, c_oflag, @as(c_uint, 0o666));
-                if (res < 0) break :blk error.MapFailed;
+                if (res < 0) return error.MapFailed;
                 break :blk @as(std.posix.fd_t, res);
             };
             
@@ -104,7 +104,7 @@ pub const SharedArena = struct {
                 if (@hasDecl(posix, "ftruncate")) {
                     posix.ftruncate(fd, size) catch return error.MapFailed;
                 } else {
-                    if (std.c.ftruncate(fd, @intCast(size)) != 0) return error.MapFailed;
+                    if (std.c.ftruncate(@as(c_int, @intCast(fd)), @as(i64, @intCast(size))) != 0) return error.MapFailed;
                 }
             }
             
