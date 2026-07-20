@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     // Addon module (Zig engine + C++ Node-API bridge)
@@ -16,6 +17,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/core/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
     addon_mod.addCSourceFile(.{
         .file = b.path("src/sdk/bindings/binding.cc"),
@@ -50,6 +52,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/server/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     exe.root_module.addImport("core", core_mod);
@@ -61,6 +64,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/core/test.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     const run_core_tests = b.addRunArtifact(core_tests);
