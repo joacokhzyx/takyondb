@@ -15,7 +15,7 @@ pub const DeltaMessage = struct {
     offset: u32,
     size: u32,
     is_arena: u8,
-    pad: [7]u8 = [_]u8{0} ** 7,
+    pad: [7]u8 = [7]u8{ 0, 0, 0, 0, 0, 0, 0 },
     data: [48]u8, // Fixed size, padding struct to exactly 64 bytes total
 };
 

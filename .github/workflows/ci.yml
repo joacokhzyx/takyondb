@@ -31,15 +31,13 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
 
+    - name: Install SDK Node Dependencies
+      run: |
+        cd src/sdk/ts
+        npm ci
+
     - name: Build Zig Core (ReleaseSafe)
       run: zig build -Doptimize=ReleaseSafe
-
-    - name: Install Node Dependencies
-      run: npm install
-      # Assuming package.json is at the root and configures node-gyp
-
-    - name: Build C++ N-API Bridge
-      run: npm run build:bridge || node-gyp rebuild
 
     - name: Run E2E Zero-Copy Test
       run: node scripts/e2e_zerocopy_test.js
