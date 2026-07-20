@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         std.posix.sigaction(std.posix.SIG.INT, &std.posix.Sigaction{
             .handler = .{ .handler = @ptrCast(&handleSigInt) },
-            .mask = std.posix.empty_sigset,
+            .mask = std.mem.zeroes(std.posix.sigset_t),
             .flags = 0,
         }, null);
     }
