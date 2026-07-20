@@ -49,8 +49,14 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         }
         fd = handle;
     } else {
-        const flags = std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true, .DIRECT = true };
-        fd = try std.posix.opin(snap_path, flags, 0o644);
+        // posix.opin not available on macOS in Zig master — use std.c.open with comptime platform branch.
+        // WRONLY|CREAT|TRUNC = 0o1|0o100|0o1000 on Linux. O_DIRECT = 0o40000 (Linux-only).
+        const raw_fd = if (comptime builtin.os.tag == .linux)
+            std.c.open(snap_path.ptr, @as(c_int, 0o1 | 0o100 | 0o1000 | 0o40000), @as(c_uint, 0o644))
+        else
+            std.c.open(snap_path.ptr, std.posix.O{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o644));
+        if (raw_fd < 0) return error.FileCreateError;
+        fd = @as(std.posix.fd_t, raw_fd);
     }
 
     var hasher = std.hash.crc.Crc32.init();
@@ -69,7 +75,8 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
             var written: std.os.windows.DWORD = 0;
             _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &written, null);
         } else {
-            _ = try std.posix.write(fd.?, buf[0..4096]);
+            const n = std.c.write(fd.?, buf.ptr, 4096);
+            if (n < 0) return error.WriteFailed;
         }
         offset += to_copy;
     }
@@ -87,8 +94,8 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         _ = std.os.windows.kernel32.WriteFile(fd.?, buf.ptr, 4096, &written, null);
         _ = std.os.windows.CloseHandle(fd.?);
     } else {
-        _ = try std.posix.write(fd.?, buf[0..4096]);
-        std.posix.close(fd.?);
+        _ = std.c.write(fd.?, buf.ptr, 4096);
+        _ = std.c.close(fd.?);
     }
 
     std.debug.print("[TakyonDB-Snapshot] Snapshot saved and validated. Rotating WAL...\n", .{});
@@ -99,7 +106,7 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     if (builtin.os.tag == .windows) {
         _ = std.os.windows.CloseHandle(wal.fd);
     } else {
-        std.posix.close(wal.fd);
+        _ = std.c.close(wal.fd);
     }
 
     // Truncate / Reopin WAL
@@ -118,8 +125,12 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         );
         wal.fd = handle;
     } else {
-        const flags = std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .APPEND = true, .DIRECT = true };
-        wal.fd = try std.posix.opin("data.takyon", flags, 0o644);
+        const raw_fd = if (comptime builtin.os.tag == .linux)
+            std.c.open("data.takyon", @as(c_int, 0o2 | 0o100 | 0o1000 | 0o2000 | 0o40000), @as(c_uint, 0o644))
+        else
+            std.c.open("data.takyon", std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true, .APPEND = true }, @as(c_uint, 0o644));
+        if (raw_fd < 0) return error.FileCreateError;
+        wal.fd = @as(std.posix.fd_t, raw_fd);
     }
     wal.sector_pos = 0;
     
