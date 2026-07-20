@@ -108,9 +108,11 @@ pub const SharedArena = struct {
                 }
             }
             
-            const ptr = posix.mmap(null, size, posix.PROT.READ | posix.PROT.WRITE, posix.MAP{ .TYPE = .SHARED }, fd, 0) catch return error.MapFailed;
-            
-            mem = @as([*]u8, @ptrCast(ptr.ptr))[0..size];
+            // Use std.c.mmap directly: PROT_READ=1, PROT_WRITE=2, MAP_SHARED=1 are universal POSIX constants.
+            // posix.PROT and posix.MAP have different struct layouts on Linux vs macOS in Zig master.
+            const raw_ptr = std.c.mmap(null, size, @as(c_int, 3), @as(c_int, 1), fd, @as(i64, 0));
+            if (@intFromPtr(raw_ptr) == std.math.maxInt(usize)) return error.MapFailed;
+            mem = @as([*]u8, @ptrCast(@alignCast(raw_ptr)))[0..size];
         }
 
         return SharedArena{

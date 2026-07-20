@@ -33,10 +33,13 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
             snap_fd = handle;
         }
     } else {
-        // Use std.c.open directly — std.posix.open is not available on all targets in Zig master.
-        // O_RDONLY = 0 on all POSIX platforms. O_DIRECT (0x4000 / 0o40000) is Linux-only.
-        const c_flags: c_int = if (builtin.os.tag == .linux) 0o40000 else 0; // O_DIRECT | O_RDONLY
-        const raw_fd = std.c.open(snap_path.ptr, c_flags, @as(c_uint, 0o644));
+        // std.c.open flag type differs by platform in Zig master:
+        //   Linux: takes c_int flags  |  macOS: takes std.c.O (packed struct)
+        // O_RDONLY=0 universally; O_DIRECT (0o40000) is Linux-only.
+        const raw_fd = if (comptime builtin.os.tag == .linux)
+            std.c.open(snap_path.ptr, @as(c_int, 0o40000), @as(c_uint, 0o644))
+        else
+            std.c.open(snap_path.ptr, std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0o644));
         snap_fd = if (raw_fd < 0) null else @as(std.posix.fd_t, raw_fd);
     }
 
