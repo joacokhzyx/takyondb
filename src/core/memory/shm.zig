@@ -108,9 +108,19 @@ pub const SharedArena = struct {
                 }
             }
             
-            // Use std.c.mmap directly: PROT_READ=1, PROT_WRITE=2, MAP_SHARED=1 are universal POSIX constants.
-            // posix.PROT and posix.MAP have different struct layouts on Linux vs macOS in Zig master.
-            const raw_ptr = std.c.mmap(null, size, @as(c_int, 3), @as(c_int, 1), fd, @as(i64, 0));
+            // std.c.mmap: PROT type is macho.vm_prot_t (packed struct u32) on Darwin, c_int (i32) on Linux.
+            // MAP type is c_int (i32) on Linux.
+            const prot_val: std.c.PROT = if (comptime builtin.target.isDarwin())
+                @bitCast(@as(u32, 1 | 2))
+            else
+                @as(c_int, 1 | 2);
+
+            const map_val: std.c.MAP = if (comptime builtin.target.isDarwin())
+                @bitCast(@as(u32, 1))
+            else
+                @as(c_int, 1);
+
+            const raw_ptr = std.c.mmap(null, size, prot_val, map_val, fd, @as(i64, 0));
             if (@intFromPtr(raw_ptr) == std.math.maxInt(usize)) return error.MapFailed;
             mem = @as([*]u8, @ptrCast(@alignCast(raw_ptr)))[0..size];
         }
