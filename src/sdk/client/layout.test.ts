@@ -25,4 +25,21 @@ describe('shared layout', () => {
         expect(layout.MAX_KEY_LEN).toBe(256);
         expect(layout.RING_DEFAULT_CAPACITY).toBeGreaterThanOrEqual(1024);
     });
+
+    it('mirrors ART offsets and arena magic from layout.zig', () => {
+        expect(layout.ART_BUMP_OFFSET).toBe(layout.ART_ROOT_OFFSET + 4);
+        expect(layout.ART_START).toBe(layout.ART_ROOT_OFFSET + 8);
+        expect(layout.ARENA_MAGIC).toBe(0x54414b59);
+    });
+
+    it('computes ring and arena sizes like layout.zig', () => {
+        expect(layout.ringBytes(16)).toBe(192 + 16 * 64);
+        expect(layout.ringBytes(4096)).toBe(192 + 4096 * layout.DELTA_SIZE);
+        expect(layout.minArenaForCapacity(16)).toBe(
+            layout.RING_OFFSET + layout.ringBytes(16) + 1024
+        );
+        expect(layout.minArenaForCapacity(4096)).toBe(
+            layout.RING_OFFSET + layout.ringBytes(4096) + 1024
+        );
+    });
 });
