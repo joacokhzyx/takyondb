@@ -34,13 +34,16 @@ pub const WalManager = struct {
     /// Raw backing allocation for sector_buffer (freed on shutdown).
     backing: []u8,
     allocator: std.mem.Allocator,
-    /// Borrowed path used to reopen the file (daemon/test literals).
-    path: [:0]const u8,
+    /// Owned path copy (dupeZ on init, freed on shutdown) used to reopen
+    /// the file (daemon/test literals are borrowed by callers).
+    path: [:0]u8,
     /// False once Direct I/O proved unsupported (tmpfs, etc.).
     direct: bool,
 
     /// Initializes the WAL engine targeting a specific file.
     pub fn init(allocator: std.mem.Allocator, path: [:0]const u8) !WalManager {
+        const owned: [:0]u8 = try allocator.dupeZ(u8, path);
+        errdefer allocator.free(owned);
         const raw = try allocator.alloc(u8, 8192);
         errdefer allocator.free(raw);
         const addr = @intFromPtr(raw.ptr);
@@ -48,7 +51,7 @@ pub const WalManager = struct {
         const sector_buffer = @as([*]u8, @ptrFromInt(aligned_addr))[0..4096];
         if (builtin.os.tag == .windows) {
             var path_w: [256]u16 = undefined;
-            const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, path);
+            const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, owned);
             path_w[utf16_len] = 0;
             const access_mask = @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0xC0000000))); // GENERIC_READ | GENERIC_WRITE
             const share_mode: u32 = 1; // FILE_SHARE_READ
@@ -83,11 +86,11 @@ pub const WalManager = struct {
                 .sector_pos = 0,
                 .backing = raw,
                 .allocator = allocator,
-                .path = path,
+                .path = owned,
                 .direct = true,
             };
         } else {
-            const fd = try openAppend(path, true);
+            const fd = try openAppend(owned, true);
             return WalManager{
                 .fd = fd,
                 .running = std.atomic.Value(bool).init(true),
@@ -96,7 +99,7 @@ pub const WalManager = struct {
                 .sector_pos = 0,
                 .backing = raw,
                 .allocator = allocator,
-                .path = path,
+                .path = owned,
                 .direct = true,
             };
         }
@@ -155,6 +158,12 @@ pub const WalManager = struct {
         self.allocator.free(self.backing);
         self.backing = &.{};
         self.sector_buffer = &.{};
+        // Free the owned path copy (dupeZ on init). Reset to an empty
+        // sentinel so a second shutdown does not double-free caller memory.
+        if (self.path.len > 0) {
+            self.allocator.free(self.path);
+        }
+        self.path = @constCast(@as([:0]const u8, ""));
     }
 
     fn syncFile(self: *WalManager) void {
