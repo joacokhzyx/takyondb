@@ -9,6 +9,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const layout = @import("../memory/layout.zig");
 const WalEntryHeader = @import("wal.zig").WalEntryHeader;
+/// Unified entry limit (wal.zig owns the value); replay stops the entry
+/// scan on lengths above it as corrupt.
+const MAX_ENTRY_LEN = @import("wal.zig").MAX_ENTRY_LEN;
+/// Segment index cap shared with wal.zig rotation/cleanup.
+const MAX_SEGMENTS = @import("wal.zig").MAX_SEGMENTS;
 
 // Coordinate with the layout-v2 agent: these WILL exist in layout.zig.
 // Fallbacks use identical values so this file compiles in parallel.
@@ -252,13 +257,54 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
     };
 }
 
-/// Replays WAL entries onto the arena. Stops at the first corrupt sector
-/// or entry; everything before it is valid by CRC.
+/// Formats `<base>.NNNNNN` (zero-padded 6 digits, sentinel-terminated)
+/// into `out`. Mirrors wal.zig's private formatter (kept local so replay
+/// never depends on WAL writer internals).
+fn formatSegmentPathZ(out: *[4096]u8, base: []const u8, n: u32) ![:0]u8 {
+    if (out.len < base.len + 8) return error.NoSpace;
+    @memcpy(out[0..base.len], base);
+    out[base.len] = '.';
+    var v = n;
+    var i: usize = 6;
+    while (i > 0) : (i -= 1) {
+        out[base.len + i] = @as(u8, @intCast(v % 10)) + '0';
+        v /= 10;
+    }
+    out[base.len + 7] = 0;
+    return out[0 .. base.len + 7 :0];
+}
+
+/// Multi-segment replay: replays the live `path` first, then
+/// `path.000000`, `path.000001`, ... in order while files exist (stops at
+/// the first missing N; capped at MAX_SEGMENTS). Each segment replays with
+/// identical CRC/stop rules via replayOneSegment; the rec/art/str maxima
+/// accumulate across all segments.
+fn replayWal(
+    allocator: std.mem.Allocator,
+    path: [:0]const u8,
+    arena_mem: []u8,
+    rec_max: *u32,
+    art_max: *u32,
+    str_max: *u32,
+) void {
+    replayOneSegment(allocator, path, arena_mem, rec_max, art_max, str_max);
+    var n: u32 = 0;
+    while (n < MAX_SEGMENTS) : (n += 1) {
+        var sbuf: [4096]u8 = undefined;
+        const seg = formatSegmentPathZ(&sbuf, path[0..path.len], n) catch break;
+        const probe = openExisting(seg) orelse break; // stop at first missing N
+        closeFd(probe);
+        replayOneSegment(allocator, seg, arena_mem, rec_max, art_max, str_max);
+    }
+}
+
+/// Replays one WAL file's entries onto the arena. Stops at the first
+/// corrupt sector or entry; everything before it is valid by CRC.
 /// Tracks THREE maxima by offset range:
 ///   < ART_ROOT_OFFSET     -> record max
 ///   < STRING_ARENA_START  -> ART max
 ///   else                  -> STRING max
-fn replayWal(
+fn replayOneSegment(
     allocator: std.mem.Allocator,
     path: [:0]const u8,
     arena_mem: []u8,
@@ -318,7 +364,7 @@ fn replayWal(
                 stop_reading = true;
                 break;
             }
-            if (header.length > 16384) break; // Corrupt length; stop.
+            if (@as(u32, header.length) > MAX_ENTRY_LEN) break; // Corrupt length; stop.
 
             if (available < @sizeOf(WalEntryHeader) + header.length) {
                 break; // Need more bytes for payload next read
@@ -380,4 +426,70 @@ fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32) void {
     }
 
     std.debug.print("[TakyonDB-Bootloader] Isomorphic recovery completed. Bumps rec={} art={} str={}.\n", .{ rec_max, art_max, str_max });
+}
+
+test "WAL multi-sector entry round-trip (5000B payload)" {
+    const WalManager = @import("wal.zig").WalManager;
+    const WalHeader = @import("wal.zig").WalEntryHeader;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/roundtrip.takyon", .{dirpath});
+
+    // 6-byte header + 5000B payload = 5006B > 4092B sector payload,
+    // so the entry always spans two sectors on disk.
+    const payload_off: u32 = 8000;
+    const payload_len: usize = 5000;
+    const arena_size: usize = 16384;
+
+    var payload: [5000]u8 = undefined;
+    for (&payload, 0..) |*b, i| b.* = @as(u8, @intCast((i * 31 + 7) % 251));
+
+    var wal = try WalManager.init(allocator, path);
+    const header = WalHeader{ .offset = payload_off, .length = @as(u16, @intCast(payload_len)) };
+    try wal.writeToBuffer(std.mem.asBytes(&header));
+    try wal.writeToBuffer(&payload);
+    try wal.flushBuffer();
+    wal.shutdown();
+
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+    try recoverWal(allocator, path, arena);
+    try std.testing.expectEqualSlices(u8, &payload, arena[payload_off .. payload_off + payload_len]);
+}
+
+test "WAL framing fuzz never fails fatally (256 random files)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/fuzz.takyon", .{dirpath});
+
+    var prng = std.Random.DefaultPrng.init(0x12345678);
+    const rnd = prng.random();
+
+    const arena_size: usize = 65536;
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+
+    var raw: [9000]u8 = undefined;
+    var i: usize = 0;
+    while (i < 256) : (i += 1) {
+        const size = rnd.intRangeAtMost(usize, 0, 9000);
+        rnd.bytes(raw[0..size]);
+        try tmp.dir.writeFile(.{ .sub_path = "fuzz.takyon", .data = raw[0..size] });
+        @memset(arena, 0);
+        // Arbitrary bytes must never fail fatally: the parser stops at the
+        // first bad CRC/length and returns with whatever prefix was valid
+        // (possibly an empty arena).
+        try recoverWal(allocator, path, arena);
+    }
 }
