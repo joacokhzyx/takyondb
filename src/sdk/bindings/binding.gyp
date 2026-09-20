@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "takyondb_bridge",
-      "sources": [ "bridge.cpp" ],
+      "sources": [ "binding.cc" ],
       "conditions": [
         ['OS=="win"', {
           "libraries": [

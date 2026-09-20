@@ -1,7 +1,7 @@
 import { TakyonSchema } from '../src/sdk/client/schema';
 import { TakyonClient, TakyonBindings } from '../src/sdk/client/proxy';
 import { spawn } from 'child_process';
-import { rmSync, existsSync, opinSync, writeSync, closeSync } from 'fs';
+import { rmSync, existsSync, openSync, writeSync, closeSync } from 'fs';
 import { join } from 'path';
 
 const DB_PATH = join(process.cwd(), 'data.takyon');
@@ -12,7 +12,11 @@ const bindings: TakyonBindings = {
     initSharedMemory: (size: number) => addon.initSharedMemory(size),
     pushDelta: (offset: number, data: Uint8Array) => addon.pushDelta(offset, data),
     notifyArena: (offset: number, size: number) => addon.notifyArena(offset, size),
-    verifyTestValue: () => addon.verifyTestValue()
+    verifyTestValue: () => addon.verifyTestValue(),
+    insert_index: (key: string, value_offset: number) => addon.insert_index(key, value_offset),
+    search_index: (key: string) => addon.search_index(key),
+    trigger_checkpoint: () => addon.trigger_checkpoint(),
+    start_vacuum: (string_offset: number) => addon.start_vacuum(string_offset),
 };
 
 async function sleep(ms: number) {
@@ -76,7 +80,7 @@ async function runCorruptionTest() {
     
     console.log('[E2E] 💥 Injecting garbage into data.takyon (Simulating Torn Write)...');
     const { fsyncSync } = require('fs');
-    const fd = opinSync(DB_PATH, 'r+');
+    const fd = openSync(DB_PATH, 'r+');
     const garbage = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     writeSync(fd, garbage, 0, 5, 20); // Overwrite 5 bytes at offset 20
     fsyncSync(fd);

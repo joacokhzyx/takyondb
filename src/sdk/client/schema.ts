@@ -3,7 +3,7 @@
  * File: schema.ts
  * Description: Schema definition and static memory offset calculation.
  * Author/Maintainer: TakyonDB Team
- * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: MIT. See LICENSE for details.
  * ============================================================================
  */
 
@@ -24,6 +24,9 @@ export class TakyonSchema<T extends Record<string, FieldType>> {
     public readonly totalSize: number;
 
     constructor(schemaDef: T) {
+        if (schemaDef == null || typeof schemaDef !== 'object' || Object.keys(schemaDef).length === 0) {
+            throw new Error("schema definition must be a non-empty object");
+        }
         let currentOffset = 0;
         const compiledFields: Partial<Record<keyof T, FieldDefinition>> = {};
 
@@ -33,6 +36,7 @@ export class TakyonSchema<T extends Record<string, FieldType>> {
             else if (type === 'uint32') size = 4;
             else if (type === 'float64') size = 8;
             else if (type === 'string') size = 8;
+            else throw new Error(`unknown field type '${type}' for '${key}'`);
             
             compiledFields[key as keyof T] = {
                 type,
