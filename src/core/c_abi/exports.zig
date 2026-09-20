@@ -20,11 +20,15 @@ var arena: SharedArena = undefined;
 var arena_ready: bool = false;
 var art_index: art.ArtIndex = undefined;
 
-// Base-address -> owned arena registry backing takyon_disconnect_shm.
-// Lets the N-API finalizer (and explicit closes) unmap + close instead of
-// leaking an fd/handle per connect.
-var shm_mappings = std.AutoHashMap(usize, SharedArena).init(std.heap.page_allocator);
-var shm_mappings_mutex = std.Thread.Mutex{};
+// The engine owns exactly ONE process-wide SHM mapping. Every connect with
+// a matching size shares it (refcounted); the mapping is released only by
+// an explicit takyon_disconnect_shm(). This is deliberate: V8 may garbage
+// collect any individual ArrayBuffer at any time, so GC-driven unmapping
+// would pull live memory out from under concurrent workers (use-after-
+// unmap, silently failing calls, and reused address ranges aliasing as
+// corrupt index nodes). The N-API finalizer is therefore a no-op.
+var engine_mutex = std.Thread.Mutex{};
+var engine_refs: usize = 0;
 
 /// Initializes the TakyonDB engine context.
 export fn takyon_init() callconv(.c) i32 {
@@ -35,6 +39,19 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
     _ = name_ptr;
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
 
+    engine_mutex.lock();
+    defer engine_mutex.unlock();
+
+    if (arena_ready) {
+        // Engine already mapped: share it. Sizes must agree; a second size
+        // would need multi-tenant segments (future work), so fail loudly.
+        if (arena.memory.len != size) return null;
+        engine_refs += 1;
+        ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, false) catch return null;
+        art_index = art.ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+        return arena.memory.ptr;
+    }
+
     // Connect to existing SHM block if server daemon is running; otherwise initialize SHM block directly (for autonomous E2E tests).
     // Track whether we created the segment so the ring header is initialized exactly once.
     var created: bool = false;
@@ -43,11 +60,20 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
         break :blk SharedArena.init(shm_name, size, true) catch return null;
     };
     arena_ready = true;
+    engine_refs = 1;
 
-    if (arena.memory.len < layout.RING_OFFSET) return null;
+    if (arena.memory.len < layout.RING_OFFSET) {
+        var owned = arena;
+        owned.close();
+        arena_ready = false;
+        engine_refs = 0;
+        return null;
+    }
     ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, created) catch {
         var owned = arena;
         owned.close();
+        arena_ready = false;
+        engine_refs = 0;
         return null;
     };
     ring_ready = true;
@@ -57,32 +83,24 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
 
     // Initialize Vacuum thread implicitly here? No, start it explicitly.
 
-    shm_mappings_mutex.lock();
-    shm_mappings.put(@intFromPtr(arena.memory.ptr), arena) catch {};
-    shm_mappings_mutex.unlock();
-
     return arena.memory.ptr;
 }
 
-/// Unmaps a segment previously returned by takyon_connect_shm and closes
-/// its OS handle. Safe to call with null or unknown pointers (no-op).
-/// Called by the N-API ArrayBuffer finalizer; explicit closes welcome.
-export fn takyon_disconnect_shm(base: ?*anyopaque) callconv(.c) void {
-    const ptr = base orelse return;
-    const addr = @intFromPtr(ptr);
-    shm_mappings_mutex.lock();
-    const owned = shm_mappings.fetchRemove(addr);
-    shm_mappings_mutex.unlock();
-    if (owned) |kv| {
-        var mapping = kv.value;
-        mapping.close();
-        if (@intFromPtr(arena.memory.ptr) == addr) {
-            arena.memory = &[0]u8{};
-            arena.handle = null;
-            arena_ready = false;
-            ring_ready = false;
-        }
-    }
+/// Explicit full teardown of the process-wide engine mapping: unmaps the
+/// segment, closes its OS handle and invalidates engine state. Safe to
+/// call when disconnected (no-op). Call only when no thread will touch
+/// the engine afterwards (end of process/tests).
+export fn takyon_disconnect_shm() callconv(.c) void {
+    engine_mutex.lock();
+    defer engine_mutex.unlock();
+    if (!arena_ready) return;
+    engine_refs = 0;
+    var owned = arena;
+    owned.close();
+    arena.memory = &[0]u8{};
+    arena.handle = null;
+    arena_ready = false;
+    ring_ready = false;
 }
 
 export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
@@ -131,7 +149,8 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
     if (!ring_ready or !arena_ready) return -1;
     // Delta payload is a fixed 48B inline buffer. Anything larger belongs in
     // the string arena and must go through takyon_notify_arena.
-    if (size > 48) return -1;
+    // size==0 is rejected: WAL uses header.length==0 as end-of-log sentinel.
+    if (size == 0 or size > 48) return -1;
     if (@as(usize, offset) + @as(usize, size) > arena.memory.len) return -1;
 
     var delta = DeltaMessage{
@@ -155,6 +174,8 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
 
 export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
     if (!ring_ready or !arena_ready) return -1;
+    // size==0 is rejected: WAL uses header.length==0 as end-of-log sentinel.
+    if (size == 0) return -1;
     if (@as(usize, offset) + @as(usize, size) > arena.memory.len) return -1;
 
     const delta = DeltaMessage{
