@@ -12,8 +12,8 @@ This style guide establishes strict formatting, naming conventions, and document
 *   **Structs, Unions, Enums, & Types:** `PascalCase`
 *   **Constants & Comptime variables:** `ALL_CAPS` or `camelCase` depending on usage context, but `snake_case` or `PascalCase` for types is preferred.
 
-### TypeScript (`src/sdk/ts/`)
-*   **Files:** `kebab-case.ts` (or `PascalCase.ts` for classes)
+### TypeScript (`src/sdk/`)
+*   **Files:** `snake_case.ts` (actual tree: `client/proxy.ts`, `client/schema.ts`, `client/layout.ts`, `takyon.ts`, `index.ts`)
 *   **Variables, Fields, & Functions:** `camelCase`
 *   **Classes, Interfaces, & Enums:** `PascalCase`
 *   **Constants:** `UPPER_SNAKE_CASE`

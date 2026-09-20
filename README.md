@@ -28,12 +28,12 @@ Instead of serializing and deserializing JSON over TCP sockets (like Redis or Me
 
 ## 🏗 Architecture
 
-TakyonDB maps a single chunk of memory (`SharedArena`) containing:
-1. **IPC RingBuffer (`0 - 128 KB`)**: Lock-free queue where Node.js pushes mutations.
-2. **Record Arena (`1 MB - 2 MB`)**: Packed fixed-length columns (like tabular data).
-3. **ART Index (`2 MB - 10 MB`)**: Tagged pointers and SIMD-optimized nodes for lightning-fast queries.
-4. **Strings Arena (`10 MB - 64 MB`)**: A bump-allocator for variable-length UTF-8 strings.
-5. **Inactive Bank**: Reserved double-buffering space for the asynchronous Vacuum thread.
+TakyonDB maps a single chunk of memory (`SharedArena`, minimum 64MB) containing:
+1. **IPC RingBuffer (`1024 + 256 KB`)**: Lock-free queue (192B header + 4096 x 64B slots by default) where Node.js pushes mutations.
+2. **Record Arena (`4096 - 2 MB`)**: Bump-allocated fixed-length rows, growing from `RECORD_START` up to `ART_ROOT_OFFSET`.
+3. **ART Index (`2 MB +`)**: Full `Node4 → 16 → 48 → 256` radix tree with tagged pointers rooted at `2 MB`.
+4. **Strings Arena (`10 MB +`)**: A bump-allocator for variable-length UTF-8 strings (bump word at `10 MB`, data from `10 MB + 4`).
+5. **Vacuum banks**: The string region is split in halves for double-buffered compaction by the background Vacuum thread.
 
 <div align="center">
   <em>(See <code>docs/architecture/</code> for deeper technical dives)</em>
