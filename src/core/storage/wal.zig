@@ -2,7 +2,7 @@
 // File: wal.zig
 // Description: Write-Ahead Log persisting memory deltas asynchronously.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
@@ -202,7 +202,7 @@ test "WAL Lock-Free Flusher Integration" {
     defer arena.deinit();
     
     const mem = try arena.allocator().alloc(u8, mem_size);
-    var rb = try RingBuffer.init(mem, capacity);
+    var rb = try RingBuffer.init(mem, capacity, true);
     
     var wal = try WalManager.init(arena.allocator(), "data.takyon");
     // No defer shutdown, we do it explicitly
@@ -218,6 +218,7 @@ test "WAL Lock-Free Flusher Integration" {
         var delta = DeltaMessage{
             .offset = i * 4,
             .size = 4,
+            .is_arena = 0,
             .data = undefined,
         };
         delta.data[0] = 0xAA;
@@ -233,8 +234,8 @@ test "WAL Lock-Free Flusher Integration" {
     
     // 4. Wait for consumer to flush everything
     while (true) {
-        const h = @atomicLoad(usize, &rb.head, .acquire);
-        const t = @atomicLoad(usize, &rb.tail, .acquire);
+        const h = @atomicLoad(usize, &rb.header.head, .acquire);
+        const t = @atomicLoad(usize, &rb.header.tail, .acquire);
         if (h == t) break; // Ring buffer empty
         std.Thread.yield() catch {};
     }

@@ -2,12 +2,13 @@
 // File: main.zig
 // Description: TakyonDB Standalone Daemon (Server) Entrypoint.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
 const core = @import("core");
 const SharedArena = core.shm.SharedArena;
+const layout = core.layout;
 const RingBuffer = core.ring_buffer.RingBuffer;
 const WalManager = core.wal.WalManager;
 
@@ -65,7 +66,7 @@ pub fn main(init: std.process.Init) !void {
     
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
-    var rb = try RingBuffer.init(arena.memory[1024..], 16, true);
+    var rb = try RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, true);
     std.debug.print("[TakyonDB-Daemon] RingBuffer initialized in memory header.\n", .{});
     
     // 4. Start WAL Flusher

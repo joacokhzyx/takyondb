@@ -2,7 +2,7 @@
 // File: lib.zig
 // Description: Root module for the TakyonDB dynamic library.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 comptime {
@@ -10,6 +10,7 @@ comptime {
 }
 
 pub const shm = @import("memory/shm.zig");
+pub const layout = @import("memory/layout.zig");
 pub const ring_buffer = @import("ipc/ring_buffer.zig");
 pub const wal = @import("storage/wal.zig");
 pub const recovery = @import("storage/recovery.zig");

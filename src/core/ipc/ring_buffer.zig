@@ -2,15 +2,15 @@
 // File: ring_buffer.zig
 // Description: Lock-free ring buffer for Zero-Copy IPC communication.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");
 
-/// Cache line size to prevint false sharing in CPU caches (L1/L2).
+/// Cache line size to prevent false sharing in CPU caches (L1/L2).
 const CACHE_LINE = 64;
 
-/// DeltaMessage represints a raw memory mutation to be applied.
+/// DeltaMessage represents a raw memory mutation to be applied.
 pub const DeltaMessage = struct {
     offset: u32,
     size: u32,
@@ -29,18 +29,33 @@ pub const RingBuffer = struct {
         capacity: usize align(CACHE_LINE),
     };
 
-    /// Initializes a RingBuffer over an existing shared memory segmint.
+    /// Initializes a RingBuffer over an existing shared memory segment.
     ///
-    /// Argumints:
-    ///   - `mem`: The pre-allocated shared memory slice.
+    /// Arguments:
+    ///   - `mem`: The pre-allocated shared memory slice (must start at RING_OFFSET).
     ///   - `capacity`: Maximum number of messages.
-    ///   - `is_master`: True if we should initialize the header (head/tail=0).
+    ///   - `is_master`: True if we should initialize the header (head/tail/capacity).
+    ///     When false, the existing header capacity is reused; if it is zero
+    ///     (autonomous fallback without a daemon) it is initialized to `capacity`.
     ///
     /// Returns:
     ///   - An initialized RingBuffer instance.
+    ///
+    /// Errors:
+    ///   - `error.NoSpace` if `mem` is smaller than header + capacity slots.
+    ///   - `error.InvalidCapacity` if capacity is zero.
     pub fn init(mem: []u8, capacity: usize, is_master: bool) !RingBuffer {
+        if (capacity == 0) return error.InvalidCapacity;
+        const needed = @sizeOf(Header) + capacity * @sizeOf(DeltaMessage);
+        if (mem.len < needed) return error.NoSpace;
         const header: *Header = @ptrCast(@alignCast(mem.ptr));
         if (is_master) {
+            header.head = 0;
+            header.tail = 0;
+            header.capacity = capacity;
+        } else if (header.capacity == 0) {
+            // Autonomous mode (no daemon created the header yet). Claim it
+            // instead of leaving capacity as garbage.
             header.head = 0;
             header.tail = 0;
             header.capacity = capacity;
@@ -56,12 +71,20 @@ pub const RingBuffer = struct {
 
     /// Pushes a delta to the ring buffer (Lock-free using CAS).
     ///
-    /// Argumints:
+    /// Arguments:
     ///   - `delta`: The mutation message.
     ///
     /// Returns:
     ///   - `true` if successful, `false` if the buffer is full.
+    ///
+    /// NOTE: MPSC claim-then-publish. The slot is claimed via CAS on tail,
+    /// then the payload is written, followed by a release fence so the
+    /// single consumer never observes a torn slot. A fully rigorous MPMC
+    /// queue needs per-slot sequence numbers (Vyukov); that is tracked as
+    /// future work. Callers must size capacity generously (see
+    /// `layout.RING_DEFAULT_CAPACITY`) and retry on `false`.
     pub fn push(self: *RingBuffer, delta: DeltaMessage) bool {
+        if (self.header.capacity == 0) return false;
         var current_tail = @atomicLoad(usize, &self.header.tail, .acquire);
         
         while (true) {
@@ -75,8 +98,10 @@ pub const RingBuffer = struct {
             // Try to claim the slot using Compare and Swap
             const actual_tail = @cmpxchgStrong(usize, &self.header.tail, current_tail, next_tail, .release, .monotonic);
             if (actual_tail == null) {
-                // We successfully claimed `current_tail`
+                // We successfully claimed `current_tail`. Publish payload
+                // before the consumer can observe the new tail.
                 self.buffer[current_tail] = delta;
+                @fence(.release);
                 return true;
             } else {
                 // Another producer claimed it, retry with the updated tail
@@ -90,6 +115,7 @@ pub const RingBuffer = struct {
     /// Returns:
     ///   - The `DeltaMessage` if available, or `null` if empty.
     pub fn pop(self: *RingBuffer) ?DeltaMessage {
+        if (self.header.capacity == 0) return null;
         const current_head = @atomicLoad(usize, &self.header.head, .acquire);
         const current_tail = @atomicLoad(usize, &self.header.tail, .acquire);
 
@@ -105,9 +131,9 @@ pub const RingBuffer = struct {
     }
 };
 
-test "RingBuffer push and pop concurrincy check" {
+test "RingBuffer push and pop concurrency check" {
     var mem: [1024]u8 = undefined;
-    var rb = try RingBuffer.init(&mem, 4, true);
+    var rb = try RingBuffer.init(mem[0..], 4, true);
 
     const delta = DeltaMessage{ .offset = 0, .size = 4, .is_arena = 0, .data = undefined };
     const success = rb.push(delta);
