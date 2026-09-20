@@ -10,6 +10,28 @@ const builtin = @import("builtin");
 const layout = @import("../memory/layout.zig");
 const WalEntryHeader = @import("wal.zig").WalEntryHeader;
 
+// Coordinate with the layout-v2 agent: these WILL exist in layout.zig.
+// Fallbacks use identical values so this file compiles in parallel.
+const MAGIC_OFFSET: usize = if (@hasDecl(layout, "MAGIC_OFFSET")) layout.MAGIC_OFFSET else 0;
+const VERSION_OFFSET: usize = if (@hasDecl(layout, "VERSION_OFFSET")) layout.VERSION_OFFSET else 4;
+const LAYOUT_VERSION: u32 = if (@hasDecl(layout, "LAYOUT_VERSION")) layout.LAYOUT_VERSION else 2;
+const FOOTER_MAGIC: u32 = if (@hasDecl(layout, "ARENA_MAGIC")) layout.ARENA_MAGIC else 0x54414B59;
+
+pub const SnapshotMeta = struct {
+    active_len: u32,
+    art_bump: u32,
+    str_bump: u32,
+};
+
+fn readWord(arena_mem: []const u8, offset: usize, fallback: u32) u32 {
+    if (offset + 4 > arena_mem.len) return fallback;
+    return @as(*const u32, @ptrCast(@alignCast(arena_mem.ptr + offset))).*;
+}
+
+fn align8(v: u32) u32 {
+    return (v + 7) & ~@as(u32, 7);
+}
+
 const OsFd = if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t;
 
 fn closeFd(fd: OsFd) void {
@@ -77,7 +99,14 @@ fn blocksFor(byte_len: usize) usize {
     return (byte_len + 4095) / 4096;
 }
 
-fn isFooterShape(buf: *const [4096]u8) bool {
+fn isFooterV2Shape(buf: *const [4096]u8) bool {
+    for (buf[24..4096]) |b| {
+        if (b != 0) return false;
+    }
+    return true;
+}
+
+fn isLegacyV1Shape(buf: *const [4096]u8) bool {
     for (buf[8..4096]) |b| {
         if (b != 0) return false;
     }
@@ -85,24 +114,43 @@ fn isFooterShape(buf: *const [4096]u8) bool {
 }
 
 pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8) !void {
-    var max_allocated: u32 = layout.RECORD_BUMP_INIT;
+    var rec_max: u32 = layout.RECORD_BUMP_INIT;
+    var art_max: u32 = layout.ART_START;
+    var str_max: u32 = layout.STRING_DATA_START;
 
     // Phase 1: snapshot with CRC verification (two passes).
-    if (try loadSnapshot(allocator, arena_mem)) |active_len| {
-        max_allocated = active_len;
+    if (try loadSnapshot(allocator, path, arena_mem)) |meta| {
+        // Seed maxima from the snapshot footer + copied bump words so all
+        // three arenas survive even with no further WAL replay.
+        const arena_rec = readWord(arena_mem, layout.RECORD_BUMP_OFFSET, layout.RECORD_BUMP_INIT);
+        const arena_art = readWord(arena_mem, layout.ART_BUMP_OFFSET, layout.ART_START);
+        const arena_str = readWord(arena_mem, layout.STRING_BUMP_OFFSET, layout.STRING_DATA_START);
+        rec_max = @max(rec_max, arena_rec);
+        art_max = @max(meta.art_bump, arena_art);
+        art_max = @max(art_max, layout.ART_START);
+        str_max = @max(meta.str_bump, arena_str);
+        str_max = @max(str_max, layout.STRING_DATA_START);
+        // Clamp seeds to arena bounds: a larger arena image truncated here
+        // must not push bumps past the end.
+        if (rec_max > arena_mem.len) rec_max = @as(u32, @intCast(arena_mem.len));
+        if (art_max > arena_mem.len) art_max = @as(u32, @intCast(arena_mem.len));
+        if (str_max > arena_mem.len) str_max = @as(u32, @intCast(arena_mem.len));
+        _ = meta.active_len;
     }
 
     // Phase 2: WAL delta replay.
-    replayWal(allocator, path, arena_mem, &max_allocated);
+    replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max);
 
-    finalize(arena_mem, max_allocated);
+    finalize(arena_mem, rec_max, art_max, str_max);
 }
 
-/// Loads and verifies the snapshot. Returns the live byte count, or null
-/// when no (valid) snapshot exists. A corrupt snapshot never poisons the
-/// arena: it is skipped with a warning and the WAL still replays.
-fn loadSnapshot(allocator: std.mem.Allocator, arena_mem: []u8) !?u32 {
-    const snap_path = "data.takyon.snap";
+/// Loads and verifies the snapshot. Returns footer metadata, or null when
+/// no (valid) snapshot exists. A corrupt snapshot never poisons the arena:
+/// it is skipped with a warning and the WAL still replays.
+/// Snap path is derived from the WAL `path` arg as `<wal>.snap`.
+fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem: []u8) !?SnapshotMeta {
+    var snap_buf: [4096]u8 = undefined;
+    const snap_path = try std.fmt.bufPrintZ(&snap_buf, "{s}.snap", .{wal_path});
     const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
         std.hash.crc.Crc32
     else if (@hasDecl(std.hash.crc, "Crc32Ieee"))
@@ -135,16 +183,37 @@ fn loadSnapshot(allocator: std.mem.Allocator, arena_mem: []u8) !?u32 {
         return null;
     }
 
-    // The footer is the last block: crc[0..4] + active_len[4..8] + zeros.
-    // It is only trusted when the file size matches the claimed length.
-    if (!isFooterShape(&last)) {
-        std.debug.print("[TakyonDB-Bootloader] Snapshot has no footer; ignoring.\n", .{});
+    // Footer v2 in the last block:
+    //   magic u32 [0..4], version u32 [4..8], crc u32 [8..12],
+    //   active_len u32 [12..16], art_bump u32 [16..20],
+    //   str_bump u32 [20..24], rest zeros.
+    // Only trusted when the file size matches the claimed length.
+    // Old v1 footers (crc[0..4] + active[4..8] + zeros) carry no magic/
+    // version and are rejected as corrupt: log + WAL-only recovery.
+    const footer_magic = std.mem.readInt(u32, last[MAGIC_OFFSET .. MAGIC_OFFSET + 4][0..4], .little);
+    const footer_ver = std.mem.readInt(u32, last[VERSION_OFFSET .. VERSION_OFFSET + 4][0..4], .little);
+    if (footer_magic != FOOTER_MAGIC or footer_ver != LAYOUT_VERSION) {
+        if (isLegacyV1Shape(&last)) {
+            std.debug.print("[TakyonDB-Bootloader] Snapshot is legacy v1 footer; rejecting as corrupt, WAL-only recovery.\n", .{});
+        } else {
+            std.debug.print("[TakyonDB-Bootloader] Snapshot footer magic/version mismatch; ignoring.\n", .{});
+        }
         return null;
     }
-    const claimed_crc = std.mem.readInt(u32, last[0..4], .little);
-    const claimed_active = std.mem.readInt(u32, last[4..8], .little);
+    if (!isFooterV2Shape(&last)) {
+        std.debug.print("[TakyonDB-Bootloader] Snapshot has no v2 footer; ignoring.\n", .{});
+        return null;
+    }
+    const claimed_crc = std.mem.readInt(u32, last[8..12], .little);
+    const claimed_active = std.mem.readInt(u32, last[12..16], .little);
+    const claimed_art = std.mem.readInt(u32, last[16..20], .little);
+    const claimed_str = std.mem.readInt(u32, last[20..24], .little);
     if (claimed_active == 0 or claimed_active > arena_mem.len) {
         std.debug.print("[TakyonDB-Bootloader] Snapshot footer out of range; ignoring.\n", .{});
+        return null;
+    }
+    if (claimed_art > arena_mem.len or claimed_str > arena_mem.len) {
+        std.debug.print("[TakyonDB-Bootloader] Snapshot footer bumps out of range; ignoring.\n", .{});
         return null;
     }
     if (blocks - 1 != blocksFor(claimed_active)) {
@@ -176,12 +245,27 @@ fn loadSnapshot(allocator: std.mem.Allocator, arena_mem: []u8) !?u32 {
         @memset(arena_mem[0..@min(@as(usize, claimed_active), arena_mem.len)], 0);
         return null;
     }
-    return claimed_active;
+    return SnapshotMeta{
+        .active_len = claimed_active,
+        .art_bump = claimed_art,
+        .str_bump = claimed_str,
+    };
 }
 
 /// Replays WAL entries onto the arena. Stops at the first corrupt sector
 /// or entry; everything before it is valid by CRC.
-fn replayWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, max_allocated: *u32) void {
+/// Tracks THREE maxima by offset range:
+///   < ART_ROOT_OFFSET     -> record max
+///   < STRING_ARENA_START  -> ART max
+///   else                  -> STRING max
+fn replayWal(
+    allocator: std.mem.Allocator,
+    path: [:0]const u8,
+    arena_mem: []u8,
+    rec_max: *u32,
+    art_max: *u32,
+    str_max: *u32,
+) void {
     const raw = allocator.alloc(u8, 8192 + 4095) catch return;
     defer allocator.free(raw);
     const addr = @intFromPtr(raw.ptr);
@@ -248,12 +332,16 @@ fn replayWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, 
                 std.mem.copyForwards(u8, arena_mem[header.offset .. header.offset + header.length], buf[payload_start..payload_end]);
             }
 
-            // Track max arena allocation
-            if (header.offset >= layout.RECORD_BUMP_OFFSET) {
-                const end_offset = header.offset + header.length;
-                if (end_offset > max_allocated.*) {
-                    max_allocated.* = end_offset;
-                }
+            // Track THREE maxima by offset range. Ring/header writes below
+            // ART_ROOT_OFFSET fold into the record max but stay below
+            // RECORD_BUMP_INIT, so they never move the bump.
+            const end_offset = header.offset + header.length;
+            if (header.offset < layout.ART_ROOT_OFFSET) {
+                if (end_offset > rec_max.*) rec_max.* = end_offset;
+            } else if (header.offset < layout.STRING_ARENA_START) {
+                if (end_offset > art_max.*) art_max.* = end_offset;
+            } else {
+                if (end_offset > str_max.*) str_max.* = end_offset;
             }
 
             cursor += @sizeOf(WalEntryHeader) + header.length;
@@ -269,16 +357,27 @@ fn replayWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, 
     }
 }
 
-fn finalize(arena_mem: []u8, max_allocated: u32) void {
-    // 2. Atomic index rebuild (bump pointer)
-    const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.RECORD_BUMP_OFFSET])));
-    var next_free = max_allocated;
-    if (next_free < layout.RECORD_BUMP_INIT) next_free = layout.RECORD_BUMP_INIT; // 8-byte aligned starting offset
-    const align_mask = @as(u32, 7);
-    bump_ptr.* = (next_free + align_mask) & ~align_mask;
+fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32) void {
+    // Idempotent: writing the same aligned maxima twice changes nothing.
+    // Each bump is clamped to its init and 8-aligned; out-of-range bumps
+    // on small arenas (tests) are skipped instead of panicking.
+    if (layout.RECORD_BUMP_OFFSET + 4 <= arena_mem.len) {
+        const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.RECORD_BUMP_OFFSET])));
+        bump_ptr.* = align8(@max(rec_max, layout.RECORD_BUMP_INIT));
+    }
+    if (layout.ART_BUMP_OFFSET + 4 <= arena_mem.len) {
+        const art_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.ART_BUMP_OFFSET])));
+        art_ptr.* = align8(@max(art_max, layout.ART_START));
+    }
+    if (layout.STRING_BUMP_OFFSET + 4 <= arena_mem.len) {
+        const str_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.STRING_BUMP_OFFSET])));
+        str_ptr.* = align8(@max(str_max, layout.STRING_DATA_START));
+    }
 
-    // 3. IPC channel cleanup (RingBuffer clean-up)
-    @memset(arena_mem[layout.RING_OFFSET..layout.RECORD_BUMP_OFFSET], 0);
+    // 3. IPC channel cleanup: clear the full ring region.
+    if (layout.RING_OFFSET <= layout.RECORD_BUMP_OFFSET and layout.RECORD_BUMP_OFFSET <= arena_mem.len) {
+        @memset(arena_mem[layout.RING_OFFSET..layout.RECORD_BUMP_OFFSET], 0);
+    }
 
-    std.debug.print("[TakyonDB-Bootloader] Isomorphic recovery completed. Bump-Arena adjusted to offset {}.\n", .{max_allocated});
+    std.debug.print("[TakyonDB-Bootloader] Isomorphic recovery completed. Bumps rec={} art={} str={}.\n", .{ rec_max, art_max, str_max });
 }
