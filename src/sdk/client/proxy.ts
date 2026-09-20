@@ -21,6 +21,7 @@ export interface TakyonBindings {
     verifyTestValue(): number;
     insert_index(key: string, value_offset: number): number;
     search_index(key: string): number;
+    remove_index(key: string): number;
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;

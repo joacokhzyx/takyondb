@@ -35,6 +35,7 @@ function mockBindings(size: number, store: Map<string, number>): TakyonBindings 
             return 0;
         },
         search_index: (key: string) => store.get(key) ?? -1,
+        remove_index: (key: string) => (store.delete(key) ? 1 : 0),
         trigger_checkpoint: () => 0,
         start_vacuum: () => 0,
         stop_vacuum: () => 0,
@@ -167,5 +168,108 @@ describe('TakyonDB with mocked bridge', () => {
         const maxKey = 'a'.repeat(256);
         users.insert(maxKey, { age: 7 });
         expect(users.find(maxKey)?.age).toBe(7);
+    });
+
+    it('deletes an existing key and find returns null after', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        users.insert('alice', { age: 28 });
+        expect(store.has('users:alice')).toBe(true);
+        expect(users.delete('alice')).toBe(true);
+        expect(store.has('users:alice')).toBe(false);
+        expect(users.find('alice')).toBeNull();
+    });
+
+    it('delete returns false for missing keys', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        expect(users.delete('nope')).toBe(false);
+        // Namespaced isolation: deleting from one collection leaves the other intact.
+        const orders = db.collection('orders', schema);
+        users.insert('shared', { age: 1 });
+        orders.insert('shared', { age: 2 });
+        expect(users.delete('shared')).toBe(true);
+        expect(users.find('shared')).toBeNull();
+        expect(orders.find('shared')?.age).toBe(2);
+    });
+
+    it('delete throws on invalid keys and bridge errors', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        expect(() => users.delete('')).toThrow();
+        expect(() => users.delete('a\0b')).toThrow();
+        expect(() => users.delete('a'.repeat(257))).toThrow();
+
+        const errStore = new Map<string, number>();
+        const errBindings = mockBindings(64 * 1024 * 1024, errStore);
+        errBindings.remove_index = () => -1;
+        const errDb = new TakyonDB(errBindings, 64 * 1024 * 1024);
+        const errUsers = errDb.collection('users', schema);
+        expect(() => errUsers.delete('alice')).toThrow();
+    });
+
+    it('updates existing records and returns null when missing', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        users.insert('alice', { username: 'Alice', age: 28, score: 10 });
+        const updated = users.update('alice', { age: 29, score: 20.5 });
+        expect(updated?.age).toBe(29);
+        expect(updated?.score).toBe(20.5);
+        expect(updated?.username).toBe('Alice');
+        expect(users.find('alice')?.age).toBe(29);
+
+        expect(users.update('missing', { age: 1 })).toBeNull();
+        expect(users.update('a\0b', { age: 1 })).toBeNull();
+    });
+
+    it('upserts: creates when missing, updates when present', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        const created = users.upsert('bob', { age: 30, score: 5 });
+        expect(created.created).toBe(true);
+        expect(created.proxy.age).toBe(30);
+        expect(users.find('bob')?.age).toBe(30);
+
+        const offsetBefore = store.get('users:bob');
+        const updated = users.upsert('bob', { age: 31 });
+        expect(updated.created).toBe(false);
+        expect(updated.proxy.age).toBe(31);
+        expect(users.find('bob')?.age).toBe(31);
+        // Update is in place: same index offset, no duplicate record.
+        expect(store.get('users:bob')).toBe(offsetBefore);
+    });
+
+    it('does not reclaim record bytes on delete (bump only grows)', () => {
+        const store = new Map<string, number>();
+        const db = new TakyonDB(mockBindings(64 * 1024 * 1024, store), 64 * 1024 * 1024);
+        const schema = new TakyonSchema({ ...UserDef });
+        const users = db.collection('users', schema);
+
+        users.insert('first', { age: 1 });
+        const firstOffset = store.get('users:first');
+        expect(firstOffset).toBeGreaterThanOrEqual(0);
+        expect(users.delete('first')).toBe(true);
+
+        users.insert('second', { age: 2 });
+        const secondOffset = store.get('users:second');
+        expect(secondOffset).toBeGreaterThanOrEqual(0);
+        // Bump allocator never reuses the freed slot: strictly higher offset.
+        expect(secondOffset).toBeGreaterThan(firstOffset as number);
+        expect(secondOffset).not.toBe(firstOffset);
     });
 });

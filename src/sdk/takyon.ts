@@ -97,6 +97,62 @@ export class Collection<T extends Record<string, FieldType>> {
         
         return this.db.client.createProxy(this.schema, offset);
     }
+
+    /**
+     * Deletes a record by key. Returns true iff the bridge reports the key
+     * was present (1), false when the key is missing (0), and throws on
+     * bridge errors (-1).
+     *
+     * Note: record/string bytes are NOT reclaimed. The engine uses bump
+     * allocators for both arenas; vacuum compacts strings while deleted
+     * record slots await GC, so the record bump word only ever grows.
+     */
+    public delete(key: string): boolean {
+        const invalid = keyError(key);
+        if (invalid) {
+            throw new Error(invalid);
+        }
+        const namespaced = this.namespacedKey(key);
+        const rc = this.db.client.getBindings().remove_index(namespaced);
+        if (rc === 1) return true;
+        if (rc === 0) return false;
+        throw new Error(`remove_index failed for key '${key}'`);
+    }
+
+    /**
+     * Updates fields of an existing record in place. Field assignment goes
+     * through the live proxy (same loop as insert), so string/scalar
+     * deltas are emitted as usual. Returns the proxy, or null if missing
+     * (including invalid keys, mirroring find). Proxy write failures
+     * (pushDelta/notifyArena) throw.
+     */
+    public update(key: string, data: Partial<MappedObject<T>>): MappedObject<T> | null {
+        const proxy = this.find(key);
+        if (!proxy) return null;
+        for (const [k, v] of Object.entries(data)) {
+            if (v !== undefined) {
+                (proxy as any)[k] = v;
+            }
+        }
+        return proxy;
+    }
+
+    /**
+     * Inserts when the key is missing, otherwise updates in place.
+     * Returns the proxy plus a flag indicating whether a new record was created.
+     */
+    public upsert(key: string, data: Partial<MappedObject<T>>): { proxy: MappedObject<T>; created: boolean } {
+        const existing = this.find(key);
+        if (!existing) {
+            return { proxy: this.insert(key, data), created: true };
+        }
+        for (const [k, v] of Object.entries(data)) {
+            if (v !== undefined) {
+                (existing as any)[k] = v;
+            }
+        }
+        return { proxy: existing, created: false };
+    }
 }
 
 export class TakyonDB {

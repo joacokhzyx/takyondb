@@ -17,7 +17,7 @@ var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
 
 // ============================================================================
-// Admin TCP endpoint (part 1: listen + PING + HEALTH).
+// Admin TCP endpoint (part 2: listen + PING + HEALTH + METRICS + CHECKPOINT).
 //
 // Protocol: line-based ASCII over TCP on 127.0.0.1:<port> (--port, default
 // 7723). A dedicated thread accepts one connection at a time (sequential);
@@ -29,6 +29,13 @@ var global_wal: ?*WalManager = null;
 //   HEALTH -> "OK uptime_s=<n> arena=<bytes> ring=<depth>\n"
 //             (uptime_s = seconds since daemon start; arena = SHM arena size
 //             in bytes; ring = current RingBuffer depth)
+//   METRICS -> "METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u>\n"
+//             (ring_depth = current RingBuffer depth; wal_bytes =
+//             WalManager.bytes_written; wal_segments = WalManager.next_segment;
+//             uptime_s = seconds since daemon start)
+//   CHECKPOINT -> push an is_arena==2 delta into the ring (same as the
+//             --checkpoint-sec timer); "QUEUED\n" on success, "FULL\n" if
+//             the ring is full.
 //   other  -> "ERR unknown command\n"
 //
 // Shutdown: the thread polls the listener with a 100ms timeout and checks
@@ -41,6 +48,7 @@ const AdminCtx = struct {
     start_ms: i64,
     arena_len: usize,
     rb: *RingBuffer,
+    wal: *WalManager,
 };
 
 fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
@@ -77,6 +85,19 @@ fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
         var out: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&out, "OK uptime_s={d} arena={d} ring={d}\n", .{ uptime_s, ctx.arena_len, ctx.rb.depth() }) catch return;
         stream.writeAll(msg) catch {};
+    } else if (std.mem.eql(u8, line, "METRICS")) {
+        const now = std.time.milliTimestamp();
+        const uptime_s: i64 = @divTrunc(@max(now - ctx.start_ms, 0), 1000);
+        var out: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s }) catch return;
+        stream.writeAll(msg) catch {};
+    } else if (std.mem.eql(u8, line, "CHECKPOINT")) {
+        const ckpt = DeltaMessage{ .offset = 0, .size = 0, .is_arena = 2, .data = [_]u8{0} ** 48 };
+        if (ctx.rb.push(ckpt)) {
+            stream.writeAll("QUEUED\n") catch {};
+        } else {
+            stream.writeAll("FULL\n") catch {};
+        }
     } else {
         stream.writeAll("ERR unknown command\n") catch {};
     }
@@ -262,13 +283,14 @@ pub fn main() !void {
     try wal.spawnWalFlusher(&rb, arena.memory);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
 
-    // 4b. Start admin TCP endpoint thread (PING + HEALTH). Joined on shutdown.
+    // 4b. Start admin TCP endpoint thread (PING + HEALTH + METRICS + CHECKPOINT). Joined on shutdown.
     const admin_start_ms = std.time.milliTimestamp();
     var admin_ctx = AdminCtx{
         .port = admin_port,
         .start_ms = admin_start_ms,
         .arena_len = arena.memory.len,
         .rb = &rb,
+        .wal = &wal,
     };
     const admin_thread = try std.Thread.spawn(.{}, adminThreadFn, .{&admin_ctx});
 

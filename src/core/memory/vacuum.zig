@@ -11,6 +11,8 @@ const layout = @import("../memory/layout.zig");
 const art = @import("../index/art.zig");
 const ArtPtr = art.ArtPtr;
 const Leaf = art.Leaf;
+const WalManager = @import("../storage/wal.zig").WalManager;
+const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
 
 pub const VacuumError = error{
     ArenaTooSmall,
@@ -69,7 +71,7 @@ fn vacuumLoop(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u3
 
 fn vacuumLoopMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32) void {
     while (running.load(.acquire)) {
-        runVacuumOnceMulti(arena, index, offsets) catch {};
+        runVacuumOnceMulti(arena, index, offsets, null) catch {};
         // Back off: compaction is periodic maintenance, not a hot loop.
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
@@ -88,10 +90,10 @@ pub fn minArenaForVacuum() usize {
 
 pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u32) !void {
     var tmp = [_]u32{string_field_offset};
-    return runVacuumOnceMulti(arena, index, tmp[0..]);
+    return runVacuumOnceMulti(arena, index, tmp[0..], null);
 }
 
-pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32) !void {
+pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32, wal: ?*WalManager) !void {
     const allocator = std.heap.page_allocator;
     if (arena.memory.len < minArenaForVacuum()) return error.ArenaTooSmall;
     if (layout.STRING_BUMP_OFFSET + 4 > arena.memory.len) return error.ArenaTooSmall;
@@ -146,6 +148,15 @@ pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []
     defer allocator.free(temp_buf);
 
     // 4. Copy live strings into temp, CAS-swizzle their fat pointers.
+    // Track each successful swizzle so WAL logging below can replay it.
+    const Relocated = struct {
+        fat_addr: usize,
+        new_offset: u32,
+        len: u32,
+    };
+    var relocated = std.ArrayList(Relocated).init(allocator);
+    defer relocated.deinit();
+
     var temp_offset: usize = 0;
     for (live_strings.items) |s| {
         std.mem.copyForwards(
@@ -158,9 +169,12 @@ pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []
 
         const expected_fat_64 = (@as(u64, s.len) << 32) | s.offset;
         const new_fat_64 = (@as(u64, s.len) << 32) | new_offset;
+        var swapped = false;
         if (s.fat_addr % 8 == 0) {
             const fat_ptr_64: *u64 = @ptrCast(@alignCast(&arena.memory[s.fat_addr]));
-            _ = @cmpxchgStrong(u64, fat_ptr_64, expected_fat_64, new_fat_64, .release, .monotonic);
+            if (@cmpxchgStrong(u64, fat_ptr_64, expected_fat_64, new_fat_64, .release, .monotonic) == null) {
+                swapped = true;
+            }
         } else {
             // Unaligned fat pointer: single-writer check-then-write. The
             // daemon model never compacts while writers are active.
@@ -168,13 +182,51 @@ pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []
             const cur_len = std.mem.readInt(u32, arena.memory[s.fat_addr + 4 ..][0..4], .little);
             if (cur_off == s.offset and cur_len == s.len) {
                 std.mem.writeInt(u32, arena.memory[s.fat_addr..][0..4], new_offset, .little);
+                swapped = true;
             }
+        }
+        if (swapped) {
+            relocated.append(.{ .fat_addr = s.fat_addr, .new_offset = new_offset, .len = s.len }) catch {};
         }
     }
 
     // 5. Publish: copy temp into the destination bank, then swing the bump.
     std.mem.copyForwards(u8, arena.memory[dst_bank .. dst_bank + temp_offset], temp_buf[0..temp_offset]);
     @atomicStore(u32, bump_ptr, @as(u32, @intCast(dst_bank + temp_offset)), .release);
+
+    // 6. WAL-log each successful relocation for crash-safety. Deferred
+    // until after publish so the ARENA delta payload (read from
+    // arena.memory by processDelta) sees the moved bytes. INLINE (fat
+    // pointer) deltas remain valid: fat pointers have not changed since
+    // the swizzle. Errors never abort compaction (catch-log-continue).
+    if (wal) |w| {
+        for (relocated.items) |r| {
+            if (r.fat_addr > std.math.maxInt(u32)) continue;
+            const fat_u32: u32 = @intCast(r.fat_addr);
+            var inline_delta = DeltaMessage{
+                .offset = fat_u32,
+                .size = 8,
+                .is_arena = 0,
+                .data = [_]u8{0} ** 48,
+            };
+            std.mem.writeInt(u32, inline_delta.data[0..4], r.new_offset, .little);
+            std.mem.writeInt(u32, inline_delta.data[4..8], r.len, .little);
+            w.processDelta(inline_delta, arena.memory) catch |err| {
+                std.debug.print("[vacuum] WAL inline delta failed (fat_addr={}): {}\n", .{ r.fat_addr, err });
+                continue;
+            };
+            const arena_delta = DeltaMessage{
+                .offset = r.new_offset,
+                .size = r.len,
+                .is_arena = 1,
+                .data = [_]u8{0} ** 48,
+            };
+            w.processDelta(arena_delta, arena.memory) catch |err| {
+                std.debug.print("[vacuum] WAL arena delta failed (off={} len={}): {}\n", .{ r.new_offset, r.len, err });
+                continue;
+            };
+        }
+    }
 }
 
 /// Iterative DFS over ALL node types with corruption guards: out-of-range
@@ -300,7 +352,7 @@ test "vacuum multi-column relocates both string columns" {
     try idx.insert("b", rec1);
 
     var cols = [_]u32{ OFF_A, OFF_B };
-    try runVacuumOnceMulti(&arena, &idx, cols[0..]);
+    try runVacuumOnceMulti(&arena, &idx, cols[0..], null);
 
     const new00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], .little);
     const new01 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], .little);
@@ -330,4 +382,113 @@ test "vacuum multi-column relocates both string columns" {
     try std.testing.expect(std.mem.eql(u8, mem[new01 .. new01 + s01.len], s01));
     try std.testing.expect(std.mem.eql(u8, mem[new10 .. new10 + s10.len], s10));
     try std.testing.expect(std.mem.eql(u8, mem[new11 .. new11 + s11.len], s11));
+}
+
+test "vacuum WAL-logged relocation survives recovery" {
+    const t_alloc = std.testing.allocator;
+    const p_alloc = std.heap.page_allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_z = try std.fmt.bufPrintZ(&pathbuf, "{s}/v.takyon", .{dirpath});
+    const owned_path = try t_alloc.dupeZ(u8, path_z);
+    defer t_alloc.free(owned_path);
+
+    const mem_size = minArenaForVacuum();
+    const mem = try p_alloc.alloc(u8, mem_size);
+    defer p_alloc.free(mem);
+    @memset(mem, 0);
+
+    var arena = SharedArena{ .memory = mem, .bump_offset = 0, .handle = null };
+    var idx = art.ArtIndex.init(mem, 0, 4, 8);
+
+    // Records placed above RECORD_BUMP_OFFSET so recovery's ring cleanup
+    // ([RING_OFFSET..RECORD_BUMP_OFFSET]) cannot wipe them.
+    const OFF_A: u32 = 16; // aligned -> CAS path
+    const OFF_B: u32 = 20; // unaligned -> check-then-write path
+    const rec0: u32 = 300000;
+    const rec1: u32 = 300064;
+
+    const bank0 = layout.STRING_DATA_START;
+    const region = mem.len - layout.STRING_DATA_START;
+    const bank_size = region / 2;
+    const bank1 = layout.STRING_DATA_START + bank_size;
+
+    const s00 = "wal-alpha";
+    const s01 = "wal-beta-long";
+    const s10 = "wal-gamma";
+    const s11 = "wal-delta-4";
+
+    var cursor: usize = bank0;
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s00.len], s00);
+    const old00: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], old00, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_A + 4 ..][0..4], @intCast(s00.len), .little);
+    cursor += s00.len;
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s01.len], s01);
+    const old01: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], old01, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_B + 4 ..][0..4], @intCast(s01.len), .little);
+    cursor += s01.len;
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s10.len], s10);
+    const old10: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_A ..][0..4], old10, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_A + 4 ..][0..4], @intCast(s10.len), .little);
+    cursor += s10.len;
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s11.len], s11);
+    const old11: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_B ..][0..4], old11, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_B + 4 ..][0..4], @intCast(s11.len), .little);
+    cursor += s11.len;
+
+    std.mem.writeInt(u32, mem[layout.STRING_BUMP_OFFSET..][0..4], @intCast(cursor), .little);
+
+    try idx.insert("a", rec0);
+    try idx.insert("b", rec1);
+
+    // Pre-compaction image: simulates the arena state before the crash.
+    // The WAL (on disk) will carry the relocation deltas.
+    const pre = try p_alloc.dupe(u8, mem);
+    defer p_alloc.free(pre);
+
+    var wal = try WalManager.init(t_alloc, owned_path);
+    var cols = [_]u32{ OFF_A, OFF_B };
+    try runVacuumOnceMulti(&arena, &idx, cols[0..], &wal);
+    wal.shutdown();
+
+    const new00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], .little);
+    const new01 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], .little);
+    const new10 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_A ..][0..4], .little);
+    const new11 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_B ..][0..4], .little);
+    // Sanity: compaction actually moved everything into the inactive bank.
+    for ([_]u32{ new00, new01, new10, new11 }) |no| {
+        try std.testing.expect(no >= @as(u32, @intCast(bank1)));
+    }
+    try std.testing.expect(new00 != old00);
+    try std.testing.expect(new01 != old01);
+    try std.testing.expect(new10 != old10);
+    try std.testing.expect(new11 != old11);
+
+    // Fresh arena from the pre-image, then WAL replay (crash recovery).
+    const mem2 = try p_alloc.dupe(u8, pre);
+    defer p_alloc.free(mem2);
+    const recoverWal = @import("../storage/recovery.zig").recoverWal;
+    try recoverWal(t_alloc, owned_path, mem2);
+
+    const r00 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_A ..][0..4], .little);
+    const r01 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_B ..][0..4], .little);
+    const r10 = std.mem.readInt(u32, mem2[@as(usize, rec1) + OFF_A ..][0..4], .little);
+    const r11 = std.mem.readInt(u32, mem2[@as(usize, rec1) + OFF_B ..][0..4], .little);
+    try std.testing.expectEqual(new00, r00);
+    try std.testing.expectEqual(new01, r01);
+    try std.testing.expectEqual(new10, r10);
+    try std.testing.expectEqual(new11, r11);
+
+    try std.testing.expect(std.mem.eql(u8, mem2[r00 .. r00 + s00.len], s00));
+    try std.testing.expect(std.mem.eql(u8, mem2[r01 .. r01 + s01.len], s01));
+    try std.testing.expect(std.mem.eql(u8, mem2[r10 .. r10 + s10.len], s10));
+    try std.testing.expect(std.mem.eql(u8, mem2[r11 .. r11 + s11.len], s11));
 }
