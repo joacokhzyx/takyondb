@@ -83,7 +83,7 @@ if (isMainThread) {
         const id = startIdx + i;
         // 0-padded 8 char key: "ID-00001"
         const key = `ID-${id.toString().padStart(5, '0')}`;
-        const valueOffset = 4096 + (id * 64);
+        const valueOffset = 300000 + (id * 64);
         
         const result = takyondb.insert_index(key, valueOffset);
         if (result !== 0) {

@@ -14,8 +14,23 @@ const SUITES = [
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
 ];
 
+function cleanStaleShm() {
+  // Suites must be isolated: a leftover POSIX segment from a previous
+  // suite carries a foreign layout (or no magic at all), and the daemon
+  // rightly refuses to truncate/reuse it (BadVersion/SizeMismatch).
+  // Windows named mappings die with their processes; nothing to do there.
+  if (process.platform !== 'linux') return;
+  const fs = require('fs');
+  try {
+    fs.unlinkSync('/dev/shm/TakyonDB_Master');
+  } catch (e) {
+    // Absent segment: nothing to clean.
+  }
+}
+
 function runSuite(suite, timeoutMs) {
   return new Promise((resolve) => {
+    cleanStaleShm();
     const scriptPath = path.join(__dirname, suite.file);
     const args = suite.ts ? ['-r', 'ts-node/register/transpile-only', scriptPath] : [scriptPath];
     const nodePath = [SDK_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);

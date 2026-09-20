@@ -44,7 +44,7 @@ async function run() {
     console.log("[E2E Vacuum] Init done.");
 
     // Insert a single user into the ART index at offset 20000 (record offset)
-    const USER_RECORD_OFFSET = 20000;
+    const USER_RECORD_OFFSET = 300000;
     console.log("[E2E Vacuum] Inserting index...");
     takyondb.insert_index("user:1", USER_RECORD_OFFSET);
     console.log("[E2E Vacuum] Index inserted.");
