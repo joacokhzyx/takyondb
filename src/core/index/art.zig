@@ -535,6 +535,10 @@ pub const ArtIndex = struct {
         switch (ntype) {
             .Node4 => {
                 const src = try self.nodeAt(noff, Node4);
+                if (src.count > 4) {
+                    std.debug.print("ART-CORRUPT Node4 off={d} count={d}\n", .{ noff, src.count });
+                    return error.UnsupportedNodeType;
+                }
                 const dst_off = try self.allocZeroed(@sizeOf(Node16));
                 const dst = try self.nodeAt(dst_off, Node16);
                 std.mem.copyForwards(u8, dst.keys[0..src.count], src.keys[0..src.count]);
@@ -544,6 +548,10 @@ pub const ArtIndex = struct {
             },
             .Node16 => {
                 const src = try self.nodeAt(noff, Node16);
+                if (src.count > 16) {
+                    std.debug.print("ART-CORRUPT Node16 off={d} count={d} keys={any}\n", .{ noff, src.count, src.keys });
+                    return error.UnsupportedNodeType;
+                }
                 const dst_off = try self.allocZeroed(@sizeOf(Node48));
                 const dst = try self.nodeAt(dst_off, Node48);
                 var i: usize = 0;
@@ -556,6 +564,10 @@ pub const ArtIndex = struct {
             },
             .Node48 => {
                 const src = try self.nodeAt(noff, Node48);
+                if (src.count > 48) {
+                    std.debug.print("ART-CORRUPT Node48 off={d} count={d}\n", .{ noff, src.count });
+                    return error.UnsupportedNodeType;
+                }
                 const dst_off = try self.allocZeroed(@sizeOf(Node256));
                 const dst = try self.nodeAt(dst_off, Node256);
                 var b: usize = 0;
@@ -590,6 +602,7 @@ pub const ArtIndex = struct {
 
             switch (ptr.getType()) {
                 .Leaf => {
+                    if (@as(usize, noff) + @sizeOf(Leaf) > self.arena_mem.len) return null;
                     const leaf: *const Leaf = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
                     if (leaf.key_len != key.len) return null;
                     const stored = leafKeyBytes(self.arena_mem, noff, leaf.key_len) catch return null;
@@ -597,7 +610,9 @@ pub const ArtIndex = struct {
                     return null;
                 },
                 .Node4 => {
+                    if (@as(usize, noff) + @sizeOf(Node4) > self.arena_mem.len) return null;
                     const node: *const Node4 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
+                    if (node.count > 4) return null;
                     var found: ?u32 = null;
                     var i: usize = 0;
                     while (i < node.count) : (i += 1) {
@@ -612,7 +627,9 @@ pub const ArtIndex = struct {
                     depth += 1;
                 },
                 .Node16 => {
+                    if (@as(usize, noff) + @sizeOf(Node16) > self.arena_mem.len) return null;
                     const node: *const Node16 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
+                    if (node.count > 16) return null;
                     const pos = node.findPos(slot_byte) orelse return null;
                     const child = @atomicLoad(u32, @constCast(&node.children[pos]), .acquire);
                     if (child == 0) return null;
@@ -620,15 +637,18 @@ pub const ArtIndex = struct {
                     depth += 1;
                 },
                 .Node48 => {
+                    if (@as(usize, noff) + @sizeOf(Node48) > self.arena_mem.len) return null;
                     const node: *const Node48 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
+                    if (node.count > 48) return null;
                     const s = node.child_index[slot_byte];
-                    if (s == 0) return null;
+                    if (s == 0 or s > node.count) return null;
                     const child = @atomicLoad(u32, @constCast(&node.children[s - 1]), .acquire);
                     if (child == 0) return null;
                     cur_raw = child;
                     depth += 1;
                 },
                 .Node256 => {
+                    if (@as(usize, noff) + @sizeOf(Node256) > self.arena_mem.len) return null;
                     const node: *const Node256 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
                     const child = @atomicLoad(u32, @constCast(&node.children[slot_byte]), .acquire);
                     if (child == 0) return null;
@@ -689,17 +709,21 @@ pub const ArtIndex = struct {
                     .Leaf => unreachable,
                     .Node4 => blk: {
                         const node = try self.nodeAt(noff, Node4);
+                        if (node.count > 4) return error.UnsupportedNodeType;
                         const pos = node.findPos(slot_byte) orelse return false;
                         break :blk @atomicLoad(u32, &node.children[pos], .acquire);
                     },
                     .Node16 => blk: {
                         const node = try self.nodeAt(noff, Node16);
+                        if (node.count > 16) return error.UnsupportedNodeType;
                         const pos = node.findPos(slot_byte) orelse return false;
                         break :blk @atomicLoad(u32, &node.children[pos], .acquire);
                     },
                     .Node48 => blk: {
                         const node = try self.nodeAt(noff, Node48);
+                        if (node.count > 48) return error.UnsupportedNodeType;
                         const s = node.findSlot(slot_byte) orelse return false;
+                        if (s >= node.count) return error.UnsupportedNodeType;
                         break :blk @atomicLoad(u32, &node.children[s], .acquire);
                     },
                     .Node256 => blk: {
