@@ -7,7 +7,14 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      // Test sources live outside the package root (../client), so bare
+      // imports do not resolve through node_modules lookup. Map them here
+      // for tsc; vitest/vite resolves them at runtime on its own.
+      "vitest": ["./node_modules/vitest/dist/index.d.ts"]
+    }
   },
-  "include": ["../**/*.ts"]
+  "include": ["../**/*.ts", "./vitest.config.ts"]
 }

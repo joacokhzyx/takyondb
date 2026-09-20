@@ -42,10 +42,10 @@ jobs:
     - name: Run Zig unit tests
       run: zig build test
 
-    - name: Typecheck TypeScript SDK
+    - name: Typecheck and unit-test TypeScript SDK
       run: |
         cd src/sdk/ts
-        npx tsc --noEmit
+        npm test
 
     - name: Build Zig Core (ReleaseSafe)
       run: zig build -Doptimize=ReleaseSafe

@@ -32,6 +32,7 @@ coverage/
 
 # Compiled JS next to TS sources (generate via tsc, do not commit)
 src/sdk/**/*.js
+!src/sdk/eslint.config.js
 # NOTE: scripts/*.js are currently tracked for CI compat (legacy).
 # New scripts must be .ts only; generated .js must not be committed.
 

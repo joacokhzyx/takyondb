@@ -10,7 +10,11 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "../../LICENSE", "README.md"],
+  "files": [
+    "dist",
+    "../../LICENSE",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joacokhzyx/takyondb.git",
@@ -24,10 +28,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "build:addon": "cd ../../../ && zig build",
-    "test": "tsc --noEmit",
-    "lint": "eslint '../client/**/*.ts' '../*.ts'",
+    "test": "tsc --noEmit && vitest run",
+    "test:unit": "vitest run",
+    "lint": "cd .. && node ./ts/node_modules/eslint/bin/eslint.js client takyon.ts index.ts",
     "format": "prettier --write '../**/*.ts'"
   },
   "keywords": [
@@ -40,14 +45,15 @@
   "author": "TakyonDB Contributors",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^6.0.0",
-    "@typescript-eslint/parser": "^6.0.0",
-    "eslint": "^8.0.0",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
     "node-api-headers": "^1.9.0",
     "node-gyp": "^12.4.0",
     "prettier": "^3.0.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }
