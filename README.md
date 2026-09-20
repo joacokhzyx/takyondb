@@ -3,7 +3,7 @@
   <h1>TakyonDB</h1>
   <p><strong>Insanely fast, zero-copy, lock-free in-memory database bridging Zig and Node.js</strong></p>
   
-  [![License: AGPLv3 / Commercial](https://img.shields.io/badge/License-AGPLv3%20%2F%20Commercial-blue.svg)](#-license--pricing)
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![Platform: Windows | Linux | macOS](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
   [![Zig](https://img.shields.io/badge/Zig-0.12+-orange.svg)]()
   [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)]()
@@ -56,32 +56,38 @@ npm install takyondb
 ```
 
 ```typescript
-import { TakyonClient } from 'takyondb';
+import { TakyonDB, TakyonSchema } from 'takyondb';
 
-const schema = {
-    name: 'users',
-    fields: {
-        username: { type: 'string', size: 32 },
-        age: { type: 'u32', size: 4 },
-        balance: { type: 'f64', size: 8 }
-    }
-};
+const UserSchema = new TakyonSchema({
+    username: 'string',
+    age: 'uint32',
+    balance: 'float64',
+});
 
-const takyon = new TakyonClient('takyondb_shared_memory', 64 * 1024 * 1024);
-const users = takyon.collection('users', schema);
+// `bindings` is the compiled N-API addon (zig-out/bin/takyondb_bridge.node).
+// See scripts/e2e_*.ts for wiring examples.
+declare const bindings: import('takyondb').TakyonBindings;
 
-// Write (Zero-Copy push to RingBuffer)
+const takyon = new TakyonDB(bindings, 64 * 1024 * 1024);
+const users = takyon.collection('users', UserSchema);
+
+// Write (zero-copy push to RingBuffer)
 users.insert('user_123', {
     username: 'Alice',
     age: 28,
     balance: 1500.50
 });
 
-// Read (Direct memory read via TypedArrays, ~50 CPU cycles)
-const alice = users.get('user_123');
-console.log(alice.username); // "Alice"
-console.log(alice.age);      // 28
+// Read (direct memory read via TypedArrays)
+const alice = users.find('user_123');
+console.log(alice?.username); // "Alice"
+console.log(alice?.age);      // 28
 ```
+
+> Status: pre-alpha. The memory map is defined in
+> `src/core/memory/layout.zig` / `src/sdk/client/layout.ts`. The addon
+> exposes an external `ArrayBuffer` (not yet a real `SharedArrayBuffer`);
+> each `worker_thread` re-maps the segment. See `docs/architecture/`.
 
 ---
 
@@ -101,15 +107,9 @@ In our `Chaos Engine` stress test using 4 concurrent V8 `worker_threads` (100% s
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for our code of conduct and development guidelines. 
-Ensure all commits follow the **Conventional Commits** specification. Note that all contributors must sign a Contributor License Agreement (CLA) to retain our dual-licensing model.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for our code of conduct and development guidelines.
+Ensure all commits follow the **Conventional Commits** specification and sign off with `git commit -s` (DCO).
 
-## 📄 License & Pricing
+## 📄 License
 
-TakyonDB uses a **Dual-Licensing Model**:
-
-1. **Open Source (Free)**: Licensed under the [GNU AGPLv3](LICENSE). 
-   Ideal for independent developers, students, and open-source projects. *Note: If you modify and run TakyonDB as part of a SaaS or cloud service, the AGPLv3 requires you to open-source your entire application stack.*
-   
-2. **Commercial License ($10 / month)**: 
-   For companies and closed-source projects that do not wish to open-source their proprietary code. By paying the monthly license fee, you receive an explicit legal exception to the AGPLv3, allowing you to use TakyonDB in a commercial/private setting without the copyleft obligations.
+TakyonDB is licensed under the [MIT License](LICENSE).
