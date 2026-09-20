@@ -25,16 +25,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - SDK: fixed `tsconfig` include, `binding.gyp` source (`binding.cc`),
   `find()` not-found check (`< 0`), record/string bump offsets,
   input validation, and `e2e_corruption_test.ts` `openSync` typo.
+- Fixed all Zig `0.14.1` incompatibilities (`@fence`, `PROT`/`MAP`
+  bit-casts, unmanaged `ArrayList`, test alignment); `zig build test`
+  is green.
+- Full ART: `Node4 → 16 → 48 → 256` growth with CAS-claimed slots,
+  overwrite-in-place, `remove()` with empty-node unlinking, prefix keys
+  via a reserved terminator byte (keys must be NUL-free), bounded
+  bump allocation (`OutOfMemory` instead of OOB), and 5 unit tests
+  including a 2000-key bulk round-trip.
+- Durable WAL: `fsync` per sector, Direct I/O with automatic buffered
+  fallback (`EINVAL` → reopen), corrupt-delta filtering in the flusher,
+  drain-before-checkpoint, and no more swallowed write errors.
+- Verified snapshots: coverage spans records + ART + string banks,
+  footer CRC is actually checked on load (two-pass), `fsync` + directory
+  sync precede WAL rotation, plus a snapshot→recovery round-trip test.
+- Vacuum: stoppable thread (`stopVacuum` + `takyon_stop_vacuum`),
+  traversal across all node types with corruption guards, exact-size
+  temp buffers, bank geometry derived from arena size, 100 ms backoff.
+- SHM lifecycle: `SharedArena.close()`, `takyon_disconnect_shm`, and an
+  N-API `ArrayBuffer` finalizer end the per-connect fd/handle leak.
+- Hardened `binding.cc`: every `napi_status` checked, keys longer than
+  256 bytes rejected instead of truncated, `TypedArray` validated,
+  `NODE_GYP_MODULE_NAME` fallback so `zig build` and `node-gyp` agree.
+- SDK unit tests with vitest (9 tests: schema, layout, mocked proxy),
+  `tsconfig.build.json` (tests excluded from `dist`), `test:unit` script.
+- Toolchain: ESLint 9 flat config, typescript-eslint 8, `@types/node` 22,
+  `npm audit fix` (only a dev-only `@vitest/mocker` moderate remains).
+- `e2e_vacuum_test.js` fixed for the real 64MB layout; added `ROADMAP.md`.
 
 ### Added
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue/PR templates,
-  `docs/architecture/README.md`.
+  `docs/architecture/README.md`, `ROADMAP.md`.
 - `src/sdk/client/layout.ts` shared constants.
 
 ### Known limitations
-- ART only implements `Node256` insertions; `Node4/16/48`, delete/update,
-  and path compression are still missing.
-- MPSC ring still needs per-slot sequence numbers for full rigor.
-- WAL/snapshot lack `fsync` + snapshot CRC verification + quiesce.
-- Vacuum is not production-safe (no epoch protection / stop signal).
+- ART has no shrink-on-delete and no freelist (unlinked nodes are
+  abandoned bump memory until compaction work lands).
+- MPMC ring still needs per-slot sequence numbers for full rigor.
 - Addon exposes an external `ArrayBuffer`, not a true `SharedArrayBuffer`.
+- Vacuum `remove()`/`insert()` on overlapping keys need external
+  quiescence (the daemon never deletes).
