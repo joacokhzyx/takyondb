@@ -5,7 +5,7 @@ import { rmSync, existsSync, openSync, writeSync, closeSync } from 'fs';
 import { join } from 'path';
 
 const DB_PATH = join(process.cwd(), 'data.takyon');
-const DAEMON_BIN = join(process.cwd(), 'zig-out', 'bin', process.platform === 'win32' ? 'takyondb.exe' : 'takyondb');
+const DAEMON_BIN = join(__dirname, '..', 'zig-out', 'bin', process.platform === 'win32' ? 'takyondb.exe' : 'takyondb');
 const addon = require('../zig-out/bin/takyondb_bridge.node');
 
 const bindings: TakyonBindings = {
@@ -18,6 +18,7 @@ const bindings: TakyonBindings = {
     trigger_checkpoint: () => addon.trigger_checkpoint(),
     start_vacuum: (string_offset: number) => addon.start_vacuum(string_offset),
     stop_vacuum: () => addon.stop_vacuum(),
+    disconnect_shm: () => addon.disconnect_shm(),
 };
 
 async function sleep(ms: number) {
@@ -40,9 +41,13 @@ function spawnDaemon(expectWarning: boolean = false): Promise<any> {
                 resolve({ daemon, warningFound });
             }
         });
-        
+
         daemon.stdout.on('data', (data) => {
-            console.log(`[Daemon stdout] ${data.toString().trim()}`);
+            const str = data.toString();
+            console.log(`[Daemon stdout] ${str.trim()}`);
+            if (str.includes('Server ready') || str.includes('Waiting for connections')) {
+                resolve({ daemon, warningFound });
+            }
         });
         
         daemon.on('error', (err) => {
@@ -62,7 +67,9 @@ async function runCorruptionTest() {
     let { daemon } = await spawnDaemon();
     
     console.log('[E2E] Connecting client and writing healthy deltas...');
-    let client = new TakyonClient(bindings, 65536);
+    // Map the full arena: the shared 4096-slot ring alone needs 256KB,
+    // and string writes live at 10MB. A smaller mapping cannot host them.
+    let client = new TakyonClient(bindings, 64 * 1024 * 1024);
     const UserSchema = new TakyonSchema({
         id: 'uint32',
         role: 'uint8',
@@ -101,4 +108,7 @@ async function runCorruptionTest() {
     daemon2.kill('SIGKILL');
 }
 
-runCorruptionTest().catch(console.error);
+runCorruptionTest().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+});

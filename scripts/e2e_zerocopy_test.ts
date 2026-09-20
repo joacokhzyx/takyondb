@@ -60,6 +60,7 @@ if (isMainThread) {
                     console.log(`[E2E] Search for ${NUM_INSERTS} keys in ${(searchEnd - searchStart).toFixed(2)} ms.`);
                     if (errors > 0) {
                         console.error(`[E2E] FAILURE: ${errors} keys not found.`);
+                        process.exitCode = 1;
                     } else {
                         console.log(`[E2E] All keys found successfully. Latency: ${(((searchEnd - searchStart) * 1000) / NUM_INSERTS).toFixed(2)} µs per search.`);
                     }

@@ -13,7 +13,7 @@ async function run() {
         console.log(`[E2E] Post-Crash Verification Phase...`);
         const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
         if (!memoryBuffer) {
-            console.error("Fallo al conectar post-crash");
+            console.error("Failed to connect post-crash");
             process.exit(1);
         }
 
@@ -41,7 +41,7 @@ async function run() {
         }
 
         if (errors > 0 || !validResidual) {
-            console.error(`[E2E] FALLO: ${errors} keys no incontradas, Residual Válido: ${validResidual}`);
+            console.error(`[E2E] FAILURE: ${errors} keys not found, Residual Valid: ${validResidual}`);
             process.exit(1);
         } else {
             console.log(`[E2E] SUCCESS: ART Snapshot and Residual WAL recovered perfectly post-crash.`);
@@ -52,7 +52,7 @@ async function run() {
     console.log(`[E2E] Insertion and Snapshot Phase...`);
     const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
     if (!memoryBuffer) {
-        console.error("Fallo al conectar");
+        console.error("Failed to connect");
         process.exit(1);
     }
 
@@ -65,7 +65,7 @@ async function run() {
     console.log(`[E2E] Inserted ${NUM_INSERTS_BEFORE} records.`);
 
     // 2. Trigger Checkpoint
-    console.log(`[E2E] Disparando Checkpoint (Snapshot)...`);
+    console.log(`[E2E] Triggering Checkpoint (Snapshot)...`);
     takyondb.trigger_checkpoint();
 
     // Wait a bit to insure flusher creates the snapshot and rotates WAL
@@ -79,12 +79,12 @@ async function run() {
     
     // Notify Arena to push a delta of EXACTLY 4086 bytes (this will trigger a flush immediately)
     takyondb.notifyArena(RESIDUAL_OFFSET, RESIDUAL_SIZE);
-    console.log(`[E2E] Inserted ${RESIDUAL_SIZE} bytes adicionales (WAL residual).`);
+    console.log(`[E2E] Inserted ${RESIDUAL_SIZE} additional bytes (residual WAL).`);
     
     // Wait for the flusher to write it to disk before we crash
     await new Promise(r => setTimeout(r, 500));
     
-    console.log(`[E2E] Fase de inserción completada. Por favor, mata el proceso del Daemon (SIGKILL) y luego corre este script con --verify.`);
+    console.log(`[E2E] Insertion phase complete. Please kill the Daemon process (SIGKILL) and then run this script with --verify.`);
 }
 
 run();
