@@ -1,13 +1,39 @@
 # Zig build artifacts
+.zig-cache/
 zig-cache/
 zig-out/
+
+# TakyonDB runtime artifacts (never commit database files)
+data.takyon*
+*.snap
+*.node
+
+# Native build outputs
+*.exe
+*.dll
+*.lib
+*.pdb
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+
+# Windows import lib (fetch in CI, do not commit)
+/lib/node.lib
 
 # Node.js / TypeScript build artifacts
 node_modules/
 dist/
+build/
 coverage/
 *.log
 .npm/
+
+# Compiled JS next to TS sources (generate via tsc, do not commit)
+src/sdk/**/*.js
+# NOTE: scripts/*.js are currently tracked for CI compat (legacy).
+# New scripts must be .ts only; generated .js must not be committed.
 
 # OS-specific files
 .DS_Store
@@ -18,3 +44,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Env / secrets
+.env
+.env.*
