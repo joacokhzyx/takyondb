@@ -26,7 +26,7 @@
 
 extern "C" {
     void* takyon_connect_shm(const char* name, size_t size);
-    void takyon_disconnect_shm(void* base);
+    void takyon_disconnect_shm();
     int32_t takyon_write_delta(uint32_t offset, uint32_t size, const uint8_t* data);
     int32_t takyon_notify_arena(uint32_t offset, uint32_t size);
     int32_t takyon_verify_test_value();
@@ -60,14 +60,17 @@ extern "C" {
         }                                                                 \
     } while (0)
 
-// Runs when the external ArrayBuffer is GC'd: unmaps the segment and
-// closes its OS handle instead of leaking an fd per connect.
+// Runs when the external ArrayBuffer is GC'd. Intentionally a no-op: the
+// engine owns a single process-wide SHM mapping with a refcount, and V8 may
+// collect any individual buffer (workers routinely discard theirs right
+// after connecting). Unmapping here once pulled live memory out from under
+// concurrent workers (use-after-unmap, silent -1s, reused address ranges
+// aliasing as corrupt index nodes). Teardown is explicit via
+// disconnectSharedMemory() only.
 static void ArrayBufferFinalizer(napi_env env, void* data, void* hint) {
     (void)env;
+    (void)data;
     (void)hint;
-    if (data != nullptr) {
-        takyon_disconnect_shm(data);
-    }
 }
 
 napi_value InitSharedMemory(napi_env env, napi_callback_info info) {
@@ -172,6 +175,10 @@ static bool CopyKey(napi_env env, napi_value str, char out[TAKYON_MAX_KEY + 1],
     if (napi_get_value_string_utf8(env, str, out, TAKYON_MAX_KEY + 1, &copied) != napi_ok) {
         return false;
     }
+    if (memchr(out, '\0', key_len) != nullptr) {
+        napi_throw_range_error(env, nullptr, "key must not contain NUL bytes");
+        return false;
+    }
     *out_len = (uint32_t)copied;
     return true;
 }
@@ -240,10 +247,20 @@ napi_value StartVacuum(napi_env env, napi_callback_info info) {
     CHECK_NAPI(napi_create_int32(env, status, &result));
     return result;
 }
-
 napi_value StopVacuum(napi_env env, napi_callback_info info) {
     (void)info;
     takyon_stop_vacuum();
+    napi_value res;
+    CHECK_NAPI(napi_create_int32(env, 0, &res));
+    return res;
+}
+
+// Explicit process-wide engine teardown (unmap + close handle +
+// invalidate state). Call only when no thread will touch the engine
+// afterwards (end of process/tests). NOT called by the finalizer.
+napi_value DisconnectShm(napi_env env, napi_callback_info info) {
+    (void)info;
+    takyon_disconnect_shm();
     napi_value res;
     CHECK_NAPI(napi_create_int32(env, 0, &res));
     return res;
@@ -259,9 +276,10 @@ napi_value Init(napi_env env, napi_value exports) {
         { "search_index", 0, SearchIndex, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
-        { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 }
+        { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
+        { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 9, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 10, desc));
     return exports;
 }
 
