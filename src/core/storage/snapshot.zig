@@ -26,6 +26,15 @@ fn readBump(arena_mem: []const u8, offset: usize, fallback: u32) u32 {
     return v;
 }
 
+/// Minimum interval between successful snapshots (milliseconds). Settable;
+/// tests that call createSnapshot once are unaffected.
+pub var minIntervalMs: i64 = 5000;
+
+/// Timestamp (std.time.milliTimestamp) of the last successful snapshot;
+/// -1 means none yet. File-scope by design: the flusher is the sole
+/// caller, so no locking is needed.
+var last_snapshot_ms: i64 = -1;
+
 /// Highest byte the snapshot must cover: records, ART nodes and the active
 /// string bank. Older snapshots only covered the record bump, silently
 /// dropping the index and all strings on recovery.
@@ -76,6 +85,15 @@ fn syncPosix(fd: std.posix.fd_t) void {
 }
 
 pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *RingBuffer) !void {
+    // Throttle: return early (log + return, NOT an error) when called
+    // sooner than minIntervalMs after the last success.
+    {
+        const now = std.time.milliTimestamp();
+        if (last_snapshot_ms >= 0 and now - last_snapshot_ms < minIntervalMs) {
+            std.debug.print("[TakyonDB-Snapshot] Throttled ({} ms since last); skipping.\n", .{now - last_snapshot_ms});
+            return;
+        }
+    }
     // Drain queued deltas into the WAL first: the snapshot must cover every
     // acknowledged write, and the WAL is truncated right after.
     var drained: usize = 0;
@@ -252,6 +270,30 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
 
     std.debug.print("[TakyonDB-Snapshot] Snapshot saved and validated. Rotating WAL...\n", .{});
 
+    // The snapshot covers every acknowledged write, so archived WAL
+    // segments are stale: best-effort delete `<wal>.000000..` until the
+    // first missing N (cap 100000, mirroring wal.zig MAX_SEGMENTS).
+    {
+        const base = wal.path[0..wal.path.len];
+        var n: u32 = 0;
+        var sbuf: [4096]u8 = undefined;
+        while (n < 100_000) : (n += 1) {
+            if (sbuf.len < base.len + 8) break;
+            @memcpy(sbuf[0..base.len], base);
+            sbuf[base.len] = '.';
+            var v = n;
+            var i: usize = 6;
+            while (i > 0) : (i -= 1) {
+                sbuf[base.len + i] = @as(u8, @intCast(v % 10)) + '0';
+                v /= 10;
+            }
+            const seg = sbuf[0 .. base.len + 7];
+            std.fs.cwd().deleteFile(seg) catch |err| {
+                if (err == error.FileNotFound) break; // first missing: stop
+                continue; // best effort: keep trying higher indexes
+            };
+        }
+    }
     // 2. Log Rotation
     // The flusher drained the ring above, so no acknowledged write is lost.
     // Close current WAL
@@ -290,7 +332,13 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         wal.fd = @as(std.posix.fd_t, raw_fd);
     }
     wal.sector_pos = 0;
+    // Fresh empty live file: reset the segment byte counter and restart
+    // rotation suffixes at 0. Segments stay dense-from-0, which is what
+    // makes recovery's stop-at-first-missing scan exact.
+    wal.bytes_written = 0;
+    wal.next_segment = 0;
 
+    last_snapshot_ms = std.time.milliTimestamp();
     std.debug.print("[TakyonDB-Snapshot] WAL truncated successfully. Resuming operations.\n", .{});
 }
 
