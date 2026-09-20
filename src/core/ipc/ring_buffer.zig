@@ -6,6 +6,7 @@
 // ============================================================================
 
 const std = @import("std");
+const layout = @import("../memory/layout.zig");
 
 /// Cache line size to prevent false sharing in CPU caches (L1/L2).
 const CACHE_LINE = 64;
@@ -136,6 +137,14 @@ pub const RingBuffer = struct {
         return delta;
     }
 };
+
+// Wave-1 memory-map v2: the header footprint is owned by layout.zig.
+// Fail the build (not production) if the struct ever drifts.
+comptime {
+    if (@sizeOf(RingBuffer.Header) != layout.RING_HEADER_BYTES) {
+        @compileError("RingBuffer.Header size drifted from layout.RING_HEADER_BYTES");
+    }
+}
 
 test "RingBuffer push and pop concurrency check" {
     var mem: [1024]u8 align(CACHE_LINE) = undefined;
