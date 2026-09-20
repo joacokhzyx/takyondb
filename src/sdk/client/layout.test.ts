@@ -42,4 +42,22 @@ describe('shared layout', () => {
             layout.RING_OFFSET + layout.ringBytes(4096) + 1024
         );
     });
+
+    it('mirrors Wave-1 enlarged ring layout (RECORD_BUMP 263360, RECORD_START 263368)', () => {
+        expect(layout.RING_HEADER_BYTES).toBe(192);
+        expect(layout.RECORD_BUMP_OFFSET).toBe(
+            layout.RING_OFFSET + layout.RING_HEADER_BYTES + layout.RING_DEFAULT_CAPACITY * layout.DELTA_SIZE
+        );
+        expect(layout.RECORD_BUMP_OFFSET).toBe(263360);
+        expect(layout.RECORD_START).toBe(layout.RECORD_BUMP_OFFSET + 8);
+        expect(layout.RECORD_START).toBe(263368);
+        expect(layout.RECORD_BUMP_INIT).toBe(layout.RECORD_START);
+    });
+
+    it('exposes header magic/version constants and 16MB minimum arena', () => {
+        expect(layout.MAGIC_OFFSET).toBe(0);
+        expect(layout.VERSION_OFFSET).toBe(4);
+        expect(layout.LAYOUT_VERSION).toBe(2);
+        expect(layout.MIN_ARENA_SIZE).toBe(16 * 1024 * 1024);
+    });
 });
