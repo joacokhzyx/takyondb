@@ -39,7 +39,7 @@ pub const DELTA_SIZE: usize = 64;
 /// bump word; do not introduce competing bumps. It sits right after the
 /// ring (header + default-capacity slots); records start 8 bytes later so
 /// the bump word never aliases record data.
-pub const RECORD_BUMP_OFFSET: usize = RING_OFFSET + RING_HEADER_BYTES + RING_DEFAULT_CAPACITY * DELTA_SIZE;
+pub const RECORD_BUMP_OFFSET: usize = RING_OFFSET + ringBytes(RING_DEFAULT_CAPACITY);
 pub const RECORD_BUMP_INIT: u32 = RECORD_START;
 
 /// Fixed-length record arena. Grows from RECORD_START up to ART_ROOT_OFFSET,
@@ -64,7 +64,7 @@ pub const ARENA_MAGIC: u32 = 0x54414B59; // "TAKY"
 /// RING_OFFSET (header + slots), for bounds checking before init.
 pub fn ringBytes(capacity: usize) usize {
     // Header is 3 cache lines (RING_HEADER_BYTES) due to align(64) on each usize.
-    return RING_HEADER_BYTES + capacity * DELTA_SIZE;
+    return RING_HEADER_BYTES + capacity * 64 + capacity * 8;
 }
 
 /// Lowest arena size that fits the given ring capacity plus ART root.
@@ -77,11 +77,11 @@ test "layout sanity" {
     try std.testing.expect(ART_ROOT_OFFSET > RECORD_START);
     try std.testing.expect(STRING_ARENA_START > ART_ROOT_OFFSET);
     try std.testing.expect(MIN_ARENA_SIZE >= STRING_ARENA_START);
-    try std.testing.expect(ringBytes(16) == 192 + 16 * 64);
+    try std.testing.expect(ringBytes(16) == 192 + 16 * 64 + 16 * 8);
     try std.testing.expect(MAGIC_OFFSET == 0);
     try std.testing.expect(VERSION_OFFSET == 4);
-    try std.testing.expect(RECORD_BUMP_OFFSET == 263360);
-    try std.testing.expect(RECORD_START == 263368);
+    try std.testing.expect(RECORD_BUMP_OFFSET == 296128);
+    try std.testing.expect(RECORD_START == 296136);
     try std.testing.expect(@as(usize, RECORD_BUMP_INIT) == RECORD_START);
     try std.testing.expect(RECORD_START + 8 < ART_ROOT_OFFSET);
 }
