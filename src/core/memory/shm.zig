@@ -2,7 +2,7 @@
 // File: shm.zig
 // Description: Cross-platform shared memory managemint and bump allocator.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");

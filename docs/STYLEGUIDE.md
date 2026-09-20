@@ -36,8 +36,8 @@ Every source file must begin with a structured header detailing its file name, p
 // ============================================================================
 // File: [filename.zig]
 // Description: [Provide a brief, high-level overview of the module logic]
-// Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// Author/Maintainer: TakyonDB Contributors
+// License: MIT. See LICENSE for details.
 // ============================================================================
 ```
 
@@ -47,8 +47,8 @@ Every source file must begin with a structured header detailing its file name, p
  * ============================================================================
  * File: [filename.ts]
  * Description: [Provide a brief, high-level overview of the module/class]
- * Author/Maintainer: TakyonDB Team
- * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+ * Author/Maintainer: TakyonDB Contributors
+ * License: MIT. See LICENSE for details.
  * ============================================================================
  */
 ```

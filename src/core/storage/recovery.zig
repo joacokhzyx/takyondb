@@ -2,7 +2,7 @@
 // File: recovery.zig
 // Description: Isomorphic crash recovery bootloader for TakyonDB.
 // Author/Maintainer: TakyonDB Team
-// License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+// License: MIT. See LICENSE for details.
 // ============================================================================
 
 const std = @import("std");

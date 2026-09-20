@@ -4,11 +4,31 @@
   "description": "TypeScript SDK wrapper for the ultra-low-latency TakyonDB storage engine",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "../../LICENSE", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joacokhzyx/takyondb.git",
+    "directory": "src/sdk/ts"
+  },
+  "bugs": {
+    "url": "https://github.com/joacokhzyx/takyondb/issues"
+  },
+  "homepage": "https://github.com/joacokhzyx/takyondb#readme",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "build:addon": "cd ../../../ && zig build",
-    "lint": "eslint 'src/**/*.ts'",
-    "format": "prettier --write 'src/**/*.ts'"
+    "test": "tsc --noEmit",
+    "lint": "eslint '../client/**/*.ts' '../*.ts'",
+    "format": "prettier --write '../**/*.ts'"
   },
   "keywords": [
     "database",
@@ -17,8 +37,8 @@
     "typescript",
     "zig"
   ],
-  "author": "TakyonDB Team",
-  "license": "AGPL-3.0-only OR LicenseRef-Commercial",
+  "author": "TakyonDB Contributors",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",

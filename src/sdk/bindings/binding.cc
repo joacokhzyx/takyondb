@@ -3,7 +3,7 @@
  * File: binding.cc
  * Description: Node-API (N-API) Bridge to interface V8 with TakyonDB C-ABI.
  * Author/Maintainer: TakyonDB Team
- * License: Dual Licensed (AGPLv3 / Commercial). See LICENSE for details.
+ * License: MIT. See LICENSE for details.
  * ============================================================================
  */
 

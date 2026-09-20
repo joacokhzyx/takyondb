@@ -2,7 +2,7 @@ class Takyondb < Formula
   desc "Insanely fast, zero-copy, lock-free in-memory database"
   homepage "https://github.com/joacokhzyx/takyondb"
   url "https://github.com/joacokhzyx/takyondb/archive/refs/tags/v1.0.0.tar.gz"
-  license "AGPL-3.0-only"
+  license "MIT"
 
   depends_on "zig" => :build
 
