@@ -40,7 +40,6 @@ Source: "..\..\zig-out\bin\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignorevers
 Source: "..\..\zig-out\bin\takyondb_bridge.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\COMMERCIAL_LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName} Daemon"; Filename: "{app}\{#MyAppExeName}"
