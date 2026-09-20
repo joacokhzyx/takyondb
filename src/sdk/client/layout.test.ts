@@ -33,8 +33,8 @@ describe('shared layout', () => {
     });
 
     it('computes ring and arena sizes like layout.zig', () => {
-        expect(layout.ringBytes(16)).toBe(192 + 16 * 64);
-        expect(layout.ringBytes(4096)).toBe(192 + 4096 * layout.DELTA_SIZE);
+        expect(layout.ringBytes(16)).toBe(192 + 16 * 64 + 16 * 8);
+        expect(layout.ringBytes(4096)).toBe(192 + 4096 * (layout.DELTA_SIZE + layout.RING_SEQ_BYTES));
         expect(layout.minArenaForCapacity(16)).toBe(
             layout.RING_OFFSET + layout.ringBytes(16) + 1024
         );
@@ -43,14 +43,14 @@ describe('shared layout', () => {
         );
     });
 
-    it('mirrors Wave-1 enlarged ring layout (RECORD_BUMP 263360, RECORD_START 263368)', () => {
+    it('mirrors Wave-1 enlarged ring layout (RECORD_BUMP 296128, RECORD_START 296136)', () => {
         expect(layout.RING_HEADER_BYTES).toBe(192);
         expect(layout.RECORD_BUMP_OFFSET).toBe(
-            layout.RING_OFFSET + layout.RING_HEADER_BYTES + layout.RING_DEFAULT_CAPACITY * layout.DELTA_SIZE
+            layout.RING_OFFSET + layout.RING_HEADER_BYTES + layout.RING_DEFAULT_CAPACITY * (layout.DELTA_SIZE + layout.RING_SEQ_BYTES)
         );
-        expect(layout.RECORD_BUMP_OFFSET).toBe(263360);
+        expect(layout.RECORD_BUMP_OFFSET).toBe(296128);
         expect(layout.RECORD_START).toBe(layout.RECORD_BUMP_OFFSET + 8);
-        expect(layout.RECORD_START).toBe(263368);
+        expect(layout.RECORD_START).toBe(296136);
         expect(layout.RECORD_BUMP_INIT).toBe(layout.RECORD_START);
     });
 
