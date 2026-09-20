@@ -24,6 +24,7 @@ export interface TakyonBindings {
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;
+    disconnect_shm?(): number;
 }
 
 export type MappedObject<T> = {
@@ -55,6 +56,16 @@ export class TakyonClient {
 
     public stopVacuum(): boolean {
         const fn = this.bindings.stop_vacuum;
+        if (!fn) return false;
+        return fn.call(this.bindings) === 0;
+    }
+
+    /**
+     * Explicit process-wide engine teardown. Call only when no thread
+     * will touch the engine afterwards (end of process/tests).
+     */
+    public shutdownEngine(): boolean {
+        const fn = this.bindings.disconnect_shm;
         if (!fn) return false;
         return fn.call(this.bindings) === 0;
     }
