@@ -21,30 +21,55 @@ pub const VacuumError = error{
 var running = std.atomic.Value(bool).init(false);
 var vacuum_thread: ?std.Thread = null;
 var vacuum_mutex = std.Thread.Mutex{};
+var vacuum_offsets: ?[]u32 = null;
 
 /// Starts the background vacuum thread. Returns AlreadyRunning if one is
 /// active. Stop it with stopVacuum() (joins the thread; no more detached
 /// infinite threads).
-pub fn spawnVacuum(arena: *SharedArena, art_index: *art.ArtIndex, string_field_offset: u32) !void {
+pub fn spawnVacuumMulti(arena: *SharedArena, art_index: *art.ArtIndex, offsets: []const u32) !void {
     vacuum_mutex.lock();
     defer vacuum_mutex.unlock();
     if (running.load(.acquire)) return error.AlreadyRunning;
+    const allocator = std.heap.page_allocator;
+    const dup = allocator.dupe(u32, offsets) catch return error.OutOfMemory;
+    vacuum_offsets = dup;
     running.store(true, .release);
-    vacuum_thread = try std.Thread.spawn(.{}, vacuumLoop, .{ arena, art_index, string_field_offset });
+    vacuum_thread = std.Thread.spawn(.{}, vacuumLoopMulti, .{ arena, art_index, @as([]const u32, dup) }) catch |err| {
+        allocator.free(dup);
+        vacuum_offsets = null;
+        running.store(false, .release);
+        vacuum_thread = null;
+        return err;
+    };
+}
+
+pub fn spawnVacuum(arena: *SharedArena, art_index: *art.ArtIndex, string_field_offset: u32) !void {
+    var tmp = [_]u32{string_field_offset};
+    return spawnVacuumMulti(arena, art_index, tmp[0..]);
 }
 
 pub fn stopVacuum() void {
     vacuum_mutex.lock();
     const th = vacuum_thread;
     vacuum_thread = null;
+    const offs = vacuum_offsets;
+    vacuum_offsets = null;
     vacuum_mutex.unlock();
     running.store(false, .release);
     if (th) |t| t.join();
+    if (offs) |o| {
+        std.heap.page_allocator.free(o);
+    }
 }
 
 fn vacuumLoop(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u32) void {
+    var tmp = [_]u32{string_field_offset};
+    vacuumLoopMulti(arena, index, tmp[0..]);
+}
+
+fn vacuumLoopMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32) void {
     while (running.load(.acquire)) {
-        runVacuumOnce(arena, index, string_field_offset) catch {};
+        runVacuumOnceMulti(arena, index, offsets) catch {};
         // Back off: compaction is periodic maintenance, not a hot loop.
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
@@ -62,6 +87,11 @@ pub fn minArenaForVacuum() usize {
 }
 
 pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u32) !void {
+    var tmp = [_]u32{string_field_offset};
+    return runVacuumOnceMulti(arena, index, tmp[0..]);
+}
+
+pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32) !void {
     const allocator = std.heap.page_allocator;
     if (arena.memory.len < minArenaForVacuum()) return error.ArenaTooSmall;
     if (layout.STRING_BUMP_OFFSET + 4 > arena.memory.len) return error.ArenaTooSmall;
@@ -78,20 +108,24 @@ pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, string_field_off
     if (live_records.items.len == 0) return;
 
     // 2. First pass: gather live (offset, len) pairs and size the temp buffer.
+    // Multi-column: one pass per column offset, same validation as the
+    // legacy single-column pass.
     var live_strings = std.ArrayList(LiveString).init(allocator);
     defer live_strings.deinit();
 
     var total_len: usize = 0;
-    for (live_records.items) |record_offset| {
-        const fat_addr = @as(usize, record_offset) + string_field_offset;
-        if (fat_addr + 8 > arena.memory.len) continue;
-        const fat_offset = std.mem.readInt(u32, arena.memory[fat_addr..][0..4], .little);
-        const fat_len = std.mem.readInt(u32, arena.memory[fat_addr + 4 ..][0..4], .little);
-        if (fat_offset == 0 or fat_len == 0) continue;
-        if (@as(usize, fat_offset) + fat_len > arena.memory.len) continue;
-        if (total_len + fat_len > arena.memory.len) break; // Corrupt lengths; stop.
-        total_len += fat_len;
-        try live_strings.append(.{ .fat_addr = fat_addr, .offset = fat_offset, .len = fat_len });
+    for (offsets) |string_field_offset| {
+        for (live_records.items) |record_offset| {
+            const fat_addr = @as(usize, record_offset) + string_field_offset;
+            if (fat_addr + 8 > arena.memory.len) continue;
+            const fat_offset = std.mem.readInt(u32, arena.memory[fat_addr..][0..4], .little);
+            const fat_len = std.mem.readInt(u32, arena.memory[fat_addr + 4 ..][0..4], .little);
+            if (fat_offset == 0 or fat_len == 0) continue;
+            if (@as(usize, fat_offset) + fat_len > arena.memory.len) continue;
+            if (total_len + fat_len > arena.memory.len) break; // Corrupt lengths; stop.
+            total_len += fat_len;
+            try live_strings.append(.{ .fat_addr = fat_addr, .offset = fat_offset, .len = fat_len });
+        }
     }
     if (live_strings.items.len == 0) return;
 
@@ -206,4 +240,94 @@ fn traverseCollect(arena_mem: []u8, node_raw: u32, list: *std.ArrayList(u32)) !v
             },
         }
     }
+}
+
+test "vacuum multi-column relocates both string columns" {
+    const allocator = std.heap.page_allocator;
+    const mem_size = layout.STRING_DATA_START + 1024 * 1024;
+    const mem = try allocator.alloc(u8, mem_size);
+    defer allocator.free(mem);
+    @memset(mem, 0);
+
+    var arena = SharedArena{ .memory = mem, .bump_offset = 0, .handle = null };
+    var idx = art.ArtIndex.init(mem, 0, 4, 8);
+
+    const OFF_A: u32 = 16;
+    const OFF_B: u32 = 32;
+    const rec0: u32 = 4096;
+    const rec1: u32 = 4160;
+
+    const bank0 = layout.STRING_DATA_START;
+    const region = mem.len - layout.STRING_DATA_START;
+    const bank_size = region / 2;
+    const bank1 = layout.STRING_DATA_START + bank_size;
+
+    const s00 = "alpha-one";
+    const s01 = "beta-two-longer";
+    const s10 = "gamma";
+    const s11 = "delta-fourth";
+
+    var cursor: usize = bank0;
+    // rec0 col A
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s00.len], s00);
+    const old00: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], old00, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_A + 4 ..][0..4], @intCast(s00.len), .little);
+    cursor += s00.len;
+    // rec0 col B
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s01.len], s01);
+    const old01: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], old01, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec0) + OFF_B + 4 ..][0..4], @intCast(s01.len), .little);
+    cursor += s01.len;
+    // rec1 col A
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s10.len], s10);
+    const old10: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_A ..][0..4], old10, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_A + 4 ..][0..4], @intCast(s10.len), .little);
+    cursor += s10.len;
+    // rec1 col B
+    std.mem.copyForwards(u8, mem[cursor .. cursor + s11.len], s11);
+    const old11: u32 = @intCast(cursor);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_B ..][0..4], old11, .little);
+    std.mem.writeInt(u32, mem[@as(usize, rec1) + OFF_B + 4 ..][0..4], @intCast(s11.len), .little);
+    cursor += s11.len;
+
+    // Bump points inside bank0 so the inactive bank is bank1.
+    std.mem.writeInt(u32, mem[layout.STRING_BUMP_OFFSET..][0..4], @intCast(cursor), .little);
+
+    try idx.insert("a", rec0);
+    try idx.insert("b", rec1);
+
+    var cols = [_]u32{ OFF_A, OFF_B };
+    try runVacuumOnceMulti(&arena, &idx, cols[0..]);
+
+    const new00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], .little);
+    const new01 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], .little);
+    const new10 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_A ..][0..4], .little);
+    const new11 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_B ..][0..4], .little);
+    const len00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A + 4 ..][0..4], .little);
+    const len01 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_B + 4 ..][0..4], .little);
+    const len10 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_A + 4 ..][0..4], .little);
+    const len11 = std.mem.readInt(u32, mem[@as(usize, rec1) + OFF_B + 4 ..][0..4], .little);
+
+    try std.testing.expectEqual(@as(u32, @intCast(s00.len)), len00);
+    try std.testing.expectEqual(@as(u32, @intCast(s01.len)), len01);
+    try std.testing.expectEqual(@as(u32, @intCast(s10.len)), len10);
+    try std.testing.expectEqual(@as(u32, @intCast(s11.len)), len11);
+
+    // All four fat pointers must have moved into the inactive bank.
+    for ([_]u32{ new00, new01, new10, new11 }) |no| {
+        try std.testing.expect(no >= @as(u32, @intCast(bank1)));
+        try std.testing.expect(@as(usize, no) < bank1 + bank_size);
+    }
+    try std.testing.expect(new00 != old00);
+    try std.testing.expect(new01 != old01);
+    try std.testing.expect(new10 != old10);
+    try std.testing.expect(new11 != old11);
+
+    try std.testing.expect(std.mem.eql(u8, mem[new00 .. new00 + s00.len], s00));
+    try std.testing.expect(std.mem.eql(u8, mem[new01 .. new01 + s01.len], s01));
+    try std.testing.expect(std.mem.eql(u8, mem[new10 .. new10 + s10.len], s10));
+    try std.testing.expect(std.mem.eql(u8, mem[new11 .. new11 + s11.len], s11));
 }
