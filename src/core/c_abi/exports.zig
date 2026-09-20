@@ -55,9 +55,9 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
     // Connect to existing SHM block if server daemon is running; otherwise initialize SHM block directly (for autonomous E2E tests).
     // Track whether we created the segment so the ring header is initialized exactly once.
     var created: bool = false;
-    arena = SharedArena.init(shm_name, size, false) catch blk: {
+    arena = SharedArena.init(shm_name, size, .read_write) catch blk: {
         created = true;
-        break :blk SharedArena.init(shm_name, size, true) catch return null;
+        break :blk SharedArena.init(shm_name, size, .server) catch return null;
     };
     arena_ready = true;
     engine_refs = 1;

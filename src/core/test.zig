@@ -8,9 +8,11 @@
 comptime {
     _ = @import("memory/shm.zig");
     _ = @import("memory/layout.zig");
+    _ = @import("memory/vacuum.zig");
     _ = @import("ipc/ring_buffer.zig");
     _ = @import("index/art.zig");
     _ = @import("storage/wal.zig");
+    _ = @import("storage/snapshot.zig");
     _ = @import("storage/recovery.zig");
     _ = @import("c_abi/exports.zig");
 }
