@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const layout = @import("../memory/layout.zig");
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
 const snapshot = @import("snapshot.zig");
@@ -21,7 +22,18 @@ pub const SECTOR_PAYLOAD: usize = 4092;
 pub const SECTOR_SIZE: usize = 4096;
 
 /// Largest single entry the log accepts (notifyArena payloads peak ~4KB).
+/// Unified with recovery.zig: the replay parser accepts lengths <= this
+/// value; larger lengths stop the entry scan as corrupt.
 pub const MAX_ENTRY_LEN: u32 = 8192;
+
+/// Bytes per WAL segment before rotation. After flushBuffer completes a
+/// sector and bytes_written >= SEGMENT_MAX, the live file is renamed to
+/// `<path>.NNNNNN` and a fresh live file is opened.
+pub const SEGMENT_MAX: usize = 64 * 1024 * 1024;
+
+/// Cap for segment indexes (000000..099999). Bounds rotation file probes,
+/// recovery replay, and snapshot cleanup. Documented O(n) worst case.
+pub const MAX_SEGMENTS: u32 = 100_000;
 
 /// WalManager handles persisting memory deltas asynchronously to disk,
 /// bypassing the OS Page Cache via Direct I/O where applicable.
@@ -39,6 +51,20 @@ pub const WalManager = struct {
     path: [:0]u8,
     /// False once Direct I/O proved unsupported (tmpfs, etc.).
     direct: bool,
+    /// All payload+sector bytes ever written to the current segment
+    /// (4096 per flushed sector). Seeded from the live file size on init
+    /// so restarts rotate on schedule; reset to 0 on rotation/snapshot.
+    bytes_written: u64,
+    /// Next rotation suffix N for `<path>.NNNNNN`. On init this probes
+    /// for the first free N (0..MAX_SEGMENTS, O(n) stats; acceptable and
+    /// simple) so restarts never overwrite older segments. Snapshot
+    /// rotation deletes segments and resets this to 0, keeping segments
+    /// dense-from-0 so recovery's stop-at-first-missing rule stays exact.
+    next_segment: u32,
+    /// Lifecycle phase: 0=open, 1=closing, 2=closed. shutdown() CAS 0->1
+    /// (second call no-ops); flushBuffer no-ops once phase==2 so post-
+    /// close flushes cannot touch a closed fd or freed buffer.
+    phase: std.atomic.Value(u8),
 
     /// Initializes the WAL engine targeting a specific file.
     pub fn init(allocator: std.mem.Allocator, path: [:0]const u8) !WalManager {
@@ -88,9 +114,20 @@ pub const WalManager = struct {
                 .allocator = allocator,
                 .path = owned,
                 .direct = true,
+                .bytes_written = if (file_size > 0) @as(u64, @intCast(file_size)) else 0,
+                .next_segment = firstFreeSegment(owned),
+                .phase = std.atomic.Value(u8).init(0),
             };
         } else {
             const fd = try openAppend(owned, true);
+            // Durability: fsync the parent directory (best effort) so the
+            // file creation itself survives a crash. Same pattern as
+            // snapshot.zig syncPosix; failures must not fail init.
+            fsyncParentDir();
+            var existing: u64 = 0;
+            if (std.posix.fstat(fd)) |st| {
+                if (st.size > 0) existing = @as(u64, @intCast(st.size));
+            } else |_| {}
             return WalManager{
                 .fd = fd,
                 .running = std.atomic.Value(bool).init(true),
@@ -101,6 +138,9 @@ pub const WalManager = struct {
                 .allocator = allocator,
                 .path = owned,
                 .direct = true,
+                .bytes_written = existing,
+                .next_segment = firstFreeSegment(owned),
+                .phase = std.atomic.Value(u8).init(0),
             };
         }
     }
@@ -116,6 +156,101 @@ pub const WalManager = struct {
         const raw_fd = std.c.open(path.ptr, flags, @as(c_uint, 0o644));
         if (raw_fd < 0) return error.OpenFailed;
         return @as(std.posix.fd_t, raw_fd);
+    }
+
+    /// Best-effort fsync of the containing directory (cwd pattern shared
+    /// with snapshot.zig). Makes file creation/rename durable; never fails.
+    fn fsyncParentDir() void {
+        if (builtin.os.tag == .windows) return;
+        const dir = std.c.open(".", std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
+        if (dir >= 0) {
+            std.posix.fsync(@as(std.posix.fd_t, dir)) catch {};
+            _ = std.c.close(dir);
+        }
+    }
+
+    /// Formats `<base>.NNNNNN` (zero-padded 6 digits) into `out`.
+    /// N is always < MAX_SEGMENTS (<=99999) so 6 digits suffice.
+    fn formatSegmentPath(out: []u8, base: []const u8, n: u32) ![]u8 {
+        if (out.len < base.len + 8) return error.NoSpace;
+        @memcpy(out[0..base.len], base);
+        out[base.len] = '.';
+        var v = n;
+        var i: usize = 6;
+        while (i > 0) : (i -= 1) {
+            out[base.len + i] = @as(u8, @intCast(v % 10)) + '0';
+            v /= 10;
+        }
+        return out[0 .. base.len + 7];
+    }
+
+    /// Finds the first free rotation suffix N in 0..MAX_SEGMENTS by
+    /// existence probe (statFile, openExisting-style). O(n) stats at
+    /// startup; acceptable and simple. Returns MAX_SEGMENTS when saturated
+    /// (rotation then stops creating new segments and keeps appending).
+    fn firstFreeSegment(base: [:0]const u8) u32 {
+        var buf: [4096]u8 = undefined;
+        var n: u32 = 0;
+        while (n < MAX_SEGMENTS) : (n += 1) {
+            const seg = formatSegmentPath(&buf, base[0..base.len], n) catch return n;
+            _ = std.fs.cwd().statFile(seg) catch |err| {
+                if (err == error.FileNotFound) return n;
+                // Any other error (permissions, name too long): treat the
+                // slot as occupied so we never overwrite blindly.
+                continue;
+            };
+        }
+        return MAX_SEGMENTS;
+    }
+
+    /// Rotates the live segment once bytes_written >= SEGMENT_MAX: closes
+    /// the current fd, renames `<path>` -> `<path>.NNNNNN`
+    /// (N = next_segment), reopens a fresh live file with the same
+    /// direct/buffered mode as init, and resets bytes_written/sector_pos.
+    /// Called with sector_pos == 0 (right after a completed sector), so no
+    /// entry straddles the boundary except a multi-sector entry whose
+    /// sectors were split by the size trigger; replay handles each file
+    /// with identical CRC/stop rules and accumulates maxima across all.
+    fn rotateSegment(self: *WalManager) !void {
+        if (self.next_segment >= MAX_SEGMENTS) {
+            std.debug.print("[WAL] Segment cap reached; continuing on current segment.\n", .{});
+            return;
+        }
+        var buf: [4096]u8 = undefined;
+        const seg = try formatSegmentPath(&buf, self.path[0..self.path.len], self.next_segment);
+        if (builtin.os.tag == .windows) {
+            _ = std.os.windows.CloseHandle(self.fd);
+            std.fs.cwd().rename(self.path[0..self.path.len], seg) catch |err| {
+                std.debug.print("[WAL] Segment rename failed: {}\n", .{err});
+                return error.RotateFailed;
+            };
+            var path_w: [1024]u16 = undefined;
+            const utf16_len = try std.unicode.utf8ToUtf16Le(&path_w, self.path);
+            path_w[utf16_len] = 0;
+            const handle = std.os.windows.kernel32.CreateFileW(
+                @as([*:0]const u16, @ptrCast(&path_w)),
+                @as(std.os.windows.ACCESS_MASK, @bitCast(@as(u32, 0xC0000000))),
+                1,
+                null,
+                2, // CREATE_ALWAYS (fresh segment)
+                0x80 | 0x20000000,
+                null,
+            );
+            if (handle == std.os.windows.INVALID_HANDLE_VALUE) return error.OpenFailed;
+            self.fd = handle;
+        } else {
+            _ = std.c.close(self.fd);
+            std.fs.cwd().rename(self.path[0..self.path.len], seg) catch |err| {
+                std.debug.print("[WAL] Segment rename failed: {}\n", .{err});
+                return error.RotateFailed;
+            };
+            self.fd = try openAppend(self.path, self.direct);
+            fsyncParentDir();
+        }
+        self.next_segment += 1;
+        self.bytes_written = 0;
+        self.sector_pos = 0;
+        std.debug.print("[WAL] Rotated segment -> {s}.\n", .{seg});
     }
 
     /// Reopens the file without Direct I/O after the filesystem rejected
@@ -141,7 +276,11 @@ pub const WalManager = struct {
     }
 
     /// Shuts down the background flusher and closes the file.
+    /// Idempotent: CAS phase 0->1; any concurrent/second call returns
+    /// early as a no-op. Sets phase=2 once the fd is closed and memory
+    /// freed, so flushBuffer (phase==2 guard) can never touch them again.
     pub fn shutdown(self: *WalManager) void {
+        if (self.phase.cmpxchgStrong(0, 1, .seq_cst, .seq_cst) != null) return;
         self.running.store(false, .release);
         if (self.flusher_thread) |th| {
             th.join();
@@ -164,6 +303,7 @@ pub const WalManager = struct {
             self.allocator.free(self.path);
         }
         self.path = @constCast(@as([:0]const u8, ""));
+        self.phase.store(2, .seq_cst);
     }
 
     fn syncFile(self: *WalManager) void {
@@ -200,6 +340,11 @@ pub const WalManager = struct {
     }
 
     pub fn flushBuffer(self: *WalManager) !void {
+        // Guard: after shutdown closed the fd and freed the backing
+        // allocation (phase==2), flushing would touch both. No-op instead.
+        // Phase 1 (closing) still flushes: shutdown joins the flusher
+        // first, so this final flush is uncontended.
+        if (self.phase.load(.acquire) == 2) return;
         if (self.sector_pos == 0) return;
 
         // Pad the rest of the payload buffer with zeros
@@ -219,6 +364,12 @@ pub const WalManager = struct {
         // Durability: a WAL that is not synced is just a rumor.
         self.syncFile();
         self.sector_pos = 0;
+        self.bytes_written += SECTOR_SIZE;
+        // Segmented rotation: the completed sector pushed us past the
+        // cap, so archive this segment and open a fresh live file.
+        if (self.bytes_written >= SEGMENT_MAX) {
+            try self.rotateSegment();
+        }
     }
 
     pub fn writeToBuffer(self: *WalManager, bytes: []const u8) !void {
@@ -304,9 +455,12 @@ pub const WalManager = struct {
 
 test "WAL Lock-Free Flusher Integration" {
     // 1. Setup
-    // Allocate 64MB for testing 100,000 capacity RingBuffer to prevent overflow
-    const capacity = 100_000;
-    const mem_size = @sizeOf(DeltaMessage) * capacity + 1024;
+    // Allocate heap for a 131072-capacity RingBuffer to prevent overflow.
+    // Capacity MUST stay a power of two (required by the MPMC ring).
+    // Size via layout.ringBytes (header + slots + MPMC seqs), not hand
+    // math, so the buffer always fits the ring's footprint.
+    const capacity = 131_072;
+    const mem_size = layout.ringBytes(capacity) + 1024;
 
     // Allocate dynamically on the heap for the test
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
