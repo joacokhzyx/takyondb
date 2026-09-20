@@ -32,6 +32,7 @@ extern "C" {
     int32_t takyon_verify_test_value();
     int takyon_insert_index(const char* key, uint32_t key_len, uint32_t value_offset);
     int takyon_search_index(const char* key, uint32_t key_len);
+    int takyon_remove_index(const char* key, uint32_t key_len);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -224,6 +225,25 @@ napi_value SearchIndex(napi_env env, napi_callback_info info) {
     return result;
 }
 
+napi_value RemoveIndex(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+
+    char key[TAKYON_MAX_KEY + 1];
+    uint32_t key_len = 0;
+    if (!CopyKey(env, args[0], key, &key_len)) {
+        return nullptr; // N-API error already thrown.
+    }
+
+    int32_t status = takyon_remove_index(key, key_len);
+
+    napi_value result;
+    CHECK_NAPI(napi_create_int32(env, status, &result));
+    return result;
+}
+
 napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {
     (void)info;
     int32_t result = ::takyon_trigger_checkpoint();
@@ -274,12 +294,13 @@ napi_value Init(napi_env env, napi_value exports) {
         { "verifyTestValue", 0, VerifyTestValue, 0, 0, 0, napi_default, 0 },
         { "insert_index", 0, InsertIndex, 0, 0, 0, napi_default, 0 },
         { "search_index", 0, SearchIndex, 0, 0, 0, napi_default, 0 },
+        { "remove_index", 0, RemoveIndex, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 10, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 11, desc));
     return exports;
 }
 
