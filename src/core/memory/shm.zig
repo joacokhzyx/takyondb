@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const layout = @import("layout.zig");
 
 /// Custom error types for shared memory operations.
 pub const ShmError = error{
@@ -17,11 +18,61 @@ pub const ShmError = error{
     MapFailed,
     UnmapFailed,
     OutOfMemory,
+    BadVersion,
+    SizeMismatch,
 };
 
 /// OS handle owning the mapping, for explicit cleanup via close().
 /// Clients unmap + close without unlinking: the daemon owns the name.
 pub const OsHandle = if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t;
+
+/// How a SharedArena mapping is opened (Wave-1 memory-map v2).
+///   - `server`: create-or-attach with read/write access. The creating
+///     server stamps the magic+version header; an attaching server verifies
+///     size and header first (SizeMismatch / BadVersion on drift).
+///   - `read_write`: attach to an existing segment with read/write access.
+///   - `read_only`: attach to an existing segment with read-only access
+///     (POSIX O_RDONLY + PROT_READ; Windows FILE_MAP_READ).
+pub const OpenMode = enum { server, read_write, read_only };
+
+/// Normalizes a segment name to POSIX `shm_open` form (leading `/`).
+fn posixName(name: []const u8, buf: *[256]u8) ShmError![:0]const u8 {
+    if (name.len == 0 or name.len > 255) return error.SystemResources;
+    const slice = if (name[0] != '/')
+        std.fmt.bufPrint(buf, "/{s}\x00", .{name}) catch return error.SystemResources
+    else
+        std.fmt.bufPrint(buf, "{s}\x00", .{name}) catch return error.SystemResources;
+    return slice[0 .. slice.len - 1 :0];
+}
+
+/// Granular mapping of POSIX `shm_open` errno values to ShmError.
+fn mapPosixOpenErr(e: std.posix.E) ShmError {
+    return switch (e) {
+        .EXIST => error.AlreadyExists,
+        .ACCES => error.AccessDinied,
+        .NOENT => error.NotFound,
+        else => error.MapFailed,
+    };
+}
+
+fn lastErrno() std.posix.E {
+    const n: c_int = std.c._errno().*;
+    return @enumFromInt(@as(u16, @intCast(n)));
+}
+
+/// Stamps the ARENA_MAGIC + LAYOUT_VERSION header (u32 little-endian).
+fn writeHeader(mem: []u8) void {
+    std.mem.writeInt(u32, mem[layout.MAGIC_OFFSET..][0..4], layout.ARENA_MAGIC, .little);
+    std.mem.writeInt(u32, mem[layout.VERSION_OFFSET..][0..4], layout.LAYOUT_VERSION, .little);
+}
+
+/// Verifies the ARENA_MAGIC + LAYOUT_VERSION header.
+fn checkHeader(mem: []u8) bool {
+    if (mem.len < layout.VERSION_OFFSET + 4) return false;
+    const magic = std.mem.readInt(u32, mem[layout.MAGIC_OFFSET..][0..4], .little);
+    const version = std.mem.readInt(u32, mem[layout.VERSION_OFFSET..][0..4], .little);
+    return magic == layout.ARENA_MAGIC and version == layout.LAYOUT_VERSION;
+}
 
 /// SharedArena manages a block of shared memory using a bump-pointer allocator,
 /// bypassing traditional heap allocations for the fast-path.
@@ -34,15 +85,16 @@ pub const SharedArena = struct {
     ///
     /// Argumints:
     ///   - `name`: Idintifier for the shared memory segmint.
-    ///   - `size`: Required size in bytes.
+    ///   - `size`: Required size in bytes (must be >= layout.MIN_ARENA_SIZE).
+    ///   - `mode`: Open mode (server create-or-attach, client RW, client RO).
     ///
     /// Returns:
     ///   - A `SharedArena` instance.
     ///
     /// Errors:
     ///   - `ShmError` if the OS fails to allocate or map the memory.
-    pub fn init(name: []const u8, size: usize, is_server: bool) ShmError!SharedArena {
-        if (size == 0) return error.OutOfMemory;
+    pub fn init(name: []const u8, size: usize, mode: OpenMode) ShmError!SharedArena {
+        if (size < layout.MIN_ARENA_SIZE) return error.OutOfMemory;
         if (name.len == 0 or name.len > 255) return error.SystemResources;
         var mem: []u8 = undefined;
         var handle: ?OsHandle = null;
@@ -56,65 +108,150 @@ pub const SharedArena = struct {
             const CreateFileMappingW = @extern(*const fn (w.HANDLE, ?*anyopaque, w.DWORD, w.DWORD, w.DWORD, [*:0]const u16) callconv(std.builtin.CallingConvention.winapi) ?w.HANDLE, .{ .name = "CreateFileMappingW", .library_name = "kernel32" });
             const OpenFileMappingW = @extern(*const fn (w.DWORD, w.BOOL, [*:0]const u16) callconv(std.builtin.CallingConvention.winapi) ?w.HANDLE, .{ .name = "OpenFileMappingW", .library_name = "kernel32" });
             const MapViewOfFile = @extern(*const fn (?w.HANDLE, w.DWORD, w.DWORD, w.DWORD, w.SIZE_T) callconv(std.builtin.CallingConvention.winapi) ?*anyopaque, .{ .name = "MapViewOfFile", .library_name = "kernel32" });
+            const UnmapViewOfFile = @extern(*const fn (?*const anyopaque) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "UnmapViewOfFile", .library_name = "kernel32" });
+            const GetFileSizeEx = @extern(*const fn (w.HANDLE, *i64) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "GetFileSizeEx", .library_name = "kernel32" });
 
-            const win_handle = if (is_server)
-                CreateFileMappingW(w.INVALID_HANDLE_VALUE, null, 0x04, // PAGE_READWRITE
-                    0, @as(w.DWORD, @intCast(size)), @as([*:0]const u16, @ptrCast(&name_utf16)))
-            else
-                OpenFileMappingW(0xF001F, // FILE_MAP_ALL_ACCESS
-                    w.FALSE, @as([*:0]const u16, @ptrCast(&name_utf16)));
+            const FILE_MAP_READ: w.DWORD = 0x0004;
+            const FILE_MAP_ALL_ACCESS: w.DWORD = 0xF001F;
+            const access: w.DWORD = if (mode == .read_only) FILE_MAP_READ else FILE_MAP_ALL_ACCESS;
+            const win_name = @as([*:0]const u16, @ptrCast(&name_utf16));
 
-            if (win_handle) |h| {
-                if (h == w.INVALID_HANDLE_VALUE) return error.MapFailed;
-            } else return error.MapFailed;
+            var win_handle: w.HANDLE = undefined;
+            var created = false;
+            if (mode == .server) {
+                const h = CreateFileMappingW(w.INVALID_HANDLE_VALUE, null, 0x04, // PAGE_READWRITE
+                    0, @as(w.DWORD, @intCast(size)), win_name);
+                if (h == null or h.? == w.INVALID_HANDLE_VALUE) return error.MapFailed;
+                win_handle = h.?;
+                created = (w.GetLastError() != .ALREADY_EXISTS);
+            } else {
+                const h = OpenFileMappingW(access, w.FALSE, win_name);
+                if (h == null or h.? == w.INVALID_HANDLE_VALUE) {
+                    return switch (w.GetLastError()) {
+                        .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.NotFound,
+                        .ACCESS_DENIED => error.AccessDinied,
+                        else => error.MapFailed,
+                    };
+                }
+                win_handle = h.?;
+            }
 
-            const ptr = MapViewOfFile(win_handle, 0xF001F, // FILE_MAP_ALL_ACCESS
-                0, 0, size);
-            if (ptr == null) return error.MapFailed;
+            const ptr = MapViewOfFile(win_handle, access, 0, 0, size);
+            if (ptr == null) {
+                w.CloseHandle(win_handle);
+                return error.MapFailed;
+            }
+            const mapped = @as([*]u8, @ptrCast(ptr.?))[0..size];
 
-            mem = @as([*]u8, @ptrCast(ptr))[0..size];
+            if (!created) {
+                var fsize: i64 = 0;
+                if (GetFileSizeEx(win_handle, &fsize) == w.FALSE or fsize != @as(i64, @intCast(size))) {
+                    _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(ptr)));
+                    w.CloseHandle(win_handle);
+                    return error.SizeMismatch;
+                }
+                if (!checkHeader(mapped)) {
+                    _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(ptr)));
+                    w.CloseHandle(win_handle);
+                    return error.BadVersion;
+                }
+                if (mode == .server) writeHeader(mapped);
+            } else {
+                writeHeader(mapped);
+            }
+
+            mem = mapped;
             handle = win_handle;
         } else {
             const posix = std.posix;
 
             var name_buf: [256]u8 = undefined;
-            const slice = if (name[0] != '/')
-                std.fmt.bufPrint(&name_buf, "/{s}\x00", .{name}) catch return error.SystemResources
-            else
-                std.fmt.bufPrint(&name_buf, "{s}\x00", .{name}) catch return error.SystemResources;
-            const posix_name: [:0]const u8 = slice[0 .. slice.len - 1 :0];
+            const posix_name = try posixName(name, &name_buf);
 
-            const oflag = if (is_server) posix.O{ .ACCMODE = .RDWR, .CREAT = true } else posix.O{ .ACCMODE = .RDWR };
+            const is_server = mode == .server;
+            const read_only = mode == .read_only;
 
-            const fd = if (@hasDecl(posix, "shm_open"))
-                posix.shm_open(posix_name, oflag, 0o666) catch return error.MapFailed
-            else blk: {
-                const c_oflag: c_int = @bitCast(oflag);
-                const res = std.c.shm_open(posix_name.ptr, c_oflag, @as(c_uint, 0o666));
-                if (res < 0) return error.MapFailed;
-                break :blk @as(std.posix.fd_t, res);
-            };
-
+            // Server path: try exclusive create first (O_EXCL|O_CREAT). On
+            // AlreadyExists fall back to attaching without truncate, then
+            // verify size and magic+version below.
+            var created = false;
+            var fd: posix.fd_t = undefined;
             if (is_server) {
-                if (@hasDecl(posix, "ftruncate")) {
-                    posix.ftruncate(fd, size) catch return error.MapFailed;
+                const c_excl: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true });
+                const res = std.c.shm_open(posix_name.ptr, c_excl, @as(c_uint, 0o666));
+                if (res >= 0) {
+                    fd = res;
+                    created = true;
+                    posix.ftruncate(fd, @as(u64, @intCast(size))) catch |err| {
+                        posix.close(fd);
+                        return switch (err) {
+                            error.AccessDenied => error.AccessDinied,
+                            else => error.MapFailed,
+                        };
+                    };
+                } else if (lastErrno() != .EXIST) {
+                    return mapPosixOpenErr(lastErrno());
                 } else {
-                    if (std.c.ftruncate(@as(c_int, @intCast(fd)), @as(i64, @intCast(size))) != 0) return error.MapFailed;
+                    const c_rw: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR });
+                    const res2 = std.c.shm_open(posix_name.ptr, c_rw, @as(c_uint, 0o666));
+                    if (res2 < 0) return mapPosixOpenErr(lastErrno());
+                    fd = res2;
+                }
+            } else {
+                const c_flag: c_int = if (read_only)
+                    @bitCast(posix.O{ .ACCMODE = .RDONLY })
+                else
+                    @bitCast(posix.O{ .ACCMODE = .RDWR });
+                const res = std.c.shm_open(posix_name.ptr, c_flag, @as(c_uint, 0o666));
+                if (res < 0) return mapPosixOpenErr(lastErrno());
+                fd = res;
+            }
+
+            // Attach paths must agree on the segment size exactly.
+            if (!created) {
+                const st = posix.fstat(fd) catch {
+                    posix.close(fd);
+                    return error.MapFailed;
+                };
+                if (st.size != @as(@TypeOf(st.size), @intCast(size))) {
+                    posix.close(fd);
+                    return error.SizeMismatch;
                 }
             }
 
-            // Portable mmap through std.posix: read/write + shared, backed by
-            // the shm fd. Works on Linux and macOS (DIRECT I/O is a WAL
-            // concern, not a mapping concern).
-            const mapped = std.posix.mmap(
+            // Portable mmap through std.posix: shared, backed by the shm fd.
+            // Read-only clients get a PROT_READ-only view. Works on Linux
+            // and macOS (DIRECT I/O is a WAL concern, not a mapping concern).
+            const prot: u32 = if (read_only) posix.PROT.READ else (posix.PROT.READ | posix.PROT.WRITE);
+            const mapped = posix.mmap(
                 null,
                 size,
-                std.posix.PROT.READ | std.posix.PROT.WRITE,
+                prot,
                 .{ .TYPE = .SHARED },
                 fd,
                 0,
-            ) catch return error.MapFailed;
+            ) catch |err| {
+                posix.close(fd);
+                return switch (err) {
+                    error.AccessDenied => error.AccessDinied,
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.MapFailed,
+                };
+            };
             mem = mapped[0..size];
+
+            if (created) {
+                writeHeader(mem);
+            } else {
+                if (!checkHeader(mem)) {
+                    const aligned: []align(std.heap.page_size_min) u8 = @alignCast(mem);
+                    posix.munmap(aligned);
+                    posix.close(fd);
+                    return error.BadVersion;
+                }
+                // Re-stamp the identical header (no-op when verified).
+                if (is_server) writeHeader(mem);
+            }
             handle = fd;
         }
 
@@ -123,6 +260,17 @@ pub const SharedArena = struct {
             .bump_offset = 0,
             .handle = handle,
         };
+    }
+
+    /// Removes the OS name for `name` (POSIX `shm_unlink`; no-op on Windows)
+    /// so a segment can be explicitly torn down, e.g. between tests. Does
+    /// not unmap existing mappings; they must still be closed.
+    pub fn unlink(name: []const u8) void {
+        if (builtin.os.tag == .windows) return;
+        if (name.len == 0 or name.len > 255) return;
+        var name_buf: [256]u8 = undefined;
+        const posix_name = posixName(name, &name_buf) catch return;
+        _ = std.c.shm_unlink(posix_name.ptr);
     }
 
     /// Unmaps the segment and closes the OS handle. Only valid for arenas
@@ -192,4 +340,105 @@ test "SharedArena bump allocator logic" {
     const slice = try arena.alloc(128, 8);
     try std.testing.expectEqual(@as(usize, 128), slice.len);
     try std.testing.expectEqual(@as(usize, 128), arena.bump_offset);
+}
+
+test "shm server create then second server attaches with shared content" {
+    const tname = "takyon_w1_attach";
+    SharedArena.unlink(tname);
+    defer SharedArena.unlink(tname);
+
+    var a = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    defer a.close();
+    try std.testing.expect(checkHeader(a.memory));
+
+    a.memory[4096] = 0xAB;
+    a.memory[4097] = 0xCD;
+
+    // Second server init must attach (O_EXCL AlreadyExists fallback),
+    // verify size + magic, and observe the same content.
+    var b = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    defer b.close();
+    try std.testing.expectEqual(@as(u8, 0xAB), b.memory[4096]);
+    try std.testing.expectEqual(@as(u8, 0xCD), b.memory[4097]);
+}
+
+test "shm read_only open of missing segment fails" {
+    const tname = "takyon_w1_missing_ro";
+    SharedArena.unlink(tname);
+    if (SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_only)) |arena| {
+        var a = arena;
+        a.close();
+        SharedArena.unlink(tname);
+        try std.testing.expect(false);
+    } else |err| {
+        try std.testing.expect(err == error.NotFound or err == error.MapFailed);
+    }
+}
+
+test "shm read_only mapping observes server writes" {
+    const tname = "takyon_w1_ro";
+    SharedArena.unlink(tname);
+    defer SharedArena.unlink(tname);
+
+    var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    defer srv.close();
+    srv.memory[8192] = 0x5A;
+
+    var ro = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_only);
+    defer ro.close();
+    try std.testing.expectEqual(@as(u8, 0x5A), ro.memory[8192]);
+}
+
+test "shm unlink removes segment" {
+    const tname = "takyon_w1_unlink";
+    SharedArena.unlink(tname);
+
+    var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    srv.close();
+    SharedArena.unlink(tname);
+
+    if (SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_only)) |arena| {
+        var a = arena;
+        a.close();
+        SharedArena.unlink(tname);
+        try std.testing.expect(false);
+    } else |err| {
+        try std.testing.expect(err == error.NotFound or err == error.MapFailed);
+    }
+}
+
+test "shm corrupted magic yields BadVersion" {
+    const tname = "takyon_w1_badver";
+    SharedArena.unlink(tname);
+    defer SharedArena.unlink(tname);
+
+    var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    srv.close();
+
+    // Corrupt the 8-byte magic header through a plain RW attach.
+    var rw = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_write);
+    @memset(rw.memory[0..8], 0xFF);
+    rw.close();
+
+    try std.testing.expectError(error.BadVersion, SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_write));
+    try std.testing.expectError(error.BadVersion, SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server));
+}
+
+test "shm size mismatch rejected" {
+    const tname = "takyon_w1_sizemismatch";
+    SharedArena.unlink(tname);
+    defer SharedArena.unlink(tname);
+
+    var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    srv.close();
+
+    const bigger = layout.MIN_ARENA_SIZE + 4096;
+    try std.testing.expectError(error.SizeMismatch, SharedArena.init(tname, bigger, .server));
+    try std.testing.expectError(error.SizeMismatch, SharedArena.init(tname, bigger, .read_write));
+}
+
+test "shm tiny size rejected" {
+    try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", 1024, .server));
+    try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", 0, .server));
+    try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", layout.MIN_ARENA_SIZE - 1, .read_only));
 }
