@@ -10,6 +10,7 @@ const core = @import("core");
 const SharedArena = core.shm.SharedArena;
 const layout = core.layout;
 const RingBuffer = core.ring_buffer.RingBuffer;
+const DeltaMessage = core.ring_buffer.DeltaMessage;
 const WalManager = core.wal.WalManager;
 
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
@@ -50,6 +51,7 @@ pub fn main() !void {
     // --data-dir <dir> may appear anywhere in args; default ".".
     var mem_size: usize = 64 * 1024 * 1024;
     var data_dir: []const u8 = ".";
+    var checkpoint_sec: usize = 60;
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.skip(); // skip executable name
@@ -68,6 +70,26 @@ pub fn main() !void {
                 std.debug.print("[TakyonDB-Daemon] ERROR: --data-dir requires a non-empty directory argument\n", .{});
                 std.process.exit(1);
             }
+        } else if (std.mem.eql(u8, arg, "--checkpoint-sec")) {
+            if (args.next()) |val| {
+                checkpoint_sec = std.fmt.parseInt(usize, val, 10) catch {
+                    std.debug.print("[TakyonDB-Daemon] ERROR: --checkpoint-sec requires a numeric argument\n", .{});
+                    std.process.exit(1);
+                };
+            } else {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --checkpoint-sec requires a numeric argument\n", .{});
+                std.process.exit(1);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--checkpoint-sec=")) {
+            const val = arg["--checkpoint-sec=".len..];
+            if (val.len == 0) {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --checkpoint-sec requires a numeric argument\n", .{});
+                std.process.exit(1);
+            }
+            checkpoint_sec = std.fmt.parseInt(usize, val, 10) catch {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --checkpoint-sec requires a numeric argument\n", .{});
+                std.process.exit(1);
+            };
         } else if (is_first and arg.len > 0 and arg[0] != '-') {
             if (std.fmt.parseInt(usize, arg, 10)) |parsed_size| {
                 mem_size = parsed_size;
@@ -124,8 +146,26 @@ pub fn main() !void {
 
     std.debug.print("[TakyonDB-Daemon] Server ready. Waiting for connections...\n", .{});
 
-    // 4. Spin wait / Evint loop until termination
+    // 4. Spin wait / Evint loop until termination.
+    // Every 10s log ring depth; every checkpoint_sec push an is_arena==2
+    // checkpoint delta (flusher owns snapshotting). 0 disables checkpoints.
+    var last_metrics = std.time.milliTimestamp();
+    var last_checkpoint = std.time.milliTimestamp();
     while (server_running.load(.acquire)) {
+        const now = std.time.milliTimestamp();
+        if (now - last_metrics >= 10_000) {
+            last_metrics = now;
+            std.debug.print("[TakyonDB-Daemon] Ring depth: {d}\n", .{rb.depth()});
+        }
+        if (checkpoint_sec != 0 and now - last_checkpoint >= @as(i64, @intCast(checkpoint_sec * 1000))) {
+            last_checkpoint = now;
+            const ckpt = DeltaMessage{ .offset = 0, .size = 0, .is_arena = 2, .data = [_]u8{0} ** 48 };
+            if (rb.push(ckpt)) {
+                std.debug.print("[TakyonDB-Daemon] Checkpoint triggered.\n", .{});
+            } else {
+                std.debug.print("[TakyonDB-Daemon] Checkpoint skipped (ring full).\n", .{});
+            }
+        }
         std.Thread.yield() catch {};
     }
 
