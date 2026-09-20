@@ -23,6 +23,7 @@ export interface TakyonBindings {
     search_index(key: string): number;
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
+    stop_vacuum?(): number;
 }
 
 export type MappedObject<T> = {
@@ -50,6 +51,12 @@ export class TakyonClient {
 
     public startVacuum(stringOffset: number): boolean {
         return this.bindings.start_vacuum(stringOffset) === 0;
+    }
+
+    public stopVacuum(): boolean {
+        const fn = this.bindings.stop_vacuum;
+        if (!fn) return false;
+        return fn.call(this.bindings) === 0;
     }
     
     public createProxy<T extends Record<string, FieldType>>(

@@ -17,6 +17,7 @@ const bindings: TakyonBindings = {
     search_index: (key: string) => addon.search_index(key),
     trigger_checkpoint: () => addon.trigger_checkpoint(),
     start_vacuum: (string_offset: number) => addon.start_vacuum(string_offset),
+    stop_vacuum: () => addon.stop_vacuum(),
 };
 
 async function sleep(ms: number) {

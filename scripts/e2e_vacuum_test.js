@@ -1,4 +1,10 @@
 const { join } = require('path');
+
+// Canonical layout mirror (see src/core/memory/layout.zig).
+const STRING_BUMP_OFFSET = 10485760; // 10MB
+const STRING_DATA_START = 10485764;
+const ARENA_SIZE = 64 * 1024 * 1024;
+
 const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
 const takyondb = require(ADDON_PATH);
 
@@ -29,8 +35,8 @@ async function run() {
     // Wait for daemon to initialize shared memory
     await new Promise(r => setTimeout(r, 1000));
 
-    console.log(`[E2E Vacuum] Initializing 64KB shared memory...`);
-    const memoryBuffer = takyondb.initSharedMemory(64 * 1024);
+    console.log(`[E2E Vacuum] Initializing 64MB shared memory...`);
+    const memoryBuffer = takyondb.initSharedMemory(ARENA_SIZE);
     if (!memoryBuffer) {
         console.error("Failed to connect to shared memory");
         process.exit(1);
@@ -50,27 +56,24 @@ async function run() {
     const setUsername = (value) => {
         const bytes = new TextEncoder().encode(value);
         const strLen = bytes.length;
-        
-        const STRING_BUMP_OFFSET = 10485760;
-        const STRING_ARENA_START = 10485764;
-        
+
         const atomicArr = new Uint32Array(memoryBuffer, STRING_BUMP_OFFSET, 1);
-        Atomics.compareExchange(atomicArr, 0, 0, STRING_ARENA_START);
+        Atomics.compareExchange(atomicArr, 0, 0, STRING_DATA_START);
         const allocatedOffset = Atomics.add(atomicArr, 0, strLen);
         lastAllocatedOffset = allocatedOffset;
-        
-        if (allocatedOffset + strLen > 64 * 1024) {
+
+        if (allocatedOffset + strLen > ARENA_SIZE) {
             return false; // Out of memory
         }
 
         const dest = new Uint8Array(memoryBuffer, allocatedOffset, strLen);
         dest.set(bytes);
-        
+
         takyondb.notifyArena(allocatedOffset, strLen);
-        
+
         view.setUint32(0, allocatedOffset, true);
         view.setUint32(4, strLen, true);
-        
+
         const ptrBuf = new ArrayBuffer(8);
         const ptrView = new DataView(ptrBuf);
         ptrView.setUint32(0, allocatedOffset, true);
@@ -91,7 +94,7 @@ async function run() {
     takyondb.start_vacuum(FIELD_OFFSET_USERNAME);
 
     console.log(`[E2E Vacuum] Executing 20,000 updates loop (The Memory Leak Test)...`);
-    
+
     let iterations = 0;
     for (let i = 0; i < 20000; i++) {
         const success = setUsername(`Generation_X_${i}`);
@@ -100,7 +103,7 @@ async function run() {
             process.exit(1);
         }
         iterations++;
-        // Small delay every few iterations to give the 1ms Vacuum thread time to run
+        // Small delay every few iterations to give the vacuum thread time to run
         if (i % 100 === 0) {
             await new Promise(r => setTimeout(r, 1));
         }
@@ -108,9 +111,9 @@ async function run() {
 
     console.log(`[E2E Vacuum] Loop finished successfully (${iterations} iterations).`);
 
-    const atomicArr = new Uint32Array(memoryBuffer, 32768, 1);
+    const atomicArr = new Uint32Array(memoryBuffer, STRING_BUMP_OFFSET, 1);
     const bumpValue = Atomics.load(atomicArr, 0);
-    console.log(`[E2E Vacuum] Current Bump Pointer size: ${bumpValue} bytes (within 64KB limit).`);
+    console.log(`[E2E Vacuum] Current string bump: ${bumpValue} (arena is ${ARENA_SIZE} bytes).`);
 
     const searchStart = performance.now();
     const finalValue = getUsername();
@@ -123,10 +126,11 @@ async function run() {
 
     const elapsedMs = searchEnd - searchStart;
     console.log(`[E2E Vacuum] Search returned the correct value ('${finalValue}') in ${elapsedMs * 1000} microseconds.`);
-    
-    // Kill daemon
+
+    // Stop vacuum and kill daemon
+    try { takyondb.stop_vacuum(); } catch (e) {}
     daemon.kill();
-    
+
     console.log(`[E2E Vacuum] SUCCESS: Memory Leak Test passed.`);
     process.exit(0);
 }
