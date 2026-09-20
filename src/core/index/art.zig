@@ -19,6 +19,15 @@ pub const MAX_KEY_LEN: usize = 256;
 /// extra terminator fields in the node layouts.
 pub const TERMINATOR: u8 = 0x00;
 
+/// Shrink thresholds: a node shrinks to the next smaller type when its
+/// child count drops to (or below) the threshold after a delete.
+/// Levels are positional (level d indexes key[d]); shrinking only swaps
+/// the node type in place at the same level via parent-link CAS and never
+/// bypasses a level (no chain compression).
+pub const SHRINK_256_TO_48: u16 = 32;
+pub const SHRINK_48_TO_16: u8 = 10;
+pub const SHRINK_16_TO_4: u8 = 3;
+
 pub const ArtError = error{
     InvalidKey,
     OutOfMemory,
@@ -830,34 +839,135 @@ pub const ArtIndex = struct {
         }
     }
 
-    /// Unlinks fully emptied Node4/Node16 nodes bottom-up. `links[i]` is the
+    /// Builds a fresh Node48 copying every occupied slot of a Node256
+    /// (including TERMINATOR slot 0 via child_index rebuild). Returns the
+    /// new node raw pointer. The caller swaps the parent link with CAS;
+    /// the old Node256 is orphaned (leaked until a freelist is added),
+    /// the same way the grow path orphans the old node.
+    fn shrink256to48(self: *ArtIndex, noff: u32) ArtError!u32 {
+        const src = try self.nodeAt(noff, Node256);
+        const dst_off = try self.allocZeroed(@sizeOf(Node48));
+        const dst = try self.nodeAt(dst_off, Node48);
+        var slot: usize = 0;
+        var b: usize = 0;
+        while (b < 256) : (b += 1) {
+            const child = @atomicLoad(u32, &src.children[b], .acquire);
+            if (child != 0) {
+                if (slot >= 48) return error.UnsupportedNodeType;
+                dst.child_index[b] = @as(u8, @intCast(slot + 1));
+                dst.children[slot] = child;
+                slot += 1;
+            }
+        }
+        dst.count = @as(u8, @intCast(slot));
+        return ArtPtr.new(dst_off, .Node48).asRaw();
+    }
+
+    /// Builds a fresh Node16 copying every occupied entry of a Node48
+    /// (including TERMINATOR byte 0x00). The old Node48 is orphaned on CAS
+    /// success (leaked until a freelist is added), like the grow path.
+    fn shrink48to16(self: *ArtIndex, noff: u32) ArtError!u32 {
+        const src = try self.nodeAt(noff, Node48);
+        const dst_off = try self.allocZeroed(@sizeOf(Node16));
+        const dst = try self.nodeAt(dst_off, Node16);
+        var n: usize = 0;
+        var b: usize = 0;
+        while (b < 256) : (b += 1) {
+            const s = src.child_index[b];
+            if (s != 0) {
+                if (s > 48) return error.UnsupportedNodeType;
+                const child = @atomicLoad(u32, &src.children[s - 1], .acquire);
+                if (child == 0) continue;
+                if (n >= 16) return error.UnsupportedNodeType;
+                dst.keys[n] = @as(u8, @intCast(b));
+                dst.children[n] = child;
+                n += 1;
+            }
+        }
+        dst.count = @as(u8, @intCast(n));
+        return ArtPtr.new(dst_off, .Node16).asRaw();
+    }
+
+    /// Builds a fresh Node4 copying the occupied entries of a Node16
+    /// (including TERMINATOR entries). The old Node16 is orphaned on CAS
+    /// success (leaked until a freelist is added), like the grow path.
+    fn shrink16to4(self: *ArtIndex, noff: u32) ArtError!u32 {
+        const src = try self.nodeAt(noff, Node16);
+        const c = @atomicLoad(u8, &src.count, .acquire);
+        if (c > 4) return error.UnsupportedNodeType;
+        const dst_off = try self.allocZeroed(@sizeOf(Node4));
+        const dst = try self.nodeAt(dst_off, Node4);
+        var i: usize = 0;
+        while (i < c) : (i += 1) {
+            dst.keys[i] = src.keys[i];
+            dst.children[i] = @atomicLoad(u32, &src.children[i], .acquire);
+        }
+        dst.count = c;
+        return ArtPtr.new(dst_off, .Node4).asRaw();
+    }
+
+    /// Unlinks fully emptied nodes bottom-up and shrinks underfull nodes
+    /// in place at the same level via parent-link CAS. `links[i]` is the
     /// slot holding the node described by `raws[i]`/`types[i]`; links[0] is
-    /// the root slot and is never cleared. Stops at the first concurrently
-    /// modified level.
+    /// the root slot and is never cleared (an empty root is kept).
+    /// ART levels are positional (level d indexes key[d]), so this never
+    /// bypasses a level (no chain compression): it only swaps the node type
+    /// at the same level. Shrinking orphans the old (bigger) node the same
+    /// way the grow path does (leaked until a freelist/reclamation pass is
+    /// added). Stops at the first concurrently modified level (link mismatch
+    /// or CAS failure).
     fn collapseEmpty(self: *ArtIndex, links: []*u32, raws: []u32, types: []NodeType) void {
         var i: usize = links.len;
-        while (i > 1) {
+        while (i > 0) {
             i -= 1;
             const cur = @atomicLoad(u32, links[i], .acquire);
             if (cur != raws[i]) break; // Changed concurrently; stop.
             const ptr = ArtPtr{ .raw = cur };
             if (ptr.getType() != types[i]) break;
             const noff = ptr.getOffset();
-            const empty: bool = switch (ptr.getType()) {
-                .Node4 => blk: {
-                    if (@as(usize, noff) + @sizeOf(Node4) > self.arena_mem.len) break :blk false;
-                    const n: *const Node4 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
-                    break :blk n.count == 0;
+            const is_root = (i == 0);
+            switch (ptr.getType()) {
+                .Node4 => {
+                    const node = self.nodeAt(noff, Node4) catch break;
+                    if (node.count != 0) break;
+                    if (is_root) break; // Never clear the root slot.
+                    if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
                 },
-                .Node16 => blk: {
-                    if (@as(usize, noff) + @sizeOf(Node16) > self.arena_mem.len) break :blk false;
-                    const n: *const Node16 = @ptrCast(@alignCast(self.arena_mem.ptr + noff));
-                    break :blk n.count == 0;
+                .Node16 => {
+                    const node = self.nodeAt(noff, Node16) catch break;
+                    const c = @atomicLoad(u8, &node.count, .acquire);
+                    if (c == 0) {
+                        if (is_root) break; // Never clear the root slot.
+                        if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                    } else if (c <= SHRINK_16_TO_4) {
+                        const shrunk = self.shrink16to4(noff) catch break;
+                        if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                    } else break;
                 },
-                else => false,
-            };
-            if (!empty) break;
-            if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                .Node48 => {
+                    const node = self.nodeAt(noff, Node48) catch break;
+                    const c = @atomicLoad(u8, &node.count, .acquire);
+                    if (c == 0) {
+                        if (is_root) break; // Never clear the root slot.
+                        if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                    } else if (c <= SHRINK_48_TO_16) {
+                        const shrunk = self.shrink48to16(noff) catch break;
+                        if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                    } else break;
+                },
+                .Node256 => {
+                    const node = self.nodeAt(noff, Node256) catch break;
+                    const c = @atomicLoad(u16, &node.count, .acquire);
+                    if (c == 0) {
+                        if (is_root) break; // Never clear the root slot.
+                        if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                    } else if (c <= SHRINK_256_TO_48) {
+                        const shrunk = self.shrink256to48(noff) catch break;
+                        if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                    } else break;
+                },
+                .Leaf => break,
+            }
         }
     }
 };
@@ -976,5 +1086,159 @@ test "ART bulk insert/search 2000 keys" {
     while (n < 2000) : (n += 1) {
         const k = try std.fmt.bufPrint(keybuf[0..], "ID-{d:0>5}", .{n});
         try std.testing.expectEqual(@as(?u32, @intCast(5000 + n)), idx.search(k));
+    }
+}
+
+test "ART shrink root Node256 -> Node48 on delete" {
+    var buf: [512 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    var i: u8 = 1;
+    while (i <= 49) : (i += 1) {
+        const k = [_]u8{i};
+        try idx.insert(k[0..], @as(u32, 1000) + i);
+    }
+    try std.testing.expect(try idx.rootType() == .Node256);
+
+    // Delete to 30 remaining: 30 <= SHRINK_256_TO_48 (32) so root shrinks to Node48.
+    i = 1;
+    while (i <= 19) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expect(try idx.remove(k[0..]));
+    }
+    try std.testing.expect(try idx.rootType() == .Node48);
+    i = 20;
+    while (i <= 49) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expectEqual(@as(?u32, @as(u32, 1000) + i), idx.search(k[0..]));
+    }
+
+    // Delete 40 total (9 remaining): 9 <= SHRINK_48_TO_16 (10) so it
+    // cascades further to Node16. Remaining keys stay reachable.
+    i = 20;
+    while (i <= 40) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expect(try idx.remove(k[0..]));
+    }
+    try std.testing.expect(try idx.rootType() == .Node16);
+    i = 41;
+    while (i <= 49) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expectEqual(@as(?u32, @as(u32, 1000) + i), idx.search(k[0..]));
+    }
+
+    // Delete-then-reinsert works after shrink (grows back).
+    i = 1;
+    while (i <= 40) : (i += 1) {
+        const k = [_]u8{i};
+        try idx.insert(k[0..], @as(u32, 2000) + i);
+    }
+    i = 1;
+    while (i <= 49) : (i += 1) {
+        const expected: u32 = if (i <= 40) @as(u32, 2000) + i else @as(u32, 1000) + i;
+        const k = [_]u8{i};
+        try std.testing.expectEqual(@as(?u32, expected), idx.search(k[0..]));
+    }
+}
+
+test "ART shrink Node16 subtree -> Node4 on delete" {
+    var buf: [64 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    // 5 two-byte keys sharing first byte 'Q' force the child to Node16.
+    const prefix: u8 = 'Q';
+    var j: u8 = 1;
+    while (j <= 5) : (j += 1) {
+        const k = [_]u8{ prefix, j };
+        try idx.insert(k[0..], @as(u32, 3000) + j);
+    }
+    j = 1;
+    while (j <= 5) : (j += 1) {
+        const k = [_]u8{ prefix, j };
+        try std.testing.expectEqual(@as(?u32, @as(u32, 3000) + j), idx.search(k[0..]));
+    }
+
+    // Delete 2 -> 3 remaining (<= SHRINK_16_TO_4) so the child shrinks to Node4.
+    var d: u8 = 4;
+    while (d <= 5) : (d += 1) {
+        const k = [_]u8{ prefix, d };
+        try std.testing.expect(try idx.remove(k[0..]));
+    }
+    j = 1;
+    while (j <= 3) : (j += 1) {
+        const k = [_]u8{ prefix, j };
+        try std.testing.expectEqual(@as(?u32, @as(u32, 3000) + j), idx.search(k[0..]));
+    }
+    d = 4;
+    while (d <= 5) : (d += 1) {
+        const k = [_]u8{ prefix, d };
+        try std.testing.expectEqual(@as(?u32, null), idx.search(k[0..]));
+    }
+
+    // Reinsert after shrink works.
+    d = 4;
+    while (d <= 5) : (d += 1) {
+        const k = [_]u8{ prefix, d };
+        try idx.insert(k[0..], @as(u32, 3100) + d);
+    }
+    j = 1;
+    while (j <= 5) : (j += 1) {
+        const expected: u32 = if (j <= 3) @as(u32, 3000) + j else @as(u32, 3100) + j;
+        const k = [_]u8{ prefix, j };
+        try std.testing.expectEqual(@as(?u32, expected), idx.search(k[0..]));
+    }
+}
+
+test "ART shrink Node48 subtree on delete to few keys" {
+    var buf: [128 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    // 20 entries sharing first byte 'X', including prefix key "X"
+    // (terminator entry) to exercise terminator copying on shrink.
+    try idx.insert("X", 4000);
+    var j: u8 = 1;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        try idx.insert(k[0..], @as(u32, 4000) + j);
+    }
+    try std.testing.expectEqual(@as(?u32, 4000), idx.search("X"));
+    j = 1;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        try std.testing.expectEqual(@as(?u32, @as(u32, 4000) + j), idx.search(k[0..]));
+    }
+
+    // Delete down to 2 keys: exercises 48 -> 16 -> 4 shrinking across removes.
+    j = 2;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        try std.testing.expect(try idx.remove(k[0..]));
+    }
+    try std.testing.expectEqual(@as(?u32, 4000), idx.search("X"));
+    {
+        const k = [_]u8{ 'X', 1 };
+        try std.testing.expectEqual(@as(?u32, 4001), idx.search(k[0..]));
+    }
+    j = 2;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        try std.testing.expectEqual(@as(?u32, null), idx.search(k[0..]));
+    }
+
+    // Reinsert after shrink works.
+    j = 2;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        try idx.insert(k[0..], @as(u32, 4100) + j);
+    }
+    try std.testing.expectEqual(@as(?u32, 4000), idx.search("X"));
+    j = 1;
+    while (j <= 19) : (j += 1) {
+        const k = [_]u8{ 'X', j };
+        const expected: u32 = if (j == 1) @as(u32, 4001) else @as(u32, 4100) + j;
+        try std.testing.expectEqual(@as(?u32, expected), idx.search(k[0..]));
     }
 }
