@@ -2,11 +2,11 @@ name: TakyonDB CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     tags:
       - 'v*.*.*'
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main" ]
 
 jobs:
   build-and-test:
@@ -22,9 +22,9 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Setup Zig
-      uses: goto-bus-stop/setup-zig@v2
+      uses: mlugg/setup-zig@v2
       with:
-        version: master
+        version: 0.14.1
 
     - name: Use Node.js ${{ matrix.node-version }}
       uses: actions/setup-node@v4
@@ -35,6 +35,17 @@ jobs:
       run: |
         cd src/sdk/ts
         npm ci
+
+    - name: Check Zig formatting
+      run: zig fmt --check src/ build.zig
+
+    - name: Run Zig unit tests
+      run: zig build test
+
+    - name: Typecheck TypeScript SDK
+      run: |
+        cd src/sdk/ts
+        npx tsc --noEmit
 
     - name: Build Zig Core (ReleaseSafe)
       run: zig build -Doptimize=ReleaseSafe
@@ -108,7 +119,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |

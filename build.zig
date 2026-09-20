@@ -58,6 +58,17 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("core", core_mod);
     b.installArtifact(exe);
 
+    // `zig build run` — required by README quickstart. Runs the daemon
+    // from zig-out/bin after install. Forwards extra args, e.g.:
+    // `zig build run -- 67108864 /var/lib/takyondb/data.takyon`
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+    const run_step = b.step("run", "Run the TakyonDB daemon");
+    run_step.dependOn(&run_cmd.step);
+
     // Tests module
     const core_tests = b.addTest(.{
         .root_module = b.createModule(.{
