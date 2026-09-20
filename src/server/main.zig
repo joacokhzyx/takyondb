@@ -23,7 +23,7 @@ fn handleSigInt(sig: c_int) callconv(.c) void {
 
 pub fn main(init: std.process.Init) !void {
     std.debug.print("[TakyonDB-Daemon] Starting TakyonDB Standalone Server...\n", .{});
-    
+
     // Register SIGINT handler (stub for Windows - Windows needs SetConsoleCtrlHandler usually)
     const builtin = @import("builtin");
     if (builtin.os.tag == .windows) {
@@ -56,32 +56,32 @@ pub fn main(init: std.process.Init) !void {
     // 1. Create Named Shared Memory Block
     // In cross-platform mode we use Local\TakyonDB_Master on Windows and /dev/shm on POSIX
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
-    
+
     std.debug.print("[TakyonDB-Daemon] Requesting shared memory block: {s}\n", .{shm_name});
     var arena = try SharedArena.init(shm_name, mem_size, true);
-    
+
     // 2. Bootloader: Recover from disk
     const recoverWal = core.recovery.recoverWal;
     try recoverWal(allocator, "data.takyon", arena.memory);
-    
+
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
     var rb = try RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, true);
     std.debug.print("[TakyonDB-Daemon] RingBuffer initialized in memory header.\n", .{});
-    
+
     // 4. Start WAL Flusher
     var wal = try WalManager.init(allocator, "data.takyon");
     global_wal = &wal;
     try wal.spawnWalFlusher(&rb, arena.memory);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
-    
+
     std.debug.print("[TakyonDB-Daemon] Server ready. Waiting for connections...\n", .{});
 
     // 4. Spin wait / Evint loop until termination
     while (server_running.load(.acquire)) {
         std.Thread.yield() catch {};
     }
-    
+
     // 5. Graceful shutdown
     std.debug.print("[TakyonDB-Daemon] Shutting down WAL Flusher and flushing residual deltas...\n", .{});
     wal.shutdown();

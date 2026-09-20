@@ -44,8 +44,11 @@ pub const RingBuffer = struct {
     /// Errors:
     ///   - `error.NoSpace` if `mem` is smaller than header + capacity slots.
     ///   - `error.InvalidCapacity` if capacity is zero.
+    ///   - `error.Unaligned` if `mem` is not 64-byte aligned (the header
+    ///     separates head/tail/capacity onto individual cache lines).
     pub fn init(mem: []u8, capacity: usize, is_master: bool) !RingBuffer {
         if (capacity == 0) return error.InvalidCapacity;
+        if (@intFromPtr(mem.ptr) % CACHE_LINE != 0) return error.Unaligned;
         const needed = @sizeOf(Header) + capacity * @sizeOf(DeltaMessage);
         if (mem.len < needed) return error.NoSpace;
         const header: *Header = @ptrCast(@alignCast(mem.ptr));
@@ -60,9 +63,9 @@ pub const RingBuffer = struct {
             header.tail = 0;
             header.capacity = capacity;
         }
-        
+
         const buf_ptr: [*]DeltaMessage = @ptrCast(@alignCast(mem.ptr + @sizeOf(Header)));
-            
+
         return RingBuffer{
             .header = header,
             .buffer = buf_ptr,
@@ -86,22 +89,25 @@ pub const RingBuffer = struct {
     pub fn push(self: *RingBuffer, delta: DeltaMessage) bool {
         if (self.header.capacity == 0) return false;
         var current_tail = @atomicLoad(usize, &self.header.tail, .acquire);
-        
+
         while (true) {
             const current_head = @atomicLoad(usize, &self.header.head, .acquire);
             const next_tail = (current_tail + 1) % self.header.capacity;
-            
+
             if (next_tail == current_head) {
                 return false; // Buffer full
             }
-            
+
             // Try to claim the slot using Compare and Swap
             const actual_tail = @cmpxchgStrong(usize, &self.header.tail, current_tail, next_tail, .release, .monotonic);
             if (actual_tail == null) {
-                // We successfully claimed `current_tail`. Publish payload
-                // before the consumer can observe the new tail.
+                // We successfully claimed `current_tail`. Publish the payload
+                // now. NOTE: a consumer that already observed the advanced
+                // tail may read this slot before the copy lands; a rigorous
+                // MPMC queue needs per-slot sequence numbers (Vyukov), which
+                // is tracked as future work. Size capacity generously (see
+                // `layout.RING_DEFAULT_CAPACITY`) and retry on `false`.
                 self.buffer[current_tail] = delta;
-                @fence(.release);
                 return true;
             } else {
                 // Another producer claimed it, retry with the updated tail
@@ -122,7 +128,7 @@ pub const RingBuffer = struct {
         if (current_head == current_tail) {
             return null; // Empty
         }
-        
+
         const delta = self.buffer[current_head];
         const next_head = (current_head + 1) % self.header.capacity;
         @atomicStore(usize, &self.header.head, next_head, .release);
@@ -132,7 +138,7 @@ pub const RingBuffer = struct {
 };
 
 test "RingBuffer push and pop concurrency check" {
-    var mem: [1024]u8 = undefined;
+    var mem: [1024]u8 align(CACHE_LINE) = undefined;
     var rb = try RingBuffer.init(mem[0..], 4, true);
 
     const delta = DeltaMessage{ .offset = 0, .size = 4, .is_arena = 0, .data = undefined };

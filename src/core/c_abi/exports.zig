@@ -20,6 +20,12 @@ var arena: SharedArena = undefined;
 var arena_ready: bool = false;
 var art_index: art.ArtIndex = undefined;
 
+// Base-address -> owned arena registry backing takyon_disconnect_shm.
+// Lets the N-API finalizer (and explicit closes) unmap + close instead of
+// leaking an fd/handle per connect.
+var shm_mappings = std.AutoHashMap(usize, SharedArena).init(std.heap.page_allocator);
+var shm_mappings_mutex = std.Thread.Mutex{};
+
 /// Initializes the TakyonDB engine context.
 export fn takyon_init() callconv(.c) i32 {
     return 0;
@@ -39,7 +45,11 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
     arena_ready = true;
 
     if (arena.memory.len < layout.RING_OFFSET) return null;
-    ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, created) catch return null;
+    ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, created) catch {
+        var owned = arena;
+        owned.close();
+        return null;
+    };
     ring_ready = true;
 
     // Initialize ART Index (see layout.zig for the canonical offsets).
@@ -47,7 +57,32 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
 
     // Initialize Vacuum thread implicitly here? No, start it explicitly.
 
+    shm_mappings_mutex.lock();
+    shm_mappings.put(@intFromPtr(arena.memory.ptr), arena) catch {};
+    shm_mappings_mutex.unlock();
+
     return arena.memory.ptr;
+}
+
+/// Unmaps a segment previously returned by takyon_connect_shm and closes
+/// its OS handle. Safe to call with null or unknown pointers (no-op).
+/// Called by the N-API ArrayBuffer finalizer; explicit closes welcome.
+export fn takyon_disconnect_shm(base: ?*anyopaque) callconv(.c) void {
+    const ptr = base orelse return;
+    const addr = @intFromPtr(ptr);
+    shm_mappings_mutex.lock();
+    const owned = shm_mappings.fetchRemove(addr);
+    shm_mappings_mutex.unlock();
+    if (owned) |kv| {
+        var mapping = kv.value;
+        mapping.close();
+        if (@intFromPtr(arena.memory.ptr) == addr) {
+            arena.memory = &[0]u8{};
+            arena.handle = null;
+            arena_ready = false;
+            ring_ready = false;
+        }
+    }
 }
 
 export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
@@ -173,4 +208,8 @@ export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
     if (@as(usize, string_field_offset) >= arena.memory.len) return -1;
     vacuum.spawnVacuum(&arena, &art_index, string_field_offset) catch return -1;
     return 0;
+}
+
+export fn takyon_stop_vacuum() callconv(.c) void {
+    vacuum.stopVacuum();
 }
