@@ -42,7 +42,9 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 - [x] Native prefix scan (`ArtIndex.scanPrefix` + `takyon_scan_prefix` +
       N-API `scan_prefix` + `ArtMirror.scanTable`, E2E vs daemon vivo)
-- [ ] Bounded range scan with upper bound + multi-root ART for secondaries
+- [x] Bounded range scan (`ArtIndex.scanRange` with hi pruning +
+      `takyon_scan_range` + N-API `scan_range` + `ArtMirror.scanRange`)
+- [ ] Multi-root ART for secondary indexes
 - [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
 - [ ] Row checksums + background scrubber for relational rows
