@@ -1,3 +1,8 @@
 #!/usr/bin/env node
-// Placeholder relational bench (timings informational, not gates).
-console.log(JSON.stringify({ suite: 'relational-bench', p50_ms: 0.007, p95_ms: 0.011, p99_ms: 0.018 }));
+// Runs the real relational bench (requires SDK dist built).
+// Build first: `cd src/sdk/ts && npm run build`.
+const { execSync } = require('child_process');
+const { join } = require('path');
+execSync(`node ${join(__dirname, '..', 'benchmarks', 'relational', 'bench.js')} all`, {
+  stdio: 'inherit',
+});
