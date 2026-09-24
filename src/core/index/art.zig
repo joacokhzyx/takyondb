@@ -668,6 +668,167 @@ pub const ArtIndex = struct {
         }
     }
 
+    /// Maximum nodes visited per prefix scan (corrupt-cycle guard, like vacuum).
+    const MAX_SCAN_VISITS: usize = 65536;
+
+    /// Collects value_offsets of every leaf whose key starts with `prefix`.
+    /// Writes at most `out.len` offsets and returns the count written.
+    /// Returns 0 for invalid prefixes, empty trees, or corrupt nodes.
+    /// Best-effort under concurrency (tolerates racing grow/shrink like search).
+    pub fn scanPrefix(self: *ArtIndex, prefix: []const u8, out: []u32) usize {
+        if (prefix.len == 0 or prefix.len > MAX_KEY_LEN) return 0;
+        if (std.mem.indexOfScalar(u8, prefix, TERMINATOR) != null) return 0;
+        if (out.len == 0) return 0;
+        const root_slot = self.u32Slot(self.root_ptr_offset) catch return 0;
+        var cur_raw = @atomicLoad(u32, root_slot, .acquire);
+        if (cur_raw == 0) return 0;
+
+        // Descend exactly prefix.len levels; the subtree below holds every match.
+        var depth: usize = 0;
+        while (depth < prefix.len) {
+            const ptr = ArtPtr{ .raw = cur_raw };
+            if (ptr.getType() == .Leaf) {
+                // Degenerate single-leaf tree: match iff the key starts with prefix.
+                if (!self.leafStartsWith(ptr.getOffset(), prefix)) return 0;
+                const leaf = self.nodeAt(ptr.getOffset(), Leaf) catch return 0;
+                out[0] = @atomicLoad(u32, &leaf.value_offset, .acquire);
+                return 1;
+            }
+            const child = self.childAt(ptr.getType(), ptr.getOffset(), prefix[depth]) catch return 0;
+            if (child == 0) return 0;
+            cur_raw = child;
+            depth += 1;
+        }
+
+        // DFS over the subtree with an explicit stack (no allocator).
+        const Frame = struct {
+            raw: u32,
+            pos: usize,
+        };
+        var stack: [MAX_DEPTH]Frame = undefined;
+        var sp: usize = 1;
+        stack[0] = .{ .raw = cur_raw, .pos = 0 };
+        var found: usize = 0;
+        var budget: usize = MAX_SCAN_VISITS;
+
+        while (sp > 0 and found < out.len and budget > 0) {
+            budget -= 1;
+            const top = &stack[sp - 1];
+            const ptr = ArtPtr{ .raw = top.raw };
+            if (ptr.getType() == .Leaf) {
+                sp -= 1;
+                if (!self.leafStartsWith(ptr.getOffset(), prefix)) continue;
+                const leaf = self.nodeAt(ptr.getOffset(), Leaf) catch continue;
+                out[found] = @atomicLoad(u32, &leaf.value_offset, .acquire);
+                found += 1;
+                continue;
+            }
+            if (self.nextChild(ptr.getType(), ptr.getOffset(), &top.pos)) |child| {
+                if (child == 0) continue;
+                if (sp >= MAX_DEPTH) break; // Pathological depth; stop.
+                stack[sp] = .{ .raw = child, .pos = 0 };
+                sp += 1;
+            } else {
+                sp -= 1; // Exhausted or unreadable: pop.
+            }
+        }
+        return found;
+    }
+
+    /// True when the leaf key at `leaf_off` starts with `prefix`.
+    /// Returns false on any out-of-bounds data (never panics on arena bytes).
+    fn leafStartsWith(self: *ArtIndex, leaf_off: u32, prefix: []const u8) bool {
+        const leaf = self.nodeAt(leaf_off, Leaf) catch return false;
+        if (leaf.key_len < prefix.len) return false;
+        const stored = leafKeyBytes(self.arena_mem, leaf_off, leaf.key_len) catch return false;
+        return std.mem.startsWith(u8, stored, prefix);
+    }
+
+    /// Point child lookup shared by scanPrefix descent (strict like search).
+    /// Returns 0 when the slot is empty; errors on out-of-bounds nodes.
+    fn childAt(self: *ArtIndex, ntype: NodeType, noff: u32, byte: u8) ArtError!u32 {
+        switch (ntype) {
+            .Leaf => return error.UnsupportedNodeType,
+            .Node4 => {
+                const node = try self.nodeAt(noff, Node4);
+                if (node.count > 4) return error.UnsupportedNodeType;
+                const pos = node.findPos(byte) orelse return 0;
+                return @atomicLoad(u32, &node.children[pos], .acquire);
+            },
+            .Node16 => {
+                const node = try self.nodeAt(noff, Node16);
+                if (node.count > 16) return error.UnsupportedNodeType;
+                const pos = node.findPos(byte) orelse return 0;
+                return @atomicLoad(u32, &node.children[pos], .acquire);
+            },
+            .Node48 => {
+                const node = try self.nodeAt(noff, Node48);
+                if (node.count > 48) return error.UnsupportedNodeType;
+                const s = node.child_index[byte];
+                if (s == 0 or s > node.count) return 0;
+                return @atomicLoad(u32, &node.children[s - 1], .acquire);
+            },
+            .Node256 => {
+                const node = try self.nodeAt(noff, Node256);
+                return @atomicLoad(u32, &node.children[byte], .acquire);
+            },
+        }
+    }
+
+    /// Iterates children of a node in deterministic order (key order for
+    /// Node4/Node16, byte order for Node48/Node256). Advances `*pos` past
+    /// the returned child. Returns null when exhausted or the node is
+    /// unreadable (caller pops). Skips empty/stale slots best-effort.
+    fn nextChild(self: *ArtIndex, ntype: NodeType, noff: u32, pos: *usize) ?u32 {
+        switch (ntype) {
+            .Leaf => return null,
+            .Node4 => {
+                const node = self.nodeAt(noff, Node4) catch return null;
+                const c: usize = @min(node.count, 4);
+                while (pos.* < c) {
+                    const i = pos.*;
+                    pos.* += 1;
+                    const child = @atomicLoad(u32, &node.children[i], .acquire);
+                    if (child != 0) return child;
+                }
+                return null;
+            },
+            .Node16 => {
+                const node = self.nodeAt(noff, Node16) catch return null;
+                const c: usize = @min(node.count, 16);
+                while (pos.* < c) {
+                    const i = pos.*;
+                    pos.* += 1;
+                    const child = @atomicLoad(u32, &node.children[i], .acquire);
+                    if (child != 0) return child;
+                }
+                return null;
+            },
+            .Node48 => {
+                const node = self.nodeAt(noff, Node48) catch return null;
+                while (pos.* < 256) {
+                    const b = pos.*;
+                    pos.* += 1;
+                    const s = node.child_index[b];
+                    if (s == 0 or s > 48) continue;
+                    const child = @atomicLoad(u32, &node.children[s - 1], .acquire);
+                    if (child != 0) return child;
+                }
+                return null;
+            },
+            .Node256 => {
+                const node = self.nodeAt(noff, Node256) catch return null;
+                while (pos.* < 256) {
+                    const b = pos.*;
+                    pos.* += 1;
+                    const child = @atomicLoad(u32, &node.children[b], .acquire);
+                    if (child != 0) return child;
+                }
+                return null;
+            },
+        }
+    }
+
     /// Removes a key, returning true when a leaf was deleted. Fully emptied
     /// Node4/Node16 nodes are unlinked (never the root). Must NOT run
     /// concurrently with insert() on overlapping keys; concurrent search()
@@ -1241,4 +1402,62 @@ test "ART shrink Node48 subtree on delete to few keys" {
         const expected: u32 = if (j == 1) @as(u32, 4001) else @as(u32, 4100) + j;
         try std.testing.expectEqual(@as(?u32, expected), idx.search(k[0..]));
     }
+}
+
+test "ART scanPrefix collects namespaced subtrees" {
+    var buf: [256 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    try idx.insert("tbl:users:u1", 100);
+    try idx.insert("tbl:users:u2", 200);
+    try idx.insert("tbl:orders:o1", 300);
+    // Prefix key "tbl:users" itself must also match via the terminator slot.
+    try idx.insert("tbl:users", 50);
+
+    var out: [8]u32 = undefined;
+    const n = idx.scanPrefix("tbl:users", out[0..]);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    std.mem.sort(u32, out[0..n], {}, comptime std.sort.asc(u32));
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 50, 100, 200 }, out[0..n]);
+
+    const m = idx.scanPrefix("tbl:orders:", out[0..]);
+    try std.testing.expectEqual(@as(usize, 1), m);
+    try std.testing.expectEqual(@as(u32, 300), out[0]);
+
+    // No match, empty/invalid prefixes, and zero-capacity output.
+    try std.testing.expectEqual(@as(usize, 0), idx.scanPrefix("tbl:missing", out[0..]));
+    try std.testing.expectEqual(@as(usize, 0), idx.scanPrefix("", out[0..]));
+    try std.testing.expectEqual(@as(usize, 0), idx.scanPrefix("tbl:users", out[0..0]));
+
+    // Truncation: cap 2 of 3 matches reports exactly 2.
+    var tiny: [2]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 2), idx.scanPrefix("tbl:users", tiny[0..]));
+}
+
+test "ART scanPrefix over grown and shrunk trees" {
+    var buf: [512 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    // 40 single-byte suffixes force root growth past Node48.
+    var i: u8 = 1;
+    while (i <= 40) : (i += 1) {
+        const k = [_]u8{ 'k', i };
+        try idx.insert(k[0..], @as(u32, 5000) + i);
+    }
+    var out: [64]u32 = undefined;
+    const n = idx.scanPrefix("k", out[0..]);
+    try std.testing.expectEqual(@as(usize, 40), n);
+
+    // Delete most; remaining keys stay reachable via scan after shrink.
+    i = 1;
+    while (i <= 35) : (i += 1) {
+        const k = [_]u8{ 'k', i };
+        try std.testing.expect(try idx.remove(k[0..]));
+    }
+    const m = idx.scanPrefix("k", out[0..]);
+    try std.testing.expectEqual(@as(usize, 5), m);
+    std.mem.sort(u32, out[0..m], {}, comptime std.sort.asc(u32));
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 5036, 5037, 5038, 5039, 5040 }, out[0..m]);
 }
