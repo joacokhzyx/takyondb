@@ -29,8 +29,8 @@ export function parseSelect(sql: string): ParsedSelect {
   const colsRaw = m[1].trim();
   const columns = colsRaw === '*' ? ('*' as const) : colsRaw.split(',').map((s) => s.trim());
   let whereVal: string | number | undefined;
-  if (m[4] !== undefined) {
-    const raw = m[4];
+  if (m[5] !== undefined) {
+    const raw = m[5];
     whereVal = raw.startsWith("'") ? raw.slice(1, -1) : Number(raw);
   }
   return {
@@ -39,6 +39,6 @@ export function parseSelect(sql: string): ParsedSelect {
     whereCol: m[3],
     whereOp: m[4] ? m[4] : undefined,
     whereVal,
-    limit: m[5] ? Number(m[5]) : undefined,
+    limit: m[6] ? Number(m[6]) : undefined,
   };
 }
