@@ -259,10 +259,12 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
         std.debug.print("[TakyonDB-Snapshot] Atomic publish failed: {}\n", .{err});
         return error.RenameFailed;
     };
-    // Best-effort directory fsync so the rename is durable.
-    {
+    // Best-effort directory fsync so the rename is durable (POSIX only;
+    // the whole block is comptime-skipped on Windows where std.c.open
+    // takes a void O and would not compile).
+    if (builtin.os.tag != .windows) {
         const dir = std.c.open(".", std.posix.O{ .ACCMODE = .RDONLY }, @as(c_uint, 0));
-        if (dir >= 0 and builtin.os.tag != .windows) {
+        if (dir >= 0) {
             std.posix.fsync(@as(std.posix.fd_t, dir)) catch {};
             _ = std.c.close(dir);
         }
