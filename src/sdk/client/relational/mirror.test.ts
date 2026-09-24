@@ -79,4 +79,30 @@ describe('ArtMirror', () => {
     const mirror = new ArtMirror(mockBindings(new Map()));
     expect(() => mirror.scanTable('t')).toThrow();
   });
+  it('scans ranges with lo/hi bounds', () => {
+    const store = new Map<string, number>([
+      ['tbl:t:a05', 5],
+      ['tbl:t:a10', 10],
+      ['tbl:t:a15', 15],
+    ]);
+    const bindings = mockBindings(store);
+    bindings.scan_range = (prefix: string, lo = '', hi = '') => {
+      const out: number[] = [];
+      for (const [k, v] of store) {
+        if (!k.startsWith(prefix)) continue;
+        const s = k.slice(prefix.length);
+        if (lo !== '' && s < lo) continue;
+        if (hi !== '' && s > hi) continue;
+        out.push(v);
+      }
+      return new Uint32Array(out);
+    };
+    const mirror = new ArtMirror(bindings);
+    expect(mirror.scanRange('t', 'a05', 'a10').sort((a, b) => a - b)).toEqual([5, 10]);
+    expect(mirror.scanRange('t')).toHaveLength(3);
+  });
+  it('scanRange throws without bridge support', () => {
+    const mirror = new ArtMirror(mockBindings(new Map()));
+    expect(() => mirror.scanRange('t')).toThrow();
+  });
 });

@@ -61,4 +61,17 @@ export class ArtMirror {
     const out = fn.call(this.bindings, `tbl:${table}:`, maxResults);
     return Array.from(out);
   }
+
+  /**
+   * Lists arena offsets of PKs whose string form lies within [`lo`, `hi`]
+   * using the native `scan_range` (single roundtrip with Zig-side bound
+   * checks and hi pruning). Empty bounds are unbounded.
+   * Requires a bridge built with `scan_range`; throws otherwise.
+   */
+  public scanRange(table: string, lo = '', hi = '', maxResults = 1024): number[] {
+    const fn = this.bindings.scan_range;
+    if (!fn) throw new Error('bridge has no scan_range (rebuild the addon)');
+    const out = fn.call(this.bindings, `tbl:${table}:`, lo, hi, maxResults);
+    return Array.from(out);
+  }
 }

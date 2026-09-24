@@ -23,6 +23,7 @@ export interface TakyonBindings {
     search_index(key: string): number;
     remove_index(key: string): number;
     scan_prefix?(prefix: string, max_results?: number): Uint32Array;
+    scan_range?(prefix: string, lo?: string, hi?: string, max_results?: number): Uint32Array;
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;
