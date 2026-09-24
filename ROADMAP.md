@@ -33,12 +33,18 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 ## Next: correctness hardening
 
-- [ ] ART shrink on delete (`256 → 48 → 16 → 4`) + node freelist
-- [ ] MPMC ring with per-slot sequence numbers (Vyukov), replacing
-      claim-then-publish
+- [ ] Node freelist (unlinked ART nodes still await reclamation)
 - [ ] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
 - [ ] `shm_unlink` ownership + multi-tenant segments (named arenas)
 - [ ] `munmap`/`CloseHandle` failure injection tests
+
+## Next: relational hardening (zero-copy, no copy-paste SQL engines)
+
+- [ ] Native `scanRange(prefix)` + multi-root ART for secondary indexes
+- [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
+- [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
+- [ ] Row checksums + background scrubber for relational rows
+- [ ] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
 
 ## Next: performance truth
 
