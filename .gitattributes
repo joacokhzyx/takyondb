@@ -1,0 +1,23 @@
+# Normalize line endings to LF on checkout so `zig fmt --check`
+# (and prettier/eslint) see identical bytes on Windows, macOS, and Linux.
+# Without this, GitHub Windows runners check out CRLF (autocrlf) and every
+# Zig file fails `zig fmt --check`.
+* text=auto eol=lf
+*.zig text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.mts text eol=lf
+*.cts text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.cc text eol=lf
+*.h text eol=lf
+*.c text eol=lf
+*.sh text eol=lf
+*.gyp text eol=lf
+*.iss text eol=lf
+*.service text eol=lf
+*.plist text eol=lf
+.gitattributes text eol=lf
