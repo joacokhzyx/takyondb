@@ -4,7 +4,8 @@
 - Scan: `O(n)` zero-copy, sin deserializar, proyección temprana.
 - Filtro: comparación directa en `DataView`, sin alloc (pooled).
 - Join hash: build en `Map<val,pk[]>`, probe streaming.
-- Agregación: single-pass, `float64` con Kahan fase 2.
+- Agregación: single-pass en TS; kernel Zig `kahanSum` en
+  `src/core/relational/column.zig` (wiring a arena futuro).
 - Strings: bump + vacuum double-buffer ya existente.
 
 Benchmarks: `benchmarks/relational/bench.js` (harness real, seeded) +
