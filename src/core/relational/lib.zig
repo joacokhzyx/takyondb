@@ -14,3 +14,4 @@ pub const scan = @import("scan.zig");
 pub const query = @import("query.zig");
 pub const join = @import("join.zig");
 pub const tx = @import("tx.zig");
+pub const index = @import("index.zig");
