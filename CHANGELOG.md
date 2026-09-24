@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Vectorized kernels (`src/core/relational/column.zig`: 8-lane SIMD
   `filterU32` with selection vectors, Kahan `kahanSum`; arena wiring
   explicitly future).
+- Native scan bench (`scripts/bench_scan.js`) and CI coverage
+  (`relational.yml` builds ReleaseSafe, runs scan E2E + bench).
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
