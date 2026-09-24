@@ -84,10 +84,31 @@ console.log(alice?.username); // "Alice"
 console.log(alice?.age);      // 28
 ```
 
-> Status: pre-alpha. The memory map is defined in
-> `src/core/memory/layout.zig` / `src/sdk/client/layout.ts`. The addon
-> exposes an external `ArrayBuffer` (not yet a real `SharedArrayBuffer`);
-> each `worker_thread` re-maps the segment. See `docs/architecture/`.
+> Status: pre-alpha with relational phase 1. KV (`Collection`) plus
+> relational (`RelationalDatabase/Table/QueryBuilder`, SQL subset) in
+> `src/sdk/client/relational/` and `src/core/relational/`.
+> See `docs/relational/` and `docs/architecture/relational-*.md`.
+
+---
+
+## 🧮 Relational (new)
+
+```typescript
+import { RelationalDatabase } from 'takyondb';
+import { QueryBuilder } from 'takyondb';
+
+const db = new RelationalDatabase();
+const users = db.createTable('users', [
+  { name: 'id', type: 'string', primaryKey: true },
+  { name: 'age', type: 'uint32' },
+]);
+users.insert({ id: 'u1', age: 28 });
+new QueryBuilder(users).where({ age: { gte: 18 } }).all();
+```
+
+Tables use namespaced ART keys (`tbl:/idx:/__catalog__`), zero-copy scans,
+hash joins, single-pass aggs, batch tx, and a minimal `SELECT` parser.
+Zig core mirrors types/catalog/row/filter/agg/scan/query/join/tx with tests.
 
 ---
 
