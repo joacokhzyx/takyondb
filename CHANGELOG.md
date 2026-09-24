@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   explicitly future).
 - Native scan bench (`scripts/bench_scan.js`) and CI coverage
   (`relational.yml` builds ReleaseSafe, runs scan E2E + bench).
+- Durable secondary indexes (`NativeSecondaryIndex` over engine ART
+  with exact + range lookup, optional UNIQUE).
+- CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
+  one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
