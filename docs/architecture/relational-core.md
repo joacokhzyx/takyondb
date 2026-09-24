@@ -18,5 +18,10 @@ anti-corrupción `65536`, `0` ante nodos corruptos). Expuesto como
 `takyon_scan_prefix` (C-ABI) → `scan_prefix` (N-API, `Uint32Array`) →
 `ArtMirror.scanTable` (TS, un roundtrip por tabla).
 
+Y `ArtIndex.scanRange`: filtra por sufijo en [`lo`, `hi`] con poda del
+subárbol provablemente sobre `hi` (complejidad del subárbol coincidente).
+Expuesto como `takyon_scan_range` → `scan_range` → `ArtMirror.scanRange`.
+E2E `e2e_scan_test.js` cubre ambos contra daemon vivo.
+
 Todos con tests unitarios, `zig fmt` limpio, integrados en
 `src/core/test.zig` y expuestos vía `src/core/lib.zig`.
