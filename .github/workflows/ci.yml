@@ -13,9 +13,13 @@ jobs:
     name: Build & Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # fail-fast false: every OS reports even when another fails.
+      fail-fast: false
       matrix:
-        # Cross-platform targets
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-15 (not -latest): Zig 0.14.1 predates the macOS 26 SDK and
+        # its test binaries fail to link libSystem there (undefined
+        # _clock_gettime et al). Revisit when the toolchain is bumped.
+        os: [ubuntu-latest, windows-latest, macos-15]
         node-version: [22.x]
 
     steps:
