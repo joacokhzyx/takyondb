@@ -32,6 +32,7 @@
     "build:addon": "cd ../../../ && zig build",
     "test": "tsc --noEmit && vitest run",
     "test:unit": "vitest run",
+    "test:relational": "vitest run ../client/relational",
     "lint": "cd .. && node ./ts/node_modules/eslint/bin/eslint.js client takyon.ts index.ts",
     "format": "prettier --write '../**/*.ts'"
   },
