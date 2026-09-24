@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Fixed `vacuum WAL-logged relocation` test (overlapping 8B fat pointers
+  at `OFF_A=16/OFF_B=20`): `OFF_B` is now 28 (disjoint, still unaligned).
+  `zig build test` is fully green.
+- Real seeded relational bench (`benchmarks/relational/bench.js` +
+  per-op wrappers, `scripts/bench_relational.js`): insert/scan/filter/
+  join/agg over 20k rows with p50/p95/p99 + hardware report.
+- `ArtMirror` (`src/sdk/client/relational/mirror.ts`): mirrors relational
+  PKs into the engine ART (`tbl:<table>:<pk>`), reusing WAL/snapshots.
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
