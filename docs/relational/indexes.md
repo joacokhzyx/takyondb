@@ -8,6 +8,11 @@
   `insert_index/search_index/remove_index`, así las PKs relacionales
   reutilizan WAL, snapshots y recovery en vez de un mapa paralelo.
   Los offsets deben ser reales (`TakyonDB.allocateRecordOffset`).
+- Secundario nativo (`client/relational/secondary_native.ts`):
+  `NativeSecondaryIndex` guarda `idx:<tabla>:<col>:<valor><U+001F><pk>
+  -> offset` en el mismo ART (durable + cross-process). `lookup`
+  por valor exacto vía `scan_prefix`, `lookupRange` vía `scan_range`,
+  `UNIQUE` opcional. Orden byte-lexicográfico (zero-pad numéricos).
 - Mantenimiento síncrono en `insert/update/delete` (mismo ring, misma
   durabilidad WAL). Sin background async que rompa lecturas.
 - Fase 2 (Zig): raíces ART múltiples + `scanRange(prefix)` nativo para
