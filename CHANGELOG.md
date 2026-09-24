@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Bounded range scan (`ArtIndex.scanRange` with hi pruning,
   `takyon_scan_range`, N-API `scan_range`, `ArtMirror.scanRange`,
   E2E vs live daemon).
+- Vectorized kernels (`src/core/relational/column.zig`: 8-lane SIMD
+  `filterU32` with selection vectors, Kahan `kahanSum`; arena wiring
+  explicitly future).
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
