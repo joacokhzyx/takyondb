@@ -44,6 +44,8 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
       N-API `scan_prefix` + `ArtMirror.scanTable`, E2E vs daemon vivo)
 - [x] Bounded range scan (`ArtIndex.scanRange` with hi pruning +
       `takyon_scan_range` + N-API `scan_range` + `ArtMirror.scanRange`)
+- [x] Pushdown kernels (`column.zig`: SIMD `filterU32`, Kahan `kahanSum`;
+      arena wiring future)
 - [ ] Multi-root ART for secondary indexes
 - [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
