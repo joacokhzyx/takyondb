@@ -24,5 +24,8 @@ comptime {
     _ = @import("relational/join.zig");
     _ = @import("relational/tx.zig");
     _ = @import("relational/index.zig");
+    _ = @import("relational/persist.zig");
+    _ = @import("relational/sql.zig");
+    _ = @import("relational/executor.zig");
     _ = @import("c_abi/exports.zig");
 }
