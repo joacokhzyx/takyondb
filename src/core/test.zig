@@ -14,5 +14,14 @@ comptime {
     _ = @import("storage/wal.zig");
     _ = @import("storage/snapshot.zig");
     _ = @import("storage/recovery.zig");
+    _ = @import("relational/types.zig");
+    _ = @import("relational/catalog.zig");
+    _ = @import("relational/row.zig");
+    _ = @import("relational/filter.zig");
+    _ = @import("relational/aggregation.zig");
+    _ = @import("relational/scan.zig");
+    _ = @import("relational/query.zig");
+    _ = @import("relational/join.zig");
+    _ = @import("relational/tx.zig");
     _ = @import("c_abi/exports.zig");
 }
