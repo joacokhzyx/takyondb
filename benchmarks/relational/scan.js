@@ -1,2 +1,3 @@
-// Bench: relational scan throughput (placeholder methodology).
-console.log(JSON.stringify({ bench: 'relational-scan', ops: 10000, p50_ms: 0.008 }));
+// Bench: relational scan throughput (runs the real seeded suite).
+const { execSync } = require('child_process');
+execSync(`node ${__dirname}/bench.js scan`, { stdio: 'inherit' });

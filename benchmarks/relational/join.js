@@ -1,2 +1,3 @@
-// Bench: relational join throughput (placeholder methodology).
-console.log(JSON.stringify({ bench: 'relational-join', ops: 1000, p50_ms: 0.02 }));
+// Bench: relational join throughput (runs the real seeded suite).
+const { execSync } = require('child_process');
+execSync(`node ${__dirname}/bench.js join`, { stdio: 'inherit' });

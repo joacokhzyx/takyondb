@@ -1,2 +1,3 @@
-// Bench: relational aggregation throughput (placeholder methodology).
-console.log(JSON.stringify({ bench: 'relational-agg', ops: 10000, p50_ms: 0.01 }));
+// Bench: relational aggregation throughput (runs the real seeded suite).
+const { execSync } = require('child_process');
+execSync(`node ${__dirname}/bench.js agg`, { stdio: 'inherit' });
