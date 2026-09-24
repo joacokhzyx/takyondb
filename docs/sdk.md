@@ -61,6 +61,7 @@ interface TakyonBindings {
     search_index(key: string): number;
     remove_index(key: string): number;
     scan_prefix?(prefix: string, max_results?: number): Uint32Array;
+    scan_range?(prefix: string, lo?: string, hi?: string, max_results?: number): Uint32Array;
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;
@@ -77,6 +78,7 @@ Native `0` = success; nonzero = failure (JS wrappers throw or return
 | `insert_index` | arena not ready, `key_len` 0 or > 256, `value_offset` out of arena, or ART insert failed (e.g. OOM) |
 | `search_index` | arena not ready, bad key length, **not found**, or hit offset aliasing `0x7FFFFFFF` (reserved) |
 | `scan_prefix` | bridge throws `RangeError` for bad prefix/`max_results` (1..4096) and `Error` when the engine is not ready; returns `Uint32Array` (possibly empty) otherwise |
+| `scan_range` | like `scan_prefix` over keys with suffix in [`lo`, `hi`] (empty = unbounded); inverted bounds return empty, never an error |
 | `pushDelta` (`takyon_write_delta`) | ring/arena not ready, `size` 0 or > 48, `offset + size` out of arena, or ring full |
 | `notifyArena` | ring/arena not ready, `size == 0`, `offset + size` out of arena, or ring full |
 | `trigger_checkpoint` | ring not ready or ring full (checkpoint is a ring sentinel, `is_arena == 2`) |
