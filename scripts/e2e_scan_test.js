@@ -69,6 +69,20 @@ async function run() {
   const empty = Array.from(takyondb.scan_prefix('ZZZ-', 16));
   if (empty.length !== 0) return fail(`empty scan returned ${empty.length}`);
 
+  // Bounded range scan over the zero-padded suffixes.
+  const range = Array.from(takyondb.scan_range('SCAN-', '00010', '00019', 64)).sort((a, b) => a - b);
+  const want = [];
+  for (let i = 10; i <= 19; i++) want.push(300000 + i * 64);
+  if (range.length !== want.length || !range.every((v, i) => v === want[i])) {
+    return fail(`range scan mismatch: got ${range.length}, want ${want.length}`);
+  }
+  if (Array.from(takyondb.scan_range('SCAN-', '', '', N_SCAN + 16)).length !== N_SCAN) {
+    return fail('unbounded range scan mismatch');
+  }
+  if (Array.from(takyondb.scan_range('SCAN-', '00019', '00010', 16)).length !== 0) {
+    return fail('inverted range should be empty');
+  }
+
   daemon.kill();
   try { takyondb.disconnect_shm(); } catch (e) {}
   console.log('[E2E Scan] SUCCESS: native prefix scan passed.');
