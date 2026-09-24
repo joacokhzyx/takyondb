@@ -21,6 +21,12 @@ node benchmarks/relational/filter.js           # una suite
 node scripts/bench_relational.js               # entrada CI
 ```
 
+Nativo (requiere `zig build`):
+
+```bash
+node scripts/bench_scan.js 10000  # point vs prefix scan vs rango
+```
+
 Workload: `20k` filas seeded (`LCG 42`), `p50/p95/p99` vía
 `performance.now()`, reporte de hardware (`platform/arch/cpus/node`)
 en cada salida JSON. Informativo, no gate de CI.
