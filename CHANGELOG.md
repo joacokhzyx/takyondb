@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   join/agg over 20k rows with p50/p95/p99 + hardware report.
 - `ArtMirror` (`src/sdk/client/relational/mirror.ts`): mirrors relational
   PKs into the engine ART (`tbl:<table>:<pk>`), reusing WAL/snapshots.
+- Bounded range scan (`ArtIndex.scanRange` with hi pruning,
+  `takyon_scan_range`, N-API `scan_range`, `ArtMirror.scanRange`,
+  E2E vs live daemon).
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
