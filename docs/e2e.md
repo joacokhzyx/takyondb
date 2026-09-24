@@ -1,5 +1,8 @@
 # TakyonDB E2E Tests
 
+Relational smoke runs without daemon: see `e2e-relational.md`
+(`scripts/e2e_relational_test.js`).
+
 E2E suites exercise the real daemon (`zig-out/bin/takyondb[.exe]`) plus the
 compiled N-API addon (`zig-out/bin/takyondb_bridge.node`). Run them via the
 harness (all five suites, timeouts enforced, nonzero exit on failure):
