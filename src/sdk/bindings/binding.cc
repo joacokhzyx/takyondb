@@ -34,6 +34,8 @@ extern "C" {
     int takyon_search_index(const char* key, uint32_t key_len);
     int takyon_remove_index(const char* key, uint32_t key_len);
     int32_t takyon_scan_prefix(const char* key, uint32_t key_len, uint32_t* out, uint32_t out_cap);
+    int32_t takyon_scan_range(const char* key, uint32_t key_len, const char* lo, uint32_t lo_len,
+                              const char* hi, uint32_t hi_len, uint32_t* out, uint32_t out_cap);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -287,6 +289,78 @@ napi_value ScanPrefix(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Reads a bound string (possibly empty, at most 256 UTF-8 bytes, NUL-free)
+// for range scans. Unlike CopyKey, empty is allowed (means unbounded).
+static bool CopyBound(napi_env env, napi_value str, char out[TAKYON_MAX_KEY + 1],
+                      uint32_t* out_len) {
+    size_t len = 0;
+    if (napi_get_value_string_utf8(env, str, nullptr, 0, &len) != napi_ok) {
+        return false;
+    }
+    if (len > TAKYON_MAX_KEY) {
+        napi_throw_range_error(env, nullptr, "bound must be 0..256 bytes (UTF-8)");
+        return false;
+    }
+    size_t copied = 0;
+    if (napi_get_value_string_utf8(env, str, out, TAKYON_MAX_KEY + 1, &copied) != napi_ok) {
+        return false;
+    }
+    if (memchr(out, '\0', len) != nullptr) {
+        napi_throw_range_error(env, nullptr, "bound must not contain NUL bytes");
+        return false;
+    }
+    *out_len = (uint32_t)copied;
+    return true;
+}
+
+napi_value ScanRange(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+
+    char key[TAKYON_MAX_KEY + 1];
+    uint32_t key_len = 0;
+    if (!CopyKey(env, args[0], key, &key_len)) {
+        return nullptr; // N-API error already thrown.
+    }
+
+    char lo[TAKYON_MAX_KEY + 1] = {0};
+    char hi[TAKYON_MAX_KEY + 1] = {0};
+    uint32_t lo_len = 0, hi_len = 0;
+    if (argc >= 2) {
+        if (!CopyBound(env, args[1], lo, &lo_len)) return nullptr;
+    }
+    if (argc >= 3) {
+        if (!CopyBound(env, args[2], hi, &hi_len)) return nullptr;
+    }
+    uint32_t max_results = 1024;
+    if (argc >= 4) {
+        CHECK_NAPI(napi_get_value_uint32(env, args[3], &max_results));
+        if (max_results == 0 || max_results > 4096) {
+            napi_throw_range_error(env, nullptr, "max_results must be 1..4096");
+            return nullptr;
+        }
+    }
+
+    uint32_t out[4096];
+    int32_t n = takyon_scan_range(key, key_len, lo, lo_len, hi, hi_len, out, max_results);
+    if (n < 0) {
+        napi_throw_error(env, nullptr, "scan_range failed: engine not ready");
+        return nullptr;
+    }
+
+    void* data = nullptr;
+    napi_value arraybuffer;
+    CHECK_NAPI(napi_create_arraybuffer(env, (size_t)n * sizeof(uint32_t), &data, &arraybuffer));
+    if (n > 0) {
+        memcpy(data, out, (size_t)n * sizeof(uint32_t));
+    }
+    napi_value result;
+    CHECK_NAPI(napi_create_typedarray(env, napi_uint32_array, (size_t)n, arraybuffer, 0, &result));
+    return result;
+}
+
 napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {    (void)info;
     int32_t result = ::takyon_trigger_checkpoint();
     napi_value res;
@@ -338,12 +412,13 @@ napi_value Init(napi_env env, napi_value exports) {
         { "search_index", 0, SearchIndex, 0, 0, 0, napi_default, 0 },
         { "remove_index", 0, RemoveIndex, 0, 0, 0, napi_default, 0 },
         { "scan_prefix", 0, ScanPrefix, 0, 0, 0, napi_default, 0 },
+        { "scan_range", 0, ScanRange, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 12, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 13, desc));
     return exports;
 }
 
