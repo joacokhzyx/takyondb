@@ -1,0 +1,31 @@
+name: Relational Checks
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  relational:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Install SDK deps
+        run: |
+          cd src/sdk/ts
+          npm ci
+      - name: Check Zig formatting (incl. relational)
+        run: zig fmt --check src/ build.zig
+      - name: Run Zig tests (incl. relational)
+        run: zig build test
+      - name: Run TS relational unit tests
+        run: |
+          cd src/sdk/ts
+          npm run test:unit -- ../client/relational
