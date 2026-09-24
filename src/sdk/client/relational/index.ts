@@ -25,3 +25,4 @@ export * from './sql';
 export * from './executor';
 export * from './constraints';
 export * from './validator';
+export * from './persist';
