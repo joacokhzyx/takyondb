@@ -5,7 +5,9 @@
 const std = @import("std");
 
 // Same libc symbol, but with a 32-bit mode like a C compiler would pass.
-extern "c" fn my_shm_open(name: [*:0]const u8, flag: c_int, mode: c_uint) c_int;
+const my_shm_open = @extern(*const fn (name: [*:0]const u8, flag: c_int, mode: c_uint) callconv(.c) c_int, .{
+    .name = "shm_open",
+});
 
 pub fn main() !void {
     const posix = std.posix;
@@ -46,4 +48,15 @@ pub fn main() !void {
     std.debug.print("my-reopen fd={d} errno={d}\n", .{ m2, std.c._errno().* });
     if (m2 >= 0) std.posix.close(m2);
     _ = std.c.shm_unlink(mname);
+
+    // Discriminant 2: reopen with mode 0 (ignored without O_CREAT).
+    // If this succeeds while the u16-mode call fails, the mode arg is poison.
+    _ = std.c.shm_unlink(name);
+    const z1 = std.c.shm_open(name, excl, @as(std.c.mode_t, 0o666));
+    std.debug.print("second-create fd={d} errno={d}\n", .{ z1, std.c._errno().* });
+    if (z1 >= 0) std.posix.close(z1);
+    const z2 = std.c.shm_open(name, rw, @as(std.c.mode_t, 0));
+    std.debug.print("mode0-reopen fd={d} errno={d}\n", .{ z2, std.c._errno().* });
+    if (z2 >= 0) std.posix.close(z2);
+    _ = std.c.shm_unlink(name);
 }
