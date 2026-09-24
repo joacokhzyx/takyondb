@@ -49,4 +49,16 @@ export class ArtMirror {
       this.mirrorPk(table.name, pk, offsetOf(pk));
     }
   }
+
+  /**
+   * Lists arena offsets of every PK under a table prefix using the native
+   * `scan_prefix` (single roundtrip, no per-key `search_index` calls).
+   * Requires a bridge built with `scan_prefix`; throws otherwise.
+   */
+  public scanTable(table: string, maxResults = 1024): number[] {
+    const fn = this.bindings.scan_prefix;
+    if (!fn) throw new Error('bridge has no scan_prefix (rebuild the addon)');
+    const out = fn.call(this.bindings, `tbl:${table}:`, maxResults);
+    return Array.from(out);
+  }
 }

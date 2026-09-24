@@ -60,4 +60,23 @@ describe('ArtMirror', () => {
     failing.insert_index = () => -1;
     expect(() => new ArtMirror(failing).mirrorPk('t', 'a', 8)).toThrow();
   });
+  it('scans table prefixes in one roundtrip', () => {
+    const store = new Map<string, number>([
+      ['tbl:t:a', 100],
+      ['tbl:t:b', 200],
+      ['tbl:other:x', 300],
+    ]);
+    const bindings = mockBindings(store);
+    bindings.scan_prefix = (prefix: string) => {
+      const out: number[] = [];
+      for (const [k, v] of store) if (k.startsWith(prefix)) out.push(v);
+      return new Uint32Array(out);
+    };
+    const mirror = new ArtMirror(bindings);
+    expect(mirror.scanTable('t').sort((a, b) => a - b)).toEqual([100, 200]);
+  });
+  it('scanTable throws without bridge support', () => {
+    const mirror = new ArtMirror(mockBindings(new Map()));
+    expect(() => mirror.scanTable('t')).toThrow();
+  });
 });
