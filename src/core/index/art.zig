@@ -723,10 +723,10 @@ pub const ArtIndex = struct {
                 found += 1;
                 continue;
             }
-            if (self.nextChild(ptr.getType(), ptr.getOffset(), &top.pos)) |child| {
-                if (child == 0) continue;
+            if (self.nextChild(ptr.getType(), ptr.getOffset(), &top.pos)) |c| {
+                if (c.raw == 0) continue;
                 if (sp >= MAX_DEPTH) break; // Pathological depth; stop.
-                stack[sp] = .{ .raw = child, .pos = 0 };
+                stack[sp] = .{ .raw = c.raw, .pos = 0 };
                 sp += 1;
             } else {
                 sp -= 1; // Exhausted or unreadable: pop.
@@ -777,9 +777,15 @@ pub const ArtIndex = struct {
 
     /// Iterates children of a node in deterministic order (key order for
     /// Node4/Node16, byte order for Node48/Node256). Advances `*pos` past
-    /// the returned child. Returns null when exhausted or the node is
-    /// unreadable (caller pops). Skips empty/stale slots best-effort.
-    fn nextChild(self: *ArtIndex, ntype: NodeType, noff: u32, pos: *usize) ?u32 {
+    /// the returned child and reports the branch byte taken. Returns null
+    /// when exhausted or the node is unreadable (caller pops).
+    /// Skips empty/stale slots best-effort.
+    const Child = struct {
+        raw: u32,
+        byte: u8,
+    };
+
+    fn nextChild(self: *ArtIndex, ntype: NodeType, noff: u32, pos: *usize) ?Child {
         switch (ntype) {
             .Leaf => return null,
             .Node4 => {
@@ -789,7 +795,7 @@ pub const ArtIndex = struct {
                     const i = pos.*;
                     pos.* += 1;
                     const child = @atomicLoad(u32, &node.children[i], .acquire);
-                    if (child != 0) return child;
+                    if (child != 0) return .{ .raw = child, .byte = node.keys[i] };
                 }
                 return null;
             },
@@ -800,7 +806,7 @@ pub const ArtIndex = struct {
                     const i = pos.*;
                     pos.* += 1;
                     const child = @atomicLoad(u32, &node.children[i], .acquire);
-                    if (child != 0) return child;
+                    if (child != 0) return .{ .raw = child, .byte = node.keys[i] };
                 }
                 return null;
             },
@@ -812,7 +818,7 @@ pub const ArtIndex = struct {
                     const s = node.child_index[b];
                     if (s == 0 or s > 48) continue;
                     const child = @atomicLoad(u32, &node.children[s - 1], .acquire);
-                    if (child != 0) return child;
+                    if (child != 0) return .{ .raw = child, .byte = @intCast(b) };
                 }
                 return null;
             },
@@ -822,11 +828,108 @@ pub const ArtIndex = struct {
                     const b = pos.*;
                     pos.* += 1;
                     const child = @atomicLoad(u32, &node.children[b], .acquire);
-                    if (child != 0) return child;
+                    if (child != 0) return .{ .raw = child, .byte = @intCast(b) };
                 }
                 return null;
             },
         }
+    }
+
+    /// True when `suffix` lies within [`lo`, `hi`] (lexicographic, unsigned
+    /// bytes). An empty bound means unbounded on that side.
+    fn suffixInBounds(suffix: []const u8, lo: []const u8, hi: []const u8) bool {
+        if (lo.len > 0 and std.mem.order(u8, suffix, lo) == .lt) return false;
+        if (hi.len > 0 and std.mem.order(u8, suffix, hi) == .gt) return false;
+        return true;
+    }
+
+    /// Collects value_offsets of leaves whose key starts with `prefix` and
+    /// whose remaining suffix lies within [`lo`, `hi`]. Empty `lo`/`hi` are
+    /// unbounded. Writes at most `out.len` offsets, returns the count.
+    /// Returns 0 for invalid input (`lo > hi`, bad lengths, NUL bytes),
+    /// empty trees, or corrupt nodes. Subtrees provably above `hi` are
+    /// pruned during the ordered DFS; complexity is O(matching subtree).
+    pub fn scanRange(self: *ArtIndex, prefix: []const u8, lo: []const u8, hi: []const u8, out: []u32) usize {
+        if (prefix.len == 0 or prefix.len > MAX_KEY_LEN) return 0;
+        if (lo.len > MAX_KEY_LEN or hi.len > MAX_KEY_LEN) return 0;
+        if (std.mem.indexOfScalar(u8, prefix, TERMINATOR) != null) return 0;
+        if (std.mem.indexOfScalar(u8, lo, TERMINATOR) != null) return 0;
+        if (std.mem.indexOfScalar(u8, hi, TERMINATOR) != null) return 0;
+        if (lo.len > 0 and hi.len > 0 and std.mem.order(u8, lo, hi) == .gt) return 0;
+        if (out.len == 0) return 0;
+        const root_slot = self.u32Slot(self.root_ptr_offset) catch return 0;
+        var cur_raw = @atomicLoad(u32, root_slot, .acquire);
+        if (cur_raw == 0) return 0;
+
+        var depth: usize = 0;
+        while (depth < prefix.len) {
+            const ptr = ArtPtr{ .raw = cur_raw };
+            if (ptr.getType() == .Leaf) {
+                if (!self.leafInRange(ptr.getOffset(), prefix, lo, hi)) return 0;
+                const leaf = self.nodeAt(ptr.getOffset(), Leaf) catch return 0;
+                out[0] = @atomicLoad(u32, &leaf.value_offset, .acquire);
+                return 1;
+            }
+            const child = self.childAt(ptr.getType(), ptr.getOffset(), prefix[depth]) catch return 0;
+            if (child == 0) return 0;
+            cur_raw = child;
+            depth += 1;
+        }
+
+        const Frame = struct {
+            raw: u32,
+            pos: usize,
+            depth: usize,
+        };
+        var stack: [MAX_DEPTH]Frame = undefined;
+        var path: [MAX_DEPTH]u8 = undefined;
+        var sp: usize = 1;
+        stack[0] = .{ .raw = cur_raw, .pos = 0, .depth = prefix.len };
+        var found: usize = 0;
+        var budget: usize = MAX_SCAN_VISITS;
+
+        while (sp > 0 and found < out.len and budget > 0) {
+            budget -= 1;
+            const top = &stack[sp - 1];
+            const ptr = ArtPtr{ .raw = top.raw };
+            if (ptr.getType() == .Leaf) {
+                sp -= 1;
+                if (!self.leafInRange(ptr.getOffset(), prefix, lo, hi)) continue;
+                const leaf = self.nodeAt(ptr.getOffset(), Leaf) catch continue;
+                out[found] = @atomicLoad(u32, &leaf.value_offset, .acquire);
+                found += 1;
+                continue;
+            }
+            // Prune subtrees provably above hi: every key below extends path,
+            // so path > hi implies the whole subtree is out of range.
+            if (hi.len > 0 and top.depth >= prefix.len) {
+                const p = path[prefix.len..top.depth];
+                if (std.mem.order(u8, p, hi) == .gt) {
+                    sp -= 1;
+                    continue;
+                }
+            }
+            const child_depth = top.depth + 1;
+            if (self.nextChild(ptr.getType(), ptr.getOffset(), &top.pos)) |c| {
+                if (c.raw == 0) continue;
+                if (sp >= MAX_DEPTH or child_depth >= MAX_DEPTH) break;
+                path[top.depth] = c.byte;
+                stack[sp] = .{ .raw = c.raw, .pos = 0, .depth = child_depth };
+                sp += 1;
+            } else {
+                sp -= 1;
+            }
+        }
+        return found;
+    }
+
+    /// True when the leaf key starts with `prefix` and its suffix is in bounds.
+    fn leafInRange(self: *ArtIndex, leaf_off: u32, prefix: []const u8, lo: []const u8, hi: []const u8) bool {
+        const leaf = self.nodeAt(leaf_off, Leaf) catch return false;
+        if (leaf.key_len < prefix.len) return false;
+        const stored = leafKeyBytes(self.arena_mem, leaf_off, leaf.key_len) catch return false;
+        if (!std.mem.startsWith(u8, stored, prefix)) return false;
+        return suffixInBounds(stored[prefix.len..], lo, hi);
     }
 
     /// Removes a key, returning true when a leaf was deleted. Fully emptied
@@ -1460,4 +1563,37 @@ test "ART scanPrefix over grown and shrunk trees" {
     try std.testing.expectEqual(@as(usize, 5), m);
     std.mem.sort(u32, out[0..m], {}, comptime std.sort.asc(u32));
     try std.testing.expectEqualSlices(u32, &[_]u32{ 5036, 5037, 5038, 5039, 5040 }, out[0..m]);
+}
+
+test "ART scanRange bounds suffixes" {
+    var buf: [256 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    var keybuf: [16]u8 = undefined;
+    var n: usize = 0;
+    while (n < 40) : (n += 1) {
+        const k = try std.fmt.bufPrint(keybuf[0..], "r:{d:0>3}", .{n});
+        try idx.insert(k, @as(u32, @intCast(6000 + n)));
+    }
+    try idx.insert("s:001", 9999);
+
+    var out: [64]u32 = undefined;
+    // Closed range over zero-padded suffixes.
+    const m = idx.scanRange("r:", "005", "010", out[0..]);
+    try std.testing.expectEqual(@as(usize, 6), m);
+    std.mem.sort(u32, out[0..m], {}, comptime std.sort.asc(u32));
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 6005, 6006, 6007, 6008, 6009, 6010 }, out[0..m]);
+
+    // Unbounded sides behave like a full prefix scan.
+    try std.testing.expectEqual(@as(usize, 40), idx.scanRange("r:", "", "", out[0..]));
+    try std.testing.expectEqual(@as(usize, 40), idx.scanRange("r:", "", "999", out[0..]));
+    try std.testing.expectEqual(@as(usize, 40), idx.scanRange("r:", "000", "", out[0..]));
+
+    // Degenerate and invalid inputs.
+    try std.testing.expectEqual(@as(usize, 0), idx.scanRange("r:", "010", "005", out[0..]));
+    try std.testing.expectEqual(@as(usize, 0), idx.scanRange("r:", "zzz", "zzz", out[0..]));
+    try std.testing.expectEqual(@as(usize, 0), idx.scanRange("", "000", "999", out[0..]));
+    var tiny: [3]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 3), idx.scanRange("r:", "000", "039", tiny[0..]));
 }
