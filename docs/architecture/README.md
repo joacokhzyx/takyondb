@@ -1,6 +1,8 @@
 # TakyonDB Architecture
 
 This directory holds technical deep-dives. Start here for the big picture.
+See `relational-overview.md`, `relational-core.md`, `relational-sdk.md`,
+`catalog.md` for the relational extension (zero-copy, ART namespaced).
 
 ## SharedArena map (canonical)
 
