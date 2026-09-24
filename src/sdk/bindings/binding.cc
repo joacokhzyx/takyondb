@@ -33,6 +33,7 @@ extern "C" {
     int takyon_insert_index(const char* key, uint32_t key_len, uint32_t value_offset);
     int takyon_search_index(const char* key, uint32_t key_len);
     int takyon_remove_index(const char* key, uint32_t key_len);
+    int32_t takyon_scan_prefix(const char* key, uint32_t key_len, uint32_t* out, uint32_t out_cap);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -244,8 +245,49 @@ napi_value RemoveIndex(napi_env env, napi_callback_info info) {
     return result;
 }
 
-napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {
-    (void)info;
+// Collects up to max_results (default 1024, cap 4096) value offsets whose
+// keys start with the given prefix. Returns a Uint32Array (possibly empty).
+// Rejects NUL-containing or over-long prefixes like the other key methods.
+napi_value ScanPrefix(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+
+    char key[TAKYON_MAX_KEY + 1];
+    uint32_t key_len = 0;
+    if (!CopyKey(env, args[0], key, &key_len)) {
+        return nullptr; // N-API error already thrown.
+    }
+
+    uint32_t max_results = 1024;
+    if (argc >= 2) {
+        CHECK_NAPI(napi_get_value_uint32(env, args[1], &max_results));
+        if (max_results == 0 || max_results > 4096) {
+            napi_throw_range_error(env, nullptr, "max_results must be 1..4096");
+            return nullptr;
+        }
+    }
+
+    uint32_t out[4096];
+    int32_t n = takyon_scan_prefix(key, key_len, out, max_results);
+    if (n < 0) {
+        napi_throw_error(env, nullptr, "scan_prefix failed: engine not ready");
+        return nullptr;
+    }
+
+    void* data = nullptr;
+    napi_value arraybuffer;
+    CHECK_NAPI(napi_create_arraybuffer(env, (size_t)n * sizeof(uint32_t), &data, &arraybuffer));
+    if (n > 0) {
+        memcpy(data, out, (size_t)n * sizeof(uint32_t));
+    }
+    napi_value result;
+    CHECK_NAPI(napi_create_typedarray(env, napi_uint32_array, (size_t)n, arraybuffer, 0, &result));
+    return result;
+}
+
+napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {    (void)info;
     int32_t result = ::takyon_trigger_checkpoint();
     napi_value res;
     CHECK_NAPI(napi_create_int32(env, result, &res));
@@ -295,12 +337,13 @@ napi_value Init(napi_env env, napi_value exports) {
         { "insert_index", 0, InsertIndex, 0, 0, 0, napi_default, 0 },
         { "search_index", 0, SearchIndex, 0, 0, 0, napi_default, 0 },
         { "remove_index", 0, RemoveIndex, 0, 0, 0, napi_default, 0 },
+        { "scan_prefix", 0, ScanPrefix, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 11, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 12, desc));
     return exports;
 }
 
