@@ -408,7 +408,9 @@ test "vacuum WAL-logged relocation survives recovery" {
     // Records placed above RECORD_BUMP_OFFSET so recovery's ring cleanup
     // ([RING_OFFSET..RECORD_BUMP_OFFSET]) cannot wipe them.
     const OFF_A: u32 = 16; // aligned -> CAS path
-    const OFF_B: u32 = 20; // unaligned -> check-then-write path
+    // NOTE: fat pointers are 8B, so OFF_B must not overlap [OFF_A, OFF_A+8).
+    // 28 keeps the unaligned check-then-write path ((rec+28)%8==4) with disjoint ranges.
+    const OFF_B: u32 = 28; // unaligned -> check-then-write path
     const rec0: u32 = 300000;
     const rec1: u32 = 300064;
 
