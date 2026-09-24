@@ -148,6 +148,23 @@ export fn takyon_scan_prefix(key_ptr: [*]const u8, key_len: u32, out_ptr: [*]u32
     return @as(i32, @intCast(n));
 }
 
+/// Like takyon_scan_prefix but only keys whose suffix after `key` lies
+/// within [`lo`, `hi`] (lexicographic). Empty `lo`/`hi` (len 0, pointer
+/// may be null) means unbounded on that side. Returns the count written,
+/// or -1 on error (!arena_ready, bad lengths, `lo > hi`, out_cap == 0).
+export fn takyon_scan_range(key_ptr: [*]const u8, key_len: u32, lo_ptr: ?[*]const u8, lo_len: u32, hi_ptr: ?[*]const u8, hi_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
+    if (!arena_ready) return -1;
+    if (key_len == 0 or key_len > 256) return -1;
+    if (lo_len > 256 or hi_len > 256) return -1;
+    if (out_cap == 0) return -1;
+    const key = key_ptr[0..key_len];
+    const lo: []const u8 = if (lo_len == 0) &[_]u8{} else (lo_ptr orelse return -1)[0..lo_len];
+    const hi: []const u8 = if (hi_len == 0) &[_]u8{} else (hi_ptr orelse return -1)[0..hi_len];
+    const out = out_ptr[0..out_cap];
+    const n = art_index.scanRange(key, lo, hi, out);
+    return @as(i32, @intCast(n));
+}
+
 pub inline fn rdtsc() u64 {
     if (builtin.cpu.arch == .x86_64 or builtin.cpu.arch == .x86) {
         var low: u32 = undefined;
