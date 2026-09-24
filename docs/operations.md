@@ -1,5 +1,8 @@
 # TakyonDB Operations
 
+Relational ops reuse the same daemon: see `relational/operations.md`
+and `relational/backup.md` for checkpoint/backup flows.
+
 ## Daemon CLI
 
 ```bash
