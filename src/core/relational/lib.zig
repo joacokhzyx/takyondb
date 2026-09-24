@@ -18,3 +18,4 @@ pub const index = @import("index.zig");
 pub const persist = @import("persist.zig");
 pub const sql = @import("sql.zig");
 pub const executor = @import("executor.zig");
+pub const column = @import("column.zig");
