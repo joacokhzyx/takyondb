@@ -3,6 +3,6 @@
   "compilerOptions": {
     "paths": {}
   },
-  "include": ["../client/layout.ts", "../client/schema.ts", "../client/proxy.ts", "../takyon.ts", "../index.ts"],
+  "include": ["../client/layout.ts", "../client/schema.ts", "../client/proxy.ts", "../takyon.ts", "../index.ts", "../client/relational/*.ts"],
   "exclude": ["../client/**/*.test.ts", "./vitest.config.ts"]
 }
