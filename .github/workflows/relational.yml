@@ -25,6 +25,12 @@ jobs:
         run: zig fmt --check src/ build.zig
       - name: Run Zig tests (incl. relational)
         run: zig build test
+      - name: Build daemon and N-API addon
+        run: zig build -Doptimize=ReleaseSafe
+      - name: Run native scan E2E (live daemon)
+        run: node scripts/e2e_scan_test.js
+      - name: Run native scan bench (live daemon, informational)
+        run: node scripts/bench_scan.js 3000
       - name: Run TS relational unit tests
         run: |
           cd src/sdk/ts
