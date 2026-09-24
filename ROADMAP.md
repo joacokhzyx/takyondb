@@ -11,16 +11,25 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 - [x] Canonical memory map (`layout.zig` ↔ `layout.ts`), no magic numbers
 - [x] Full ART: `Node4 → 16 → 48 → 256` growth, overwrite, delete,
       prefix keys via terminator byte, OOM handling, unit tests
+- [x] ART shrink on delete (`256 → 48 → 16 → 4`) with type cascade
+- [x] MPMC ring with per-slot sequence numbers (Vyukov)
 - [x] Durable WAL: `fsync` per sector, Direct I/O with buffered fallback,
-      corrupt-delta filtering, drain-before-checkpoint
+      corrupt-delta filtering, drain-before-checkpoint, segmented rotation
 - [x] Verified snapshots: full-arena coverage (records + ART + strings),
       CRC check on load, `fsync` + directory sync before WAL rotation
 - [x] Recovery round-trip test (snapshot → reboot → records + index intact)
-- [x] Stoppable vacuum with full ART traversal and double-buffer compaction
+- [x] Stoppable vacuum with full ART traversal and double-buffer compaction,
+      multi-column compaction
 - [x] SHM lifecycle: `takyon_disconnect_shm`, N-API finalizer, no fd leaks
 - [x] Hardened N-API bridge (every status checked, no key truncation)
 - [x] SDK unit tests (schema, layout, proxy with mocked bridge)
+- [x] Daemon TCP/admin protocol (`PING/HEALTH/METRICS/CHECKPOINT`), `--data-dir`,
+      `--checkpoint-sec`, `--port`, periodic checkpoints
 - [x] Modern toolchain: ESLint 9, typescript-eslint 8, `@types/node` 22
+- [x] Relational phase 1 (TS): tables, schemas, queries, joins, aggs, tx,
+      SQL subset, 20+ unit tests green
+- [x] Relational phase 1 (Zig): types, catalog, row, filter, agg, scan,
+      query, join, tx with unit tests wired into `zig build test`
 
 ## Next: correctness hardening
 
