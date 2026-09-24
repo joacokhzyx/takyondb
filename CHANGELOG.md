@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
+  `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
+  included in `dist` build.
+- Relational phase 1 (Zig): `types/catalog/row/filter/aggregation/scan/
+  query/join/tx` in `src/core/relational/` wired into `test.zig` + `lib.zig`.
+- Docs: `docs/relational/` (vision, data-model, query-api, indexes,
+  transactions, performance, sql-subset, migration) + architecture overviews.
+- Examples/benchmarks placeholders for relational quickstart and bench.
+
 ### Changed
 - License migrated from AGPLv3 / Commercial dual-licensing to **MIT**.
   Removed `COMMERCIAL_LICENSE.md` and the CLA requirement (replaced by DCO sign-off).
