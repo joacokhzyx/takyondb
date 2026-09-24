@@ -23,3 +23,5 @@ export * from './transaction';
 export * from './secondary_index';
 export * from './sql';
 export * from './executor';
+export * from './constraints';
+export * from './validator';
