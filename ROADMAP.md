@@ -40,7 +40,9 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 ## Next: relational hardening (zero-copy, no copy-paste SQL engines)
 
-- [ ] Native `scanRange(prefix)` + multi-root ART for secondary indexes
+- [x] Native prefix scan (`ArtIndex.scanPrefix` + `takyon_scan_prefix` +
+      N-API `scan_prefix` + `ArtMirror.scanTable`, E2E vs daemon vivo)
+- [ ] Bounded range scan with upper bound + multi-root ART for secondaries
 - [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
 - [ ] Row checksums + background scrubber for relational rows
