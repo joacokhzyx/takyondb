@@ -1,7 +1,7 @@
 # TakyonDB SDK Reference
 
 TypeScript SDK entry point: `src/sdk/index.ts` (re-exports `client/schema`,
-`client/layout`, `client/proxy`, `takyon`). Canonical offsets live in
+`client/layout`, `client/proxy`, `takyon`, `client/relational`). Canonical offsets live in
 `src/sdk/client/layout.ts`, mirroring `src/core/memory/layout.zig` — never
 hardcode them. Native calls go through the N-API addon
 (`zig-out/bin/takyondb_bridge.node`, built via `zig build`).
