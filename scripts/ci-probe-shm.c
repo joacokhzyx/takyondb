@@ -31,5 +31,21 @@ int main(void) {
     if (fd3 >= 0) close(fd3);
 
     shm_unlink(n);
+
+    // Discriminant: does ftruncate change reopen behavior?
+    const char *m = "/takyon_probe_trunc";
+    shm_unlink(m);
+    errno = 0;
+    int t1 = shm_open(m, O_RDWR | O_CREAT | O_EXCL, 0666);
+    printf("trunc-create fd=%d errno=%d (%s)\n", t1, errno, t1 < 0 ? strerror(errno) : "ok");
+    if (t1 >= 0) {
+        if (ftruncate(t1, 16777216) != 0) printf("trunc-ftruncate errno=%d (%s)\n", errno, strerror(errno));
+        close(t1);
+    }
+    errno = 0;
+    int t2 = shm_open(m, O_RDWR, 0666);
+    printf("trunc-reopen fd=%d errno=%d (%s)\n", t2, errno, t2 < 0 ? strerror(errno) : "ok");
+    if (t2 >= 0) close(t2);
+    shm_unlink(m);
     return 0;
 }
