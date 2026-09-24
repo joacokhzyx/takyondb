@@ -15,3 +15,6 @@ pub const query = @import("query.zig");
 pub const join = @import("join.zig");
 pub const tx = @import("tx.zig");
 pub const index = @import("index.zig");
+pub const persist = @import("persist.zig");
+pub const sql = @import("sql.zig");
+pub const executor = @import("executor.zig");
