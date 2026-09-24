@@ -12,7 +12,7 @@
  * ============================================================================
  */
 
-import { TakyonBindings } from './proxy';
+import { TakyonBindings } from '../proxy';
 import { RelationalTable } from './table';
 import { encodePk, pkKey } from './utils';
 

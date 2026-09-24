@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { TakyonBindings } from './proxy';
+import { TakyonBindings } from '../proxy';
 import { RelationalDatabase } from './database';
 import { ArtMirror } from './mirror';
 
