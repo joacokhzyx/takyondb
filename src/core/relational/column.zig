@@ -1,0 +1,111 @@
+// ============================================================================
+// File: column.zig
+// Description: Vectorized column kernels for predicate pushdown.
+//   Filters compare 8 lanes per instruction and emit dense index runs
+//   (selection vectors); sums use Kahan compensation. All operate on
+//   borrowed zero-copy slices with no allocation and no NaN special
+//   casing (NaN never matches Eq, always matches Ne — IEEE semantics).
+// Author/Maintainer: TakyonDB Contributors
+// License: MIT. See LICENSE for details.
+// ============================================================================
+
+const std = @import("std");
+const rfilter = @import("filter.zig");
+
+/// Lanes per SIMD step for 32-bit columns.
+pub const LANES_32: usize = 8;
+
+/// Writes indices `i` with `values[i] <op> target` into `out` (dense run).
+/// Returns the count written (capped by `out.len`). Pure and allocation-free.
+pub fn filterU32(values: []const u32, op: rfilter.CmpOp, target: u32, out: []u32) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    const top = (values.len / LANES_32) * LANES_32;
+    const splat: @Vector(LANES_32, u32) = @splat(target);
+    while (i < top and n < out.len) : (i += LANES_32) {
+        const v: @Vector(LANES_32, u32) = values[i..][0..LANES_32].*;
+        const mask: @Vector(LANES_32, bool) = switch (op) {
+            .Eq => v == splat,
+            .Ne => v != splat,
+            .Gt => v > splat,
+            .Gte => v >= splat,
+            .Lt => v < splat,
+            .Lte => v <= splat,
+        };
+        var lane: usize = 0;
+        while (lane < LANES_32 and n < out.len) : (lane += 1) {
+            if (mask[lane]) {
+                out[n] = @intCast(i + lane);
+                n += 1;
+            }
+        }
+    }
+    while (i < values.len and n < out.len) : (i += 1) {
+        const match = switch (op) {
+            .Eq => values[i] == target,
+            .Ne => values[i] != target,
+            .Gt => values[i] > target,
+            .Gte => values[i] >= target,
+            .Lt => values[i] < target,
+            .Lte => values[i] <= target,
+        };
+        if (match) {
+            out[n] = @intCast(i);
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// Kahan-compensated sum over a borrowed slice (no allocation).
+pub fn kahanSum(values: []const f64) f64 {
+    var sum: f64 = 0;
+    var c: f64 = 0;
+    for (values) |v| {
+        const y = v - c;
+        const t = sum + y;
+        c = (t - sum) - y;
+        sum = t;
+    }
+    return sum;
+}
+
+test "column filterU32 covers all operators" {
+    const vals = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+    var out: [12]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), filterU32(&vals, .Eq, 5, out[0..]));
+    try std.testing.expectEqual(@as(u32, 4), out[0]);
+    try std.testing.expectEqual(@as(usize, 11), filterU32(&vals, .Ne, 5, out[0..]));
+    try std.testing.expectEqual(@as(usize, 2), filterU32(&vals, .Gt, 10, out[0..]));
+    try std.testing.expectEqual(@as(usize, 3), filterU32(&vals, .Gte, 10, out[0..]));
+    try std.testing.expectEqual(@as(usize, 1), filterU32(&vals, .Lt, 2, out[0..]));
+    try std.testing.expectEqual(@as(usize, 2), filterU32(&vals, .Lte, 2, out[0..]));
+}
+
+test "column filterU32 truncates and handles edges" {
+    const vals = [_]u32{ 7, 7, 7, 7, 7, 7, 7, 7, 7 };
+    var tiny: [3]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 3), filterU32(&vals, .Eq, 7, tiny[0..]));
+    try std.testing.expectEqual(@as(usize, 0), filterU32(&vals, .Eq, 8, tiny[0..]));
+    try std.testing.expectEqual(@as(usize, 0), filterU32(&[_]u32{}, .Eq, 7, tiny[0..]));
+    try std.testing.expectEqual(@as(usize, 0), filterU32(&vals, .Eq, 7, tiny[0..0]));
+    // Non-multiple-of-8 length exercises the scalar tail.
+    const odd = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    var out: [9]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), filterU32(&odd, .Eq, 9, out[0..]));
+    try std.testing.expectEqual(@as(u32, 8), out[0]);
+}
+
+test "column kahanSum keeps small addends" {
+    var vals: [11]f64 = undefined;
+    vals[0] = 1e16;
+    var i: usize = 1;
+    while (i < vals.len) : (i += 1) {
+        vals[i] = 1.0;
+    }
+    var naive: f64 = 0;
+    for (vals) |v| naive += v;
+    try std.testing.expect(naive != 10000000000000010.0);
+    try std.testing.expectEqual(@as(f64, 10000000000000010.0), kahanSum(&vals));
+    try std.testing.expectEqual(@as(f64, 0), kahanSum(&[_]f64{}));
+}
