@@ -135,6 +135,19 @@ export fn takyon_remove_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i
     return if (deleted) @as(i32, 1) else @as(i32, 0);
 }
 
+/// Collects up to `out_cap` value offsets whose keys start with `key`.
+/// Returns the count written, or -1 on error (!arena_ready, bad key_len,
+/// or out_cap == 0). Never writes past `out_cap` entries.
+export fn takyon_scan_prefix(key_ptr: [*]const u8, key_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
+    if (!arena_ready) return -1;
+    if (key_len == 0 or key_len > 256) return -1;
+    if (out_cap == 0) return -1;
+    const key = key_ptr[0..key_len];
+    const out = out_ptr[0..out_cap];
+    const n = art_index.scanPrefix(key, out);
+    return @as(i32, @intCast(n));
+}
+
 pub inline fn rdtsc() u64 {
     if (builtin.cpu.arch == .x86_64 or builtin.cpu.arch == .x86) {
         var low: u32 = undefined;
