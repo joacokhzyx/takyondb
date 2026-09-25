@@ -62,6 +62,11 @@ async function run() {
   if ((await cmd('PING')) !== 'PONG') return fail('PING');
   if ((await cmd('BOGUS')) !== 'ERR unknown command') return fail('unknown command');
 
+  const metrics = await cmd('METRICS');
+  if (!/^METRICS ring_depth=\d+ wal_bytes=\d+ wal_segments=\d+ uptime_s=\d+ fl_quarantined=\d+ fl_reused=\d+ fl_dropped=\d+$/.test(metrics)) {
+    return fail(`METRICS shape: ${metrics.slice(0, 80)}`);
+  }
+
   const full = await cmd('SCAN adm: 64');
   const offsets = full.startsWith('OK 40 ') ? full.slice(6).split(',').map(Number) : [];
   if (offsets.length !== 40 || new Set(offsets).size !== 40) return fail(`full scan: ${full.slice(0, 40)}`);

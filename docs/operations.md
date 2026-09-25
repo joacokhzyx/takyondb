@@ -30,7 +30,7 @@ Line-based ASCII: one line in, one line out, then close. Covered by
 | --- | --- |
 | `PING` | `PONG` |
 | `HEALTH` | `OK uptime_s=<n> arena=<bytes> ring=<depth>` |
-| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u>` |
+| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x>` (`fl_*` = ART freelist: quarantined orphans, opt-in reuses, dropped overflows) |
 | `CHECKPOINT` | `QUEUED` (or `FULL` when the ring is full) |
 | `SCAN <prefix> [max]` | `OK <n> <o1>,<o2>,...` (offsets with prefix; default 64, cap 128) |
 | `RANGE <prefix> <lo> <hi> [max]` | same, suffix in [`lo`, `hi`]; `-` = unbounded |
