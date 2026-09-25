@@ -35,6 +35,7 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 - [ ] Node freelist (unlinked ART nodes still await reclamation)
 - [ ] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
+      (first step shipped: deterministic 1500-key ART sweep in `art.zig`)
 - [ ] `shm_unlink` ownership + multi-tenant segments (named arenas)
 - [ ] `munmap`/`CloseHandle` failure injection tests
 
@@ -49,7 +50,8 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 - [ ] Multi-root ART for secondary indexes
 - [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
-- [ ] Row checksums + background scrubber for relational rows
+- [x] Row checksums for relational rows (`row.zig` sealed 12B header
+      with CRC32 + tamper tests; background scrubber future)
 - [ ] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
 
 ## Next: performance truth
@@ -62,7 +64,8 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 ## Next: operability
 
-- [ ] Daemon TCP/admin protocol (health, metrics, graceful drain)
+- [x] Daemon TCP/admin protocol (PING/HEALTH/METRICS/CHECKPOINT plus
+      SCAN/RANGE over the native index; graceful drain on SIGINT)
 - [ ] Checksums on record headers, background scrubber
 - [ ] Packaging from CI artifacts only (no committed binaries)
 

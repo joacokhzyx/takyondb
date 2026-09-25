@@ -4,7 +4,8 @@ Módulos en `src/core/relational/`:
 
 - `types.zig`: tipos físicos y tamaños.
 - `catalog.zig`: `TableDef` con PK única.
-- `row.zig`: bitmap NULL + magic/version.
+- `row.zig`: bitmap NULL + magic/version + sealed 12B headers
+  (`initHeader/seal/verify`, CRC32 over header + payload; tamper tests).
 - `filter.zig`: `matchInt/matchFloat` sin alloc.
 - `aggregation.zig`: acumulador streaming.
 - `scan.zig`: `ScanCursor` sobre offsets.
