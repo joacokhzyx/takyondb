@@ -7,8 +7,8 @@ const STRING_BUMP_OFFSET = 10485760; // 10MB
 const STRING_DATA_START = 10485764;
 const ARENA_SIZE = 64 * 1024 * 1024;
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 const FIELD_OFFSET_USERNAME = 0; // The string is at offset 0 in the record
 

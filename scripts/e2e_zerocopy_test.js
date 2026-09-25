@@ -2,9 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 var path_1 = require("path");
 var worker_threads_1 = require("worker_threads");
-// Path to the compiled N-API addon
-var ADDON_PATH = (0, path_1.join)(__dirname, '../zig-out/bin/takyondb_bridge.node');
-var takyondb = require(ADDON_PATH);
+var takyondb = require('./helpers/addon').loadBindings();
 var NUM_INSERTS = 10000;
 if (worker_threads_1.isMainThread) {
     console.log("[E2E] Connecting to TakyonDB Engine (Shared Memory)...");

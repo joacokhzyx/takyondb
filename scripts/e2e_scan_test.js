@@ -9,8 +9,8 @@ const ARENA_SIZE = 16 * 1024 * 1024;
 const N_SCAN = 2000;
 const N_OTHER = 500;
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 function fail(msg) {
   console.error(`[E2E Scan] FAILURE: ${msg}`);

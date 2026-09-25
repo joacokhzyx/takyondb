@@ -1,6 +1,6 @@
 import { join } from 'path';
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 const NUM_INSERTS_BEFORE = 5000;
 const RESIDUAL_OFFSET = 3000000; // An offset far in the arena

@@ -54,9 +54,9 @@ run() {
 }
 
 if [ "$RUN_E2E" -eq 1 ]; then
-  TOTAL_STEPS=7
+  TOTAL_STEPS=8
 else
-  TOTAL_STEPS=5
+  TOTAL_STEPS=6
 fi
 
 command -v zig >/dev/null 2>&1 || { echo "zig not found on PATH (need 0.14.1)" >&2; exit 1; }
@@ -84,6 +84,24 @@ if [ -x "$TSC" ]; then
 else
   bad "typescript compiler not found at $TSC (run: npm ci --prefix src/sdk/ts)"
 fi
+
+step "Cross-compile the daemon for the other two CI platforms"
+# The Windows and macOS legs of the matrix cannot run here, but they can be
+# *compiled* for. Platform-specific compile errors (std.process.args() is
+# unimplemented on Windows, for instance) then surface in seconds instead of
+# a full CI round-trip. Verified to fail when such an error is present.
+CROSS_DIR="$(mktemp -d)"
+trap 'rm -rf "$CROSS_DIR"' EXIT
+for target in x86_64-windows-gnu aarch64-macos; do
+  run "zig build-exe -target $target" \
+    zig build-exe -target "$target" -OReleaseSafe \
+      --dep core \
+      -Mroot=src/server/main.zig -OReleaseSafe \
+      -Mcore=src/core/lib.zig -lc \
+      --name "daemon-$target" \
+      --cache-dir "$CROSS_DIR/cache" --global-cache-dir "$CROSS_DIR/gcache" \
+      -femit-bin="$CROSS_DIR/daemon-$target"
+done
 
 if [ "$RUN_E2E" -eq 1 ]; then
   step "zig build (daemon + N-API addon, ReleaseSafe)"

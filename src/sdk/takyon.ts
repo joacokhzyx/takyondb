@@ -9,6 +9,7 @@
 
 import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength } from './client/proxy';
 import { TakyonSchema, FieldType } from './client/schema';
+import { loadBindings } from './client/addon';
 import {
     ART_ROOT_OFFSET,
     MAX_KEY_LEN,
@@ -158,8 +159,21 @@ export class TakyonDB {
     public readonly client: TakyonClient;
     private currentRecordOffset: number = RECORD_START;
 
-    constructor(bindings: TakyonBindings, memorySize: number = 64 * 1024 * 1024) {
-        this.client = new TakyonClient(bindings, memorySize);
+    /**
+     * @param bindings Native addon bindings. Optional: when omitted the
+     *   bundled N-API addon is located and loaded automatically (see
+     *   `loadBindings`). Pass it explicitly to inject a mock, a
+     *   pre-resolved addon, or a test double.
+     */
+    constructor(
+        bindings?: TakyonBindings,
+        memorySize: number = 64 * 1024 * 1024,
+    ) {
+        // Lazy import shape: the loader reaches for the filesystem, so it is
+        // only pulled in when a caller actually needs the native addon. The
+        // relational engine (tables, queries, SQL) never touches this path.
+        const resolved = bindings ?? loadBindings();
+        this.client = new TakyonClient(resolved, memorySize);
     }
 
     /**

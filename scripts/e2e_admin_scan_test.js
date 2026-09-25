@@ -8,8 +8,7 @@ const ARENA_SIZE = 16 * 1024 * 1024;
 
 const { READY, withDaemon } = require('./helpers/daemon');
 
-const ADDON_PATH = require('path').join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const takyondb = require('./helpers/addon').loadBindings();
 
 function fail(msg) {
   console.error(`[E2E Admin] FAILURE: ${msg}`);

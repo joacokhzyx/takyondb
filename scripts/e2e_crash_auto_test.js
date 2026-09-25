@@ -14,8 +14,8 @@ const N = 5000;
 const RESIDUAL_OFFSET = 3000000;
 const RESIDUAL_SIZE = 4086; // +6B header = 4092: one full sector flush
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 function fail(msg) {
   console.error(`[E2E Crash] FAILURE: ${msg}`);

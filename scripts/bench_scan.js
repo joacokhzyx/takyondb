@@ -12,8 +12,8 @@ const { performance } = require('perf_hooks');
 const ARENA_SIZE = 64 * 1024 * 1024;
 const N = Number(process.argv[2] || 10000);
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 function fail(msg) {
   console.error(`[Bench Scan] FAILURE: ${msg}`);

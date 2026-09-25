@@ -3,14 +3,14 @@ const { join } = require('path');
 const { performance } = require('perf_hooks');
 
 const { startDaemon } = require('./helpers/daemon');
+const { loadBindings } = require('./helpers/addon');
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
 let takyondb;
 try {
-    takyondb = require(ADDON_PATH);
+    takyondb = loadBindings();
 } catch (e) {
     if (isMainThread) {
-        console.error("Failed to load TakyonDB addon. Did you compile it?");
+        console.error(`Failed to load TakyonDB addon: ${e && e.message ? e.message : e}`);
         process.exit(1);
     }
 }

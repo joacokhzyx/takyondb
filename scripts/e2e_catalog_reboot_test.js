@@ -12,8 +12,8 @@ const ARENA_SIZE = 16 * 1024 * 1024;
 
 const { withDaemon, stopDaemon, waitForFileStable } = require('./helpers/daemon');
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 const { CatalogRecordStore } = require('../src/sdk/ts/dist/client/relational/catalog_record');
 
 const USERS = [

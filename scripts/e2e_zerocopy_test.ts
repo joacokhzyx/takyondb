@@ -2,8 +2,8 @@ import { join } from 'path';
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 // Path to the compiled N-API addon
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 const NUM_INSERTS = 10000;
 

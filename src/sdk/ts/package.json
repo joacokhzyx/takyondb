@@ -8,10 +8,16 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./addon": {
+      "types": "./dist/client/addon.d.ts",
+      "default": "./dist/client/addon.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "prebuilds",
     "LICENSE",
     "README.md"
   ],
@@ -29,14 +35,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "build:addon": "cd ../../../ && zig build",
     "test": "tsc --noEmit && vitest run",
     "test:unit": "vitest run",
     "prepack": "cp ../../../LICENSE ./LICENSE",
     "test:relational": "vitest run ../client/relational",
     "bench:relational": "node ../../../scripts/bench_relational.js",
     "lint": "cd .. && node ./ts/node_modules/eslint/bin/eslint.js client takyon.ts index.ts",
-    "format": "prettier --write '../**/*.ts'"
+    "format": "prettier --write '../**/*.ts'",
+    "build:addon": "cd ../../../ && zig build -Doptimize=ReleaseSafe"
   },
   "keywords": [
     "database",
@@ -53,7 +59,6 @@
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "node-api-headers": "^1.9.0",
-    "node-gyp": "^12.4.0",
     "prettier": "^3.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",

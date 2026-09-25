@@ -166,6 +166,13 @@ async function stopDaemon(handle, signal = 'SIGKILL') {
     tracked.delete(handle);
     return;
   }
+  // startDaemon() unref'd the child so a finished bench can exit without
+  // hanging on it. That makes awaiting the 'exit' event unsafe: if the child
+  // is the only thing holding the event loop open, Node drains the loop and
+  // exits while this promise is still pending, silently skipping every
+  // cleanup step after it. Re-ref for the duration of the wait, then drop it
+  // again.
+  if (typeof proc.ref === 'function') proc.ref();
   const exited = new Promise((resolve) => proc.once('exit', resolve));
   try {
     proc.kill(signal);
@@ -179,9 +186,9 @@ async function stopDaemon(handle, signal = 'SIGKILL') {
       // Already gone.
     }
   }, 2000);
-  if (killer.unref) killer.unref();
   await exited;
   clearTimeout(killer);
+  if (typeof proc.unref === 'function') proc.unref();
   tracked.delete(handle);
 }
 

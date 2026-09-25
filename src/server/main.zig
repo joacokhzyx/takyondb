@@ -273,7 +273,10 @@ pub fn main() !void {
     // segment, no WAL, no port bind) so an operator or a packaging script
     // can interrogate the binary safely. Both exit 0.
     {
-        var it = std.process.args();
+        // argsWithAllocator, not std.process.args(): the latter is
+        // unimplemented on Windows in Zig 0.14.1 (compile error).
+        var it = try std.process.argsWithAllocator(std.heap.page_allocator);
+        defer it.deinit();
         _ = it.skip();
         while (it.next()) |arg| {
             if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {

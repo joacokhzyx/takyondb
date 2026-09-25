@@ -110,6 +110,50 @@ jobs:
           zig-out/bin/*
           zig-out/lib/*
 
+  pack-smoke:
+    name: Pack & install smoke on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same OS/arch pairing as the installer matrix, so the prebuild that
+        # pack_smoke assembles is the one the release job would publish.
+        os: [ubuntu-latest, windows-2022, macos-15]
+        node-version: [22.x]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: 0.14.1
+
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Install SDK Node Dependencies
+      run: cd src/sdk/ts && npm ci
+
+    - name: Fetch Windows node.lib for N-API link
+      if: runner.os == 'Windows'
+      run: |
+        New-Item -ItemType Directory -Force lib | Out-Null
+        $NodeVersion = (node -v).TrimStart('v')
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/win-x64/node.lib" -OutFile "lib/node.lib"
+
+    - name: Build daemon and N-API addon
+      run: zig build -Doptimize=ReleaseSafe
+
+    - name: Pack the package and install it clean, then use it
+      # The gate that proves "installable". Nothing else in CI ever
+      # installed the published tarball, which is how a package that ships no
+      # native addon could look green.
+      timeout-minutes: 10
+      run: node scripts/pack_smoke.js
+
   release:
     name: Create GitHub Release & Publish to NPM
     needs: build-and-test
@@ -124,17 +168,63 @@ jobs:
         with:
           path: release-artifacts
 
+      - name: Assemble per-platform prebuilds into the package
+        # `npm install takyondb` used to ship no native code at all, so the
+        # documented quickstart could not run. The addon is N-API, so one
+        # binary per platform+arch serves every Node release: copy the
+        # takyondb_bridge.node from each OS artifact into the layout that
+        # src/sdk/client/addon.ts searches (prebuilds/<platform>-<arch>/).
+        # Runner -> prebuild key:
+        #   ubuntu-latest  (x64)  -> linux-x64
+        #   macos-15       (arm64)-> darwin-arm64
+        #   windows-2022   (x64)  -> win32-x64
+        # linux-arm64 and darwin-x64 have no runner in this matrix; loadBindings()
+        # reports them as unsupported instead of failing at require time.
+        run: |
+          set -euo pipefail
+          PKG=src/sdk/ts
+          map_artifact() {
+            artifact="$1"; key="$2"
+            src="release-artifacts/${artifact}/zig-out/bin/takyondb_bridge.node"
+            if [ ! -f "$src" ]; then
+              echo "::error::missing ${src} (artifact '${artifact}')"
+              return 1
+            fi
+            mkdir -p "${PKG}/prebuilds/${key}"
+            cp "$src" "${PKG}/prebuilds/${key}/takyondb_bridge.node"
+            echo "assembled prebuilds/${key}/takyondb_bridge.node ($(stat -c%s "${PKG}/prebuilds/${key}/takyondb_bridge.node" 2>/dev/null || wc -c < "${PKG}/prebuilds/${key}/takyondb_bridge.node") bytes)"
+          }
+          map_artifact installers-ubuntu-latest  linux-x64
+          map_artifact installers-macos-15       darwin-arm64
+          map_artifact installers-windows-2022   win32-x64
+          find "${PKG}/prebuilds" -type f -exec file {} \;
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
-      
+
       - name: Build TypeScript SDK
         run: |
           cd src/sdk/ts
           npm ci
           npm run build
+
+      - name: Verify the tarball carries the prebuilds
+        # Fail before publishing rather than after: a tarball that installs
+        # but cannot load its addon is the exact defect this is closing.
+        run: |
+          set -euo pipefail
+          cd src/sdk/ts
+          npm pack --dry-run > /tmp/pack.txt 2>&1 || { cat /tmp/pack.txt; exit 1; }
+          cat /tmp/pack.txt
+          for key in linux-x64 darwin-arm64 win32-x64; do
+            grep -q "prebuilds/${key}/takyondb_bridge.node" /tmp/pack.txt \
+              || { echo "::error::prebuilds/${key} missing from the tarball"; exit 1; }
+          done
+          grep -q "dist/client/addon.js" /tmp/pack.txt \
+            || { echo "::error::the addon loader is missing from the tarball"; exit 1; }
 
       - name: Publish Package to NPM
         run: |
@@ -142,7 +232,7 @@ jobs:
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

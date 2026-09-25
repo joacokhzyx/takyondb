@@ -10,8 +10,8 @@ const { startDaemon, stopDaemon } = require('./helpers/daemon');
 
 const ARENA_SIZE = 16 * 1024 * 1024;
 
-const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
-const takyondb = require(ADDON_PATH);
+const { loadBindings } = require('./helpers/addon');
+const takyondb = loadBindings();
 
 function fail(msg) {
   console.error(`[E2E Refcount] FAILURE: ${msg}`);

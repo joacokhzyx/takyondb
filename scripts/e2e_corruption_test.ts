@@ -6,7 +6,7 @@ import { join } from 'path';
 
 const DB_PATH = join(process.cwd(), 'data.takyon');
 const DAEMON_BIN = join(__dirname, '..', 'zig-out', 'bin', process.platform === 'win32' ? 'takyondb.exe' : 'takyondb');
-const addon = require('../zig-out/bin/takyondb_bridge.node');
+const addon = require('./helpers/addon').loadBindings();
 
 const bindings: TakyonBindings = {
     initSharedMemory: (size: number) => addon.initSharedMemory(size),
