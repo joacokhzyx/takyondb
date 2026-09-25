@@ -10,6 +10,7 @@ comptime {
     _ = @import("memory/layout.zig");
     _ = @import("memory/vacuum.zig");
     _ = @import("memory/record_crc.zig");
+    _ = @import("memory/scrub.zig");
     _ = @import("ipc/ring_buffer.zig");
     _ = @import("index/art.zig");
     _ = @import("storage/wal.zig");
