@@ -517,8 +517,12 @@ test "WAL Lock-Free Flusher Integration" {
     if (builtin.os.tag == .windows) {
         var size: i64 = 0;
         _ = std.os.windows.kernel32.GetFileSizeEx(wal.fd, &size);
-        const padded_writes = (100_000 * (@sizeOf(WalEntryHeader) + 4));
-        const expected_size = @as(i64, @intCast((padded_writes + 4095) / 4096 * 4096));
+        // Full sectors hold SECTOR_PAYLOAD bytes (4 trailing CRC bytes),
+        // and the flusher pads + writes the trailing partial sector on
+        // idle (flushBuffer no-ops only when empty), so count it too.
+        const payload = 100_000 * (@sizeOf(WalEntryHeader) + 4);
+        const sectors = payload / SECTOR_PAYLOAD + (if (payload % SECTOR_PAYLOAD == 0) @as(usize, 0) else 1);
+        const expected_size = @as(i64, @intCast(sectors * SECTOR_SIZE));
         try std.testing.expectEqual(expected_size, size);
     }
 
