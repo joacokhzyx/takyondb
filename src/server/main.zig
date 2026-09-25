@@ -407,11 +407,16 @@ pub fn main() !void {
         std.Thread.yield() catch {};
     }
 
-    // 5. Graceful shutdown
+    // 5. Graceful shutdown. The daemon owns the segment name: unlink it so
+    // the OS namespace is freed (mappings persist until close per POSIX
+    // semantics; Windows unlink is a no-op). Crash exits (SIGKILL) skip
+    // this path by design, leaving the segment for snapshot+WAL recovery.
     std.debug.print("[TakyonDB-Daemon] Shutting down admin endpoint...\n", .{});
     admin_thread.join();
     std.debug.print("[TakyonDB-Daemon] Shutting down WAL Flusher and flushing residual deltas...\n", .{});
     wal.shutdown();
+    SharedArena.unlink(shm_name);
+    arena.close();
     std.debug.print("[TakyonDB-Daemon] TakyonDB stopped successfully.\n", .{});
 }
 
