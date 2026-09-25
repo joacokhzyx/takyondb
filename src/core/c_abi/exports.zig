@@ -14,6 +14,8 @@ const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
 const art = @import("../index/art.zig");
 const column = @import("../relational/column.zig");
 const rfilter = @import("../relational/filter.zig");
+const rcrc = @import("../memory/record_crc.zig");
+const scrub = @import("../memory/scrub.zig");
 
 // Global statics for E2E Zero-Copy Test
 var ring_buffer: RingBuffer = undefined;
@@ -321,6 +323,31 @@ export fn takyon_agg_max_selected(values_ptr: ?[*]const f64, values_len: u32, se
     const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
     const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
     return column.maxSelected(values, sel, sel_len);
+}
+
+/// Scrubber: verifies one sealed KV envelope.
+/// Returns 1 when valid, 0 when corrupt, -1 on bad args (null/empty).
+export fn takyon_verify_record(buf_ptr: ?[*]const u8, len: u32) callconv(.c) i32 {
+    if (len == 0) return -1;
+    const buf = (buf_ptr orelse return -1)[0..len];
+    return if (rcrc.verify(buf)) @as(i32, 1) else @as(i32, 0);
+}
+
+/// Scrubber: walks concatenated sealed envelopes in a caller buffer.
+/// Writes ok/corrupt/bytes/truncated counts; returns 0 or -1 on bad args.
+export fn takyon_scrub_records(buf_ptr: ?[*]const u8, len: u32, ok_out: ?*u32, corrupt_out: ?*u32, bytes_out: ?*u32, truncated_out: ?*u32) callconv(.c) i32 {
+    const ok_p = ok_out orelse return -1;
+    const corrupt_p = corrupt_out orelse return -1;
+    const bytes_p = bytes_out orelse return -1;
+    const trunc_p = truncated_out orelse return -1;
+    if (len == 0) return -1;
+    const buf = (buf_ptr orelse return -1)[0..len];
+    const rep = scrub.scrub(buf);
+    ok_p.* = @intCast(rep.ok);
+    corrupt_p.* = @intCast(rep.corrupt);
+    bytes_p.* = @intCast(rep.bytes);
+    trunc_p.* = if (rep.truncated) @as(u32, 1) else @as(u32, 0);
+    return 0;
 }
 
 export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
