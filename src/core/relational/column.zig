@@ -80,6 +80,64 @@ pub fn filterF64(values: []const f64, op: rfilter.CmpOp, target: f64, out: []u32
     return n;
 }
 
+/// Kahan-compensated sum over a selection vector (no allocation).
+/// `sel[0..sel_len]` holds indices into `values`; out-of-bounds entries stop the scan.
+pub fn kahanSumSelected(values: []const f64, sel: []const u32, sel_len: usize) f64 {
+    var sum: f64 = 0;
+    var c: f64 = 0;
+    const n = @min(sel_len, sel.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const idx: usize = sel[i];
+        if (idx >= values.len) break;
+        const v = values[idx];
+        const y = v - c;
+        const t = sum + y;
+        c = (t - sum) - y;
+        sum = t;
+    }
+    return sum;
+}
+
+/// Min over a selection vector; 0 when empty (matches TS aggregate()).
+pub fn minSelected(values: []const f64, sel: []const u32, sel_len: usize) f64 {
+    const n = @min(sel_len, sel.len);
+    var i: usize = 0;
+    // Skip out-of-bounds leading entries.
+    while (i < n) : (i += 1) {
+        const idx: usize = sel[i];
+        if (idx < values.len) break;
+    }
+    if (i >= n) return 0;
+    var m = values[sel[i]];
+    i += 1;
+    while (i < n) : (i += 1) {
+        const idx: usize = sel[i];
+        if (idx >= values.len) break;
+        if (values[idx] < m) m = values[idx];
+    }
+    return m;
+}
+
+/// Max over a selection vector; 0 when empty (matches TS aggregate()).
+pub fn maxSelected(values: []const f64, sel: []const u32, sel_len: usize) f64 {
+    const n = @min(sel_len, sel.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const idx: usize = sel[i];
+        if (idx < values.len) break;
+    }
+    if (i >= n) return 0;
+    var m = values[sel[i]];
+    i += 1;
+    while (i < n) : (i += 1) {
+        const idx: usize = sel[i];
+        if (idx >= values.len) break;
+        if (values[idx] > m) m = values[idx];
+    }
+    return m;
+}
+
 /// Kahan-compensated sum over a borrowed slice (no allocation).
 pub fn kahanSum(values: []const f64) f64 {
     var sum: f64 = 0;
@@ -132,6 +190,25 @@ test "column filterF64 covers all operators" {
     const with_nan = [_]f64{ nan, 1.0 };
     try std.testing.expectEqual(@as(usize, 0), filterF64(&with_nan, .Eq, nan, out[0..]));
     try std.testing.expectEqual(@as(usize, 2), filterF64(&with_nan, .Ne, nan, out[0..]));
+}
+
+test "column selected aggs match full-slice semantics" {
+    const vals = [_]f64{ 10.0, 20.0, 30.0, 40.0 };
+    const sel_all = [_]u32{ 0, 1, 2, 3 };
+    try std.testing.expectEqual(@as(f64, 100.0), kahanSumSelected(&vals, &sel_all, 4));
+    try std.testing.expectEqual(@as(f64, 10.0), minSelected(&vals, &sel_all, 4));
+    try std.testing.expectEqual(@as(f64, 40.0), maxSelected(&vals, &sel_all, 4));
+    const sel_some = [_]u32{ 1, 3 };
+    try std.testing.expectEqual(@as(f64, 60.0), kahanSumSelected(&vals, &sel_some, 2));
+    try std.testing.expectEqual(@as(f64, 20.0), minSelected(&vals, &sel_some, 2));
+    try std.testing.expectEqual(@as(f64, 40.0), maxSelected(&vals, &sel_some, 2));
+    // Empty selection mirrors TS aggregate(): 0.
+    try std.testing.expectEqual(@as(f64, 0), kahanSumSelected(&vals, &sel_all, 0));
+    try std.testing.expectEqual(@as(f64, 0), minSelected(&vals, &sel_all, 0));
+    try std.testing.expectEqual(@as(f64, 0), maxSelected(&vals, &sel_all, 0));
+    // Out-of-bounds entries stop the scan.
+    const sel_oob = [_]u32{ 0, 99, 1 };
+    try std.testing.expectEqual(@as(f64, 10.0), kahanSumSelected(&vals, &sel_oob, 3));
 }
 
 test "column kahanSum keeps small addends" {
