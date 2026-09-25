@@ -12,6 +12,7 @@ const SUITES = [
   { name: 'corruption', file: 'e2e_corruption_test.ts', ts: true },
   { name: 'vacuum', file: 'e2e_vacuum_test.js', ts: false },
   { name: 'scan', file: 'e2e_scan_test.js', ts: false },
+  { name: 'admin-scan', file: 'e2e_admin_scan_test.js', ts: false },
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
 ];
 
