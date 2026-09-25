@@ -569,6 +569,20 @@ test "shm unlink removes segment" {
     }
 }
 
+test "shm unlink is idempotent and silent on missing names" {
+    // Ownership contract: unlink never fails the caller (daemon shutdown
+    // calls it unconditionally). Missing names and double unlinks are
+    // silent no-ops on every platform.
+    SharedArena.unlink("takyon_w1_nonexistent_xyz");
+    SharedArena.unlink("takyon_w1_nonexistent_xyz");
+    const tname = "takyon_w1_unlink_idem";
+    SharedArena.unlink(tname);
+    var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
+    srv.close();
+    SharedArena.unlink(tname);
+    SharedArena.unlink(tname);
+}
+
 test "shm corrupted magic yields BadVersion" {
     const tname = "takyon_w1_badver";
     SharedArena.unlink(tname);
