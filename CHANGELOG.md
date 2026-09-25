@@ -26,6 +26,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with exact + range lookup, optional UNIQUE).
 - CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
   one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
+- CI: `windows-2022` pinned (0.14.1 std does not compile on the
+  windows-2025 VS2026 SDK); Windows `node.lib` fetched from nodejs.org
+  (untracked by design, required to link the addon).
+- CI: stale-SHM cleanup between E2E and chaos (size-mismatch wedge).
+- SHM attach fixes: POSIX open-first without `O_EXCL` (macOS poisoned
+  the `O_EXCL`-fail → immediate-reopen sequence with EACCES; also
+  self-heals crashed creates); Windows size check via `VirtualQuery`
+  (`GetFileSizeEx` is meaningless for pagefile-backed sections).
+- SHM tests: hold creator mapped on Windows (names die with the last
+  handle there); POSIX dir-fsync block is comptime-gated for Windows.
+- WAL test: size math counts sector CRC overhead and the idle flush.
 - SHM attach fixes: POSIX open-first without `O_EXCL` (macOS poisoned
   the `O_EXCL`-fail → immediate-reopen sequence with EACCES; also
   self-heals crashed creates); Windows size check via `VirtualQuery`

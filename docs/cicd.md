@@ -2,6 +2,9 @@
 
 - `ci.yml`: Zig 0.14.1, fmt, `zig build test`, SDK typecheck+unit, E2E zero-copy
   + chaos, packaging (deb/pkg/exe), release to NPM on tags.
+  Status: green on ubuntu-latest, windows-2022, macos-15.
+  Platform notes: LF enforced via `.gitattributes`; Windows `node.lib`
+  fetched per build; stale SHM cleaned between suites.
 - `relational.yml`: fmt + Zig tests + TS relational unit tests +
   `zig build -Doptimize=ReleaseSafe` + scan E2E + scan bench (verificado
   en local con la misma secuencia).
