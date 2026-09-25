@@ -10,6 +10,7 @@
 import { TakyonSchema, FieldType } from './schema';
 import {
     MAX_DELTA_INLINE,
+    RECORD_BUMP_OFFSET,
     STRING_BUMP_OFFSET,
     STRING_DATA_START,
 } from './layout';
@@ -34,8 +35,44 @@ export type MappedObject<T> = {
     [P in keyof T]: T[P] extends 'uint8' | 'uint32' | 'float64' ? number : (T[P] extends 'string' ? string : never);
 };
 
+// Process-wide shared codecs: TextEncoder/TextDecoder are stateless for
+// non-streaming use, so one instance per worker thread is enough and
+// avoids per-operation construction on hot paths.
+const sharedEncoder = new TextEncoder();
+const sharedDecoder = new TextDecoder('utf-8');
+
+// Shared scratch for scalar pushDelta payloads (max 8B: float64 / fat
+// pointer) plus one typed view per payload size. pushDelta copies
+// synchronously into the ring, so reuse across sequential calls is safe
+// (single-threaded callers; each worker_thread owns its client).
+const scratchBuf = new ArrayBuffer(8);
+const scratchView = new DataView(scratchBuf);
+const scratchU8_1 = new Uint8Array(scratchBuf, 0, 1);
+const scratchU8_4 = new Uint8Array(scratchBuf, 0, 4);
+const scratchU8_8 = new Uint8Array(scratchBuf, 0, 8);
+
+// Growable UTF-8 staging area for string writes. Sized value.length * 4
+// (worst case per UTF-16 unit); encodeInto reports the exact byte count
+// so no over-allocation reaches the arena.
+let encodeScratch: Uint8Array = new Uint8Array(256);
+
+/** UTF-8 byte length without allocating the encoded copy (shared scratch). */
+export function utf8ByteLength(s: string): number {
+    if (s.length * 4 > encodeScratch.length) encodeScratch = new Uint8Array(s.length * 4);
+    return sharedEncoder.encodeInto(s, encodeScratch).written;
+}
+
 export class TakyonClient {
     private buffer: ArrayBuffer;
+    // Single DataView over the whole arena: proxies address absolute
+    // offsets (baseOffset + field.offset) instead of allocating one view
+    // per record. Created lazily so tiny/mock buffers still construct
+    // (failures surface at use, as before); the buffer is fixed for the
+    // client's lifetime.
+    private sharedView?: DataView;
+    // Single bump-pointer views for the string/record arenas.
+    private bumpView?: Uint32Array;
+    private recordBumpView?: Uint32Array;
 
     constructor(private bindings: TakyonBindings, size: number) {
         if (!Number.isInteger(size) || size <= 0) {
@@ -45,9 +82,25 @@ export class TakyonClient {
         if (!buf) throw new Error("Failed to map shared memory");
         this.buffer = buf;
     }
+
+    private view(): DataView {
+        if (!this.sharedView) this.sharedView = new DataView(this.buffer);
+        return this.sharedView;
+    }
+
+    private stringBump(): Uint32Array {
+        if (!this.bumpView) this.bumpView = new Uint32Array(this.buffer, STRING_BUMP_OFFSET, 1);
+        return this.bumpView;
+    }
     
     public getBuffer() { return this.buffer; }
     public getBindings() { return this.bindings; }
+    public getRecordBumpView(): Uint32Array {
+        if (!this.recordBumpView) {
+            this.recordBumpView = new Uint32Array(this.buffer, RECORD_BUMP_OFFSET, 1);
+        }
+        return this.recordBumpView;
+    }
 
     public triggerCheckpoint(): boolean {
         return this.bindings.trigger_checkpoint() === 0;
@@ -85,8 +138,9 @@ export class TakyonClient {
                 `record [${baseOffset}, ${baseOffset + schema.totalSize}) exceeds shared memory (${this.buffer.byteLength} bytes)`
             );
         }
-        const view = new DataView(this.buffer, baseOffset, schema.totalSize);
         const bindings = this.bindings;
+        const sharedView = this.view();
+        const bumpView = this.stringBump();
 
         const targetBuffer = this.buffer;
         
@@ -94,9 +148,10 @@ export class TakyonClient {
             get(target, prop: string | symbol) {
                 if (typeof prop === 'string' && schema.fields[prop]) {
                     const field = schema.fields[prop];
+                    const abs = baseOffset + field.offset;
                     if (field.type === 'string') {
-                        const strOffset = view.getUint32(field.offset, true);
-                        const strLen = view.getUint32(field.offset + 4, true);
+                        const strOffset = sharedView.getUint32(abs, true);
+                        const strLen = sharedView.getUint32(abs + 4, true);
                         if (strOffset === 0 && strLen === 0) return "";
                         if (strOffset + strLen > targetBuffer.byteLength) {
                             throw new Error(
@@ -104,13 +159,13 @@ export class TakyonClient {
                             );
                         }
                         const strBytes = new Uint8Array(targetBuffer, strOffset, strLen);
-                        return new TextDecoder('utf-8').decode(strBytes);
+                        return sharedDecoder.decode(strBytes);
                     }
 
                     switch (field.type) {
-                        case 'uint8': return view.getUint8(field.offset);
-                        case 'uint32': return view.getUint32(field.offset, true); // little-endian
-                        case 'float64': return view.getFloat64(field.offset, true);
+                        case 'uint8': return sharedView.getUint8(abs);
+                        case 'uint32': return sharedView.getUint32(abs, true); // little-endian
+                        case 'float64': return sharedView.getFloat64(abs, true);
                     }
                 }
                 return Reflect.get(target, prop);
@@ -119,79 +174,82 @@ export class TakyonClient {
             set(target, prop: string | symbol, value: any) {
                 if (typeof prop === 'string' && schema.fields[prop]) {
                     const field = schema.fields[prop];
+                    const abs = baseOffset + field.offset;
                     
                     if (field.type === 'string') {
                         if (typeof value !== 'string') {
                             throw new Error(`expected string for field, got ${typeof value}`);
                         }
-                        const bytes = new TextEncoder().encode(value);
-                        const strLen = bytes.length;
+                        if (value.length * 4 > encodeScratch.length) {
+                            encodeScratch = new Uint8Array(value.length * 4);
+                        }
+                        const { written: strLen } = sharedEncoder.encodeInto(value, encodeScratch);
 
                         if (STRING_DATA_START >= targetBuffer.byteLength) {
                             throw new Error(
                                 `shared memory (${targetBuffer.byteLength} bytes) too small for string arena at ${STRING_DATA_START}`
                             );
                         }
-                        const atomicArr = new Uint32Array(targetBuffer, STRING_BUMP_OFFSET, 1);
-                        Atomics.compareExchange(atomicArr, 0, 0, STRING_DATA_START);
-                        const allocatedOffset = Atomics.add(atomicArr, 0, strLen);
+                        Atomics.compareExchange(bumpView, 0, 0, STRING_DATA_START);
+                        const allocatedOffset = Atomics.add(bumpView, 0, strLen);
                         if (allocatedOffset + strLen > targetBuffer.byteLength) {
                             throw new Error("Out of string arena memory");
                         }
 
                         const dest = new Uint8Array(targetBuffer, allocatedOffset, strLen);
-                        dest.set(bytes);
+                        dest.set(encodeScratch.subarray(0, strLen));
 
                         if (bindings.notifyArena(allocatedOffset, strLen) !== 0) {
                             throw new Error("notifyArena failed: ring buffer full or arena not mapped");
                         }
 
-                        view.setUint32(field.offset, allocatedOffset, true);
-                        view.setUint32(field.offset + 4, strLen, true);
+                        sharedView.setUint32(abs, allocatedOffset, true);
+                        sharedView.setUint32(abs + 4, strLen, true);
 
-                        const ptrBuf = new ArrayBuffer(8);
-                        const ptrView = new DataView(ptrBuf);
-                        ptrView.setUint32(0, allocatedOffset, true);
-                        ptrView.setUint32(4, strLen, true);
-                        if (bindings.pushDelta(baseOffset + field.offset, new Uint8Array(ptrBuf)) !== 0) {
+                        scratchView.setUint32(0, allocatedOffset, true);
+                        scratchView.setUint32(4, strLen, true);
+                        if (bindings.pushDelta(abs, scratchU8_8) !== 0) {
                             throw new Error("pushDelta failed: ring buffer full");
                         }
 
                         return true;
                     }
                     
-                    const tmpBuf = new ArrayBuffer(field.size);
-                    const tmpView = new DataView(tmpBuf);
-
                     switch (field.type) {
                         case 'uint8':
                             if (!Number.isInteger(value) || value < 0 || value > 255) {
                                 throw new Error(`uint8 out of range: ${value}`);
                             }
-                            view.setUint8(field.offset, value);
-                            tmpView.setUint8(0, value);
+                            sharedView.setUint8(abs, value);
+                            scratchView.setUint8(0, value);
+                            if (bindings.pushDelta(abs, scratchU8_1) !== 0) {
+                                throw new Error("pushDelta failed: ring buffer full");
+                            }
                             break;
                         case 'uint32':
                             if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
                                 throw new Error(`uint32 out of range: ${value}`);
                             }
-                            view.setUint32(field.offset, value, true);
-                            tmpView.setUint32(0, value, true);
+                            sharedView.setUint32(abs, value, true);
+                            scratchView.setUint32(0, value, true);
+                            if (bindings.pushDelta(abs, scratchU8_4) !== 0) {
+                                throw new Error("pushDelta failed: ring buffer full");
+                            }
                             break;
                         case 'float64':
                             if (typeof value !== 'number') {
                                 throw new Error(`float64 must be a number, got ${typeof value}`);
                             }
-                            view.setFloat64(field.offset, value, true);
-                            tmpView.setFloat64(0, value, true);
+                            sharedView.setFloat64(abs, value, true);
+                            scratchView.setFloat64(0, value, true);
+                            if (bindings.pushDelta(abs, scratchU8_8) !== 0) {
+                                throw new Error("pushDelta failed: ring buffer full");
+                            }
                             break;
                     }
 
                     if (field.size > MAX_DELTA_INLINE) {
                         throw new Error(`field size ${field.size} exceeds inline delta capacity`);
-                    }
-                    if (bindings.pushDelta(baseOffset + field.offset, new Uint8Array(tmpBuf)) !== 0) {
-                        throw new Error("pushDelta failed: ring buffer full");
                     }
                     return true;
                 }

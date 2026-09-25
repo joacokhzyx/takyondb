@@ -7,13 +7,12 @@
  * ============================================================================
  */
 
-import { TakyonClient, TakyonBindings, MappedObject } from './client/proxy';
+import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength } from './client/proxy';
 import { TakyonSchema, FieldType } from './client/schema';
 import {
     ART_ROOT_OFFSET,
     MAX_KEY_LEN,
     RECORD_BUMP_INIT,
-    RECORD_BUMP_OFFSET,
     RECORD_START,
 } from './client/layout';
 
@@ -33,7 +32,7 @@ function keyError(key: unknown): string | null {
     if (key.includes('\0')) {
         return 'key must not contain NUL (\\0) characters';
     }
-    if (new TextEncoder().encode(key).length > MAX_KEY_LEN) {
+    if (utf8ByteLength(key) > MAX_KEY_LEN) {
         return `key must be <= ${MAX_KEY_LEN} UTF-8 bytes`;
     }
     return null;
@@ -186,7 +185,8 @@ export class TakyonDB {
         }
         // Single shared bump word (see layout.zig). Atomics make the
         // allocation itself thread-safe; reclaiming freed records is future work.
-        const atomicArr = new Uint32Array(this.client.getBuffer(), RECORD_BUMP_OFFSET, 1);
+        // The view is pooled on the client: no per-insert allocation.
+        const atomicArr = this.client.getRecordBumpView();
         Atomics.compareExchange(atomicArr, 0, 0, RECORD_BUMP_INIT);
         const allocatedOffset = Atomics.add(atomicArr, 0, size);
         
