@@ -47,7 +47,10 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
       `takyon_scan_range` + N-API `scan_range` + `ArtMirror.scanRange`)
 - [x] Pushdown kernels (`column.zig`: SIMD `filterU32`, Kahan `kahanSum`;
       arena wiring future)
-- [ ] Multi-root ART for secondary indexes
+- [x] Multi-root ART for secondary indexes (logical roots: disjoint
+      `idx:<table>:<col>:` namespaces + `multiroot.zig` registry with UNIQUE
+      flags + cardinality + order-preserving hex pads; padded numeric range
+      + cardinality in `NativeSecondaryIndex`; physical per-root arenas future)
 - [x] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
       (`column.zig` filterU32/filterF64 + selected aggs via C-ABI/N-API
       `pushdown.ts` with TS fallback; zero-copy arena wiring future)

@@ -12,11 +12,15 @@
   `NativeSecondaryIndex` guarda `idx:<tabla>:<col>:<valor><U+001F><pk>
   -> offset` en el mismo ART (durable + cross-process). `lookup`
   por valor exacto vía `scan_prefix`, `lookupRange` vía `scan_range`,
-  `UNIQUE` opcional. Orden byte-lexicográfico (zero-pad numéricos).
+  `lookupNumericRange(lo,hi)` vía bounds `padU32Hex` (sin zero-pad manual),
+  `cardinality()` vía `scan_prefix`, `UNIQUE` opcional.
 - Mantenimiento síncrono en `insert/update/delete` (mismo ring, misma
   durabilidad WAL). Sin background async que rompa lecturas.
-- Fase 2 (Zig): raíces ART múltiples + `scanRange(prefix)` nativo para
-  range queries sin roundtrips N-API.
+- Fase 2 (Zig, parcial entregado): raíces lógicas múltiples
+  (`src/core/relational/multiroot.zig`: registry + flags UNIQUE +
+  cardinalidad + pads hex `padU32Hex/padI64Hex16` NUL-free que preservan
+  orden) + `scanRange(prefix)` nativo ya existente. Físico (un ArtIndex
+  por offset de arena) futuro: rompería el formato snapshot.
 
 No se copia B-tree con page locks. ART + bump + vacuum ya dan
 concurrencia y GC de strings.
