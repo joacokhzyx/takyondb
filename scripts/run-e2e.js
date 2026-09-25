@@ -14,6 +14,7 @@ const SUITES = [
   { name: 'vacuum', file: 'e2e_vacuum_test.js', ts: false },
   { name: 'scan', file: 'e2e_scan_test.js', ts: false },
   { name: 'refcount', file: 'e2e_refcount_test.js', ts: false },
+  { name: 'unlink', file: 'e2e_graceful_unlink_test.js', ts: false },
   { name: 'admin-scan', file: 'e2e_admin_scan_test.js', ts: false },
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
 ];

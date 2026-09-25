@@ -39,9 +39,11 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 - [x] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
       (shipped: deterministic 3000-case xorshift sweep in `fuzz_surface.zig`
       over gated entrypoints + pure kernels; strict op validation fix)
-- [ ] `shm_unlink` ownership + multi-tenant segments (named arenas)
+- [x] `shm_unlink` ownership + multi-tenant segments (named arenas)
       (shipped: `resolveShmName` validation + OS namespacing + share-match
-      reject; pending: name-keyed multi-mapping + unlink ownership)
+      reject + daemon unlinks the name on graceful shutdown with unlink
+      idempotency tests + graceful-unlink E2E in CI; name-keyed
+      multi-mapping stays future)
 - [x] `munmap`/`CloseHandle` failure injection tests (shipped: teardown
       injection seam `unmapSegment`/`closeHandle` + counters + failure tests)
 

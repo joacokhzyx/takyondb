@@ -83,3 +83,7 @@ CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
    connects twice over one mapping, drops the first client, and asserts
    the second still reads/writes; then drops it and asserts a fresh
    connect works (guards use-after-unmap on shared mappings).
+10. **Graceful unlink (`scripts/e2e_graceful_unlink_test.js`)** — boots
+    the daemon, SIGINTs it, and asserts a clean exit plus the freed OS
+    segment name on POSIX (Windows unlink is a no-op: only the exit is
+    asserted there).
