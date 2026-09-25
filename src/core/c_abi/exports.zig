@@ -129,14 +129,20 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
     return arena.memory.ptr;
 }
 
-/// Explicit full teardown of the process-wide engine mapping: unmaps the
-/// segment, closes its OS handle and invalidates engine state. Safe to
-/// call when disconnected (no-op). Call only when no thread will touch
-/// the engine afterwards (end of process/tests).
+/// Reference-counted teardown of the process-wide engine mapping. Each
+/// `takyon_connect_shm` (including shared re-connects) must be paired with
+/// one disconnect: while more than one client holds the mapping only the
+/// count drops and the memory stays valid; the unmap + handle close +
+/// state invalidation happen on the last disconnect. Safe to call when
+/// disconnected (no-op).
 pub export fn takyon_disconnect_shm() callconv(.c) void {
     engine_mutex.lock();
     defer engine_mutex.unlock();
     if (!arena_ready) return;
+    if (engine_refs > 1) {
+        engine_refs -= 1;
+        return;
+    }
     engine_refs = 0;
     engine_name_len = 0;
     var owned = arena;
