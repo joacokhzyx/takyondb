@@ -13,6 +13,8 @@
 
 import { ColumnDef } from './column';
 import { RelationalType } from './types';
+import { TakyonBindings } from '../proxy';
+import { STRING_BUMP_OFFSET, STRING_DATA_START } from '../layout';
 
 export const CATALOG_REC_MAGIC = 0x54434154;
 export const CATALOG_REC_VERSION = 1;
@@ -143,4 +145,77 @@ export function decodeCatalogRecord(buf: Uint8Array): DecodedCatalog {
     off += COLUMN_REC_LEN;
   }
   return { table, columns };
+}
+
+export interface CatalogRecordArenaOpts {
+  readonly bumpOffset?: number;
+  readonly dataStart?: number;
+}
+
+/**
+ * Persists table descriptors as `__catalog__:<table>` ART records whose
+ * payloads live in the string arena. Payloads ride WAL + verified snapshots,
+ * so DDL survives daemon restarts without the JSON sidecar: recovery reads
+ * catalog keys first (two-pass: catalog before data). Re-saving a table
+ * overwrites its ART entry in place (idempotent DDL).
+ */
+export class CatalogRecordStore {
+  private readonly bumpOffset: number;
+  private readonly dataStart: number;
+
+  constructor(
+    private readonly bindings: TakyonBindings,
+    private readonly memory: ArrayBuffer,
+    opts: CatalogRecordArenaOpts = {},
+  ) {
+    this.bumpOffset = opts.bumpOffset ?? STRING_BUMP_OFFSET;
+    this.dataStart = opts.dataStart ?? STRING_DATA_START;
+    if (this.bumpOffset + 4 > memory.byteLength || this.dataStart > memory.byteLength) {
+      throw new Error('catalog arena geometry exceeds shared memory');
+    }
+  }
+
+  /** Encodes and publishes a table descriptor. Returns the payload offset. */
+  public save(table: string, columns: ColumnDef[]): number {
+    const payload = encodeCatalogRecord(table, columns);
+    const bump = new Uint32Array(this.memory, this.bumpOffset, 1);
+    Atomics.compareExchange(bump, 0, 0, this.dataStart);
+    const at = Atomics.add(bump, 0, payload.length);
+    if (at + payload.length > this.memory.byteLength) {
+      throw new Error('out of string arena memory for catalog record');
+    }
+    new Uint8Array(this.memory, at, payload.length).set(payload);
+    if (this.bindings.notifyArena(at, payload.length) !== 0) {
+      throw new Error('notifyArena failed for catalog record: ring full or arena not mapped');
+    }
+    if (this.bindings.insert_index(catalogRecordKey(table), at) !== 0) {
+      throw new Error(`insert_index failed for catalog record '${table}'`);
+    }
+    return at;
+  }
+
+  /**
+   * Loads a table descriptor. Null when absent; throws on truncation,
+   * corruption, or key/content mismatch.
+   */
+  public load(table: string): DecodedCatalog | null {
+    const off = this.bindings.search_index(catalogRecordKey(table));
+    if (off < 0) return null;
+    if (off + HEADER_LEN > this.memory.byteLength) {
+      throw new Error(`catalog record '${table}' offset out of range`);
+    }
+    const view = new DataView(this.memory);
+    if (view.getUint32(off, true) !== CATALOG_REC_MAGIC) throw new Error(`bad catalog magic for '${table}'`);
+    if (view.getUint16(off + 4, true) !== CATALOG_REC_VERSION) {
+      throw new Error(`bad catalog version for '${table}'`);
+    }
+    const count = view.getUint16(off + 6, true);
+    const total = catalogEncodedLen(count);
+    if (off + total > this.memory.byteLength) {
+      throw new Error(`catalog record '${table}' truncated`);
+    }
+    const dec = decodeCatalogRecord(new Uint8Array(this.memory, off, total));
+    if (dec.table !== table) throw new Error(`catalog key/content mismatch for '${table}'`);
+    return dec;
+  }
 }
