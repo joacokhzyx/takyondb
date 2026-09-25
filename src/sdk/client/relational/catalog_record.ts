@@ -4,7 +4,7 @@
  * Description: Fixed `__catalog__` record codec mirroring Zig `persist.zig`.
  *   Layout LE: header 8B (magic u32 0x54434154 + version u16 1 + count u16)
  *   + table 65B (len u8 + name[64]) + per-column 67B (len u8 + name[64] +
- *   type u8 + flags u8). Keys are `__catalog__:<table>` (see `catalogKey()`).
+ *   type u8 + flags u8). Keys are `__catalog__:<table>` (see `catalogRecordKey()`).
  *   Records ride ART + WAL + snapshots; recovery decodes catalog keys first.
  * Author/Maintainer: TakyonDB Contributors
  * License: MIT. See LICENSE for details.
@@ -14,8 +14,8 @@
 import { ColumnDef } from './column';
 import { RelationalType } from './types';
 
-export const CATALOG_MAGIC = 0x54434154;
-export const CATALOG_VERSION = 1;
+export const CATALOG_REC_MAGIC = 0x54434154;
+export const CATALOG_REC_VERSION = 1;
 export const CATALOG_PREFIX = '__catalog__:';
 export const HEADER_LEN = 8;
 export const TABLE_FIELD_LEN = 65;
@@ -54,7 +54,7 @@ const BYTE_TO_TYPE: RelationalType[] = [
 ];
 
 /** Builds the ART key for a table's catalog record. */
-export function catalogKey(table: string): string {
+export function catalogRecordKey(table: string): string {
   if (!table || table.length > 64) throw new Error('table name must be 1..64 chars');
   return `${CATALOG_PREFIX}${table}`;
 }
@@ -78,8 +78,8 @@ export function encodeCatalogRecord(table: string, columns: ColumnDef[]): Uint8A
   if (columns.length === 0 || columns.length > 32) throw new Error('column count must be 1..32');
   const out = new Uint8Array(catalogEncodedLen(columns.length));
   const view = new DataView(out.buffer);
-  view.setUint32(0, CATALOG_MAGIC, true);
-  view.setUint16(4, CATALOG_VERSION, true);
+  view.setUint32(0, CATALOG_REC_MAGIC, true);
+  view.setUint16(4, CATALOG_REC_VERSION, true);
   view.setUint16(6, columns.length, true);
   const tbytes = new TextEncoder().encode(table);
   out[8] = tbytes.length;
@@ -114,8 +114,8 @@ export interface DecodedCatalog {
 export function decodeCatalogRecord(buf: Uint8Array): DecodedCatalog {
   if (buf.length < HEADER_LEN + TABLE_FIELD_LEN) throw new Error('catalog payload too short');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  if (view.getUint32(0, true) !== CATALOG_MAGIC) throw new Error('bad catalog magic');
-  if (view.getUint16(4, true) !== CATALOG_VERSION) throw new Error('bad catalog version');
+  if (view.getUint32(0, true) !== CATALOG_REC_MAGIC) throw new Error('bad catalog magic');
+  if (view.getUint16(4, true) !== CATALOG_REC_VERSION) throw new Error('bad catalog version');
   const count = view.getUint16(6, true);
   if (count === 0 || count > 32) throw new Error('bad catalog column count');
   if (buf.length < catalogEncodedLen(count)) throw new Error('catalog payload truncated');

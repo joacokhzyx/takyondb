@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  catalogKey,
+  catalogRecordKey,
   decodeCatalogRecord,
   encodeCatalogRecord,
 } from './catalog_record';
@@ -28,8 +28,8 @@ describe('catalog_record codec', () => {
   });
 
   it('builds namespaced keys', () => {
-    expect(catalogKey('users')).toBe('__catalog__:users');
-    expect(() => catalogKey('')).toThrow();
+    expect(catalogRecordKey('users')).toBe('__catalog__:users');
+    expect(() => catalogRecordKey('')).toThrow();
   });
 
   it('rejects tampered payloads', () => {
