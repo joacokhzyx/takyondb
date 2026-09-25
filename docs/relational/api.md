@@ -10,3 +10,4 @@
 - `ArtMirror.mirrorPk/lookupPk/unmirrorPk/syncTable/scanTable/scanRange`
 - `NativeSecondaryIndex.add/lookup/lookupRange/remove` (`unique?`)
 - `saveCatalog/loadCatalogDefs/restoreCatalog/snapshotCatalog` (DDL durable)
+- SQL: `classifyStatement/parseSelect/parseInsert/parseUpdate/parseDelete/parseCreateTable/parseJoin/parseLiteral/isCountStar`, `executeSelect/executeJoin/executeQuery/executeSql`
