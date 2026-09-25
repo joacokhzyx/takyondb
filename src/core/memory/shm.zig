@@ -190,11 +190,17 @@ pub const SharedArena = struct {
                         };
                     };
                 } else if (lastErrno() != .EXIST) {
+                    // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
+                    std.debug.print("[shm-dbg] excl-create {s} failed errno={d}\n", .{ name, std.c._errno().* });
                     return mapPosixOpenErr(lastErrno());
                 } else {
                     const c_rw: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR });
                     const res2 = std.c.shm_open(posix_name.ptr, c_rw, @as(c_uint, 0o666));
-                    if (res2 < 0) return mapPosixOpenErr(lastErrno());
+                    if (res2 < 0) {
+                        // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
+                        std.debug.print("[shm-dbg] fallback-attach {s} failed errno={d}\n", .{ name, std.c._errno().* });
+                        return mapPosixOpenErr(lastErrno());
+                    }
                     fd = res2;
                 }
             } else {
@@ -203,7 +209,11 @@ pub const SharedArena = struct {
                 else
                     @bitCast(posix.O{ .ACCMODE = .RDWR });
                 const res = std.c.shm_open(posix_name.ptr, c_flag, @as(c_uint, 0o666));
-                if (res < 0) return mapPosixOpenErr(lastErrno());
+                if (res < 0) {
+                    // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
+                    std.debug.print("[shm-dbg] client-attach {s} mode={d} failed errno={d}\n", .{ name, @intFromEnum(mode), std.c._errno().* });
+                    return mapPosixOpenErr(lastErrno());
+                }
                 fd = res;
             }
 
