@@ -109,7 +109,6 @@ pub const SharedArena = struct {
             const OpenFileMappingW = @extern(*const fn (w.DWORD, w.BOOL, [*:0]const u16) callconv(std.builtin.CallingConvention.winapi) ?w.HANDLE, .{ .name = "OpenFileMappingW", .library_name = "kernel32" });
             const MapViewOfFile = @extern(*const fn (?w.HANDLE, w.DWORD, w.DWORD, w.DWORD, w.SIZE_T) callconv(std.builtin.CallingConvention.winapi) ?*anyopaque, .{ .name = "MapViewOfFile", .library_name = "kernel32" });
             const UnmapViewOfFile = @extern(*const fn (?*const anyopaque) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "UnmapViewOfFile", .library_name = "kernel32" });
-            const GetFileSizeEx = @extern(*const fn (w.HANDLE, *i64) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "GetFileSizeEx", .library_name = "kernel32" });
 
             const FILE_MAP_READ: w.DWORD = 0x0004;
             const FILE_MAP_ALL_ACCESS: w.DWORD = 0xF001F;
@@ -136,16 +135,26 @@ pub const SharedArena = struct {
                 win_handle = h.?;
             }
 
-            const ptr = MapViewOfFile(win_handle, access, 0, 0, size);
+            // Map the whole section (size 0) and learn its real size via
+            // VirtualQuery: GetFileSizeEx is meaningless for pagefile-backed
+            // sections (it fails, wedging every attach on SizeMismatch).
+            const ptr = MapViewOfFile(win_handle, access, 0, 0, 0);
             if (ptr == null) {
                 w.CloseHandle(win_handle);
                 return error.MapFailed;
             }
+            var mbi: w.MEMORY_BASIC_INFORMATION = std.mem.zeroes(w.MEMORY_BASIC_INFORMATION);
+            _ = w.VirtualQuery(ptr, &mbi, @sizeOf(w.MEMORY_BASIC_INFORMATION)) catch {
+                _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(ptr)));
+                w.CloseHandle(win_handle);
+                return error.MapFailed;
+            };
             const mapped = @as([*]u8, @ptrCast(ptr.?))[0..size];
 
             if (!created) {
-                var fsize: i64 = 0;
-                if (GetFileSizeEx(win_handle, &fsize) == w.FALSE or fsize != @as(i64, @intCast(size))) {
+                // Attach paths must agree on the segment size exactly
+                // (mirrors the POSIX fstat check below).
+                if (mbi.RegionSize != size) {
                     _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(ptr)));
                     w.CloseHandle(win_handle);
                     return error.SizeMismatch;
@@ -171,16 +180,27 @@ pub const SharedArena = struct {
             const is_server = mode == .server;
             const read_only = mode == .read_only;
 
-            // Server path: try exclusive create first (O_EXCL|O_CREAT). On
-            // AlreadyExists fall back to attaching without truncate, then
-            // verify size and magic+version below.
+            // Server path: open-or-create WITHOUT O_EXCL. Background: on
+            // macOS, an O_EXCL|O_CREAT that fails EEXIST deterministically
+            // poisons the immediate fallback reopen with EACCES (5/5 CI
+            // runs; a raw-libc control without O_EXCL always succeeds).
+            // So attach first; truncate only when the object is missing
+            // or empty. An empty pre-existing object means a crashed
+            // creator: adopting it self-heals instead of wedging forever
+            // on SizeMismatch. A double creator race is benign (identical
+            // size + header bytes) and never excluded servers anyway.
             var created = false;
             var fd: posix.fd_t = undefined;
             if (is_server) {
-                const c_excl: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true });
-                const res = std.c.shm_open(posix_name.ptr, c_excl, @as(c_uint, 0o666));
-                if (res >= 0) {
-                    fd = res;
+                const c_crw: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR, .CREAT = true });
+                const res = std.c.shm_open(posix_name.ptr, c_crw, @as(c_uint, 0o666));
+                if (res < 0) return mapPosixOpenErr(lastErrno());
+                fd = res;
+                const st = posix.fstat(fd) catch {
+                    posix.close(fd);
+                    return error.MapFailed;
+                };
+                if (st.size == 0) {
                     created = true;
                     posix.ftruncate(fd, @as(u64, @intCast(size))) catch |err| {
                         posix.close(fd);
@@ -189,19 +209,9 @@ pub const SharedArena = struct {
                             else => error.MapFailed,
                         };
                     };
-                } else if (lastErrno() != .EXIST) {
-                    // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
-                    std.debug.print("[shm-dbg] excl-create {s} failed errno={d}\n", .{ name, std.c._errno().* });
-                    return mapPosixOpenErr(lastErrno());
-                } else {
-                    const c_rw: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR });
-                    const res2 = std.c.shm_open(posix_name.ptr, c_rw, @as(c_uint, 0o666));
-                    if (res2 < 0) {
-                        // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
-                        std.debug.print("[shm-dbg] fallback-attach {s} failed errno={d}\n", .{ name, std.c._errno().* });
-                        return mapPosixOpenErr(lastErrno());
-                    }
-                    fd = res2;
+                } else if (st.size != @as(@TypeOf(st.size), @intCast(size))) {
+                    posix.close(fd);
+                    return error.SizeMismatch;
                 }
             } else {
                 const c_flag: c_int = if (read_only)
@@ -209,11 +219,7 @@ pub const SharedArena = struct {
                 else
                     @bitCast(posix.O{ .ACCMODE = .RDWR });
                 const res = std.c.shm_open(posix_name.ptr, c_flag, @as(c_uint, 0o666));
-                if (res < 0) {
-                    // TEMP-CI-DEBUG: ground truth for macOS EACCES puzzle.
-                    std.debug.print("[shm-dbg] client-attach {s} mode={d} failed errno={d}\n", .{ name, @intFromEnum(mode), std.c._errno().* });
-                    return mapPosixOpenErr(lastErrno());
-                }
+                if (res < 0) return mapPosixOpenErr(lastErrno());
                 fd = res;
             }
 
