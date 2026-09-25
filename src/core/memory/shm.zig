@@ -22,6 +22,40 @@ pub const ShmError = error{
     SizeMismatch,
 };
 
+/// Failure-injection seam for teardown paths (munmap/CloseHandle).
+/// Tests set `inject_teardown_error` to simulate an OS unmap/close
+/// failure; `close()` then skips the syscall but still invalidates local
+/// state, so error paths are exercisable without real mappings.
+/// Counters are process-wide for test assertions.
+pub var inject_teardown_error: bool = false;
+pub var unmap_calls: usize = 0;
+pub var close_calls: usize = 0;
+
+/// Unmaps `mem` through the injection seam (no-op under injection).
+pub fn unmapSegment(mem: []u8) void {
+    unmap_calls += 1;
+    if (inject_teardown_error) return;
+    if (builtin.os.tag == .windows) {
+        const w = std.os.windows;
+        const UnmapViewOfFile = @extern(*const fn (?*const anyopaque) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "UnmapViewOfFile", .library_name = "kernel32" });
+        _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(mem.ptr)));
+    } else {
+        const aligned: []align(std.heap.page_size_min) u8 = @alignCast(mem);
+        std.posix.munmap(aligned);
+    }
+}
+
+/// Closes `handle` through the injection seam (no-op under injection).
+pub fn closeHandle(handle: OsHandle) void {
+    close_calls += 1;
+    if (inject_teardown_error) return;
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.CloseHandle(handle);
+    } else {
+        std.posix.close(handle);
+    }
+}
+
 /// OS handle owning the mapping, for explicit cleanup via close().
 /// Clients unmap + close without unlinking: the daemon owns the name.
 pub const OsHandle = if (builtin.os.tag == .windows) std.os.windows.HANDLE else std.posix.fd_t;
@@ -415,28 +449,17 @@ pub const SharedArena = struct {
     /// Unmaps the segment and closes the OS handle. Only valid for arenas
     /// created by init() (handle != null); views over foreign memory are
     /// left untouched. Never unlinks the name: the daemon owns it.
+    /// Teardown goes through the injection seam (unmapSegment/closeHandle).
     pub fn close(self: *SharedArena) void {
         const h = self.handle orelse {
             self.memory = &[0]u8{};
             return;
         };
         if (self.memory.len > 0) {
-            if (builtin.os.tag == .windows) {
-                const w = std.os.windows;
-                const UnmapViewOfFile = @extern(*const fn (?*const anyopaque) callconv(std.builtin.CallingConvention.winapi) w.BOOL, .{ .name = "UnmapViewOfFile", .library_name = "kernel32" });
-                _ = UnmapViewOfFile(@as(?*const anyopaque, @ptrCast(self.memory.ptr)));
-                _ = w.CloseHandle(h);
-            } else {
-                const aligned: []align(std.heap.page_size_min) u8 = @alignCast(self.memory);
-                std.posix.munmap(aligned);
-                std.posix.close(h);
-            }
+            unmapSegment(self.memory);
+            closeHandle(h);
         } else {
-            if (builtin.os.tag == .windows) {
-                _ = std.os.windows.CloseHandle(h);
-            } else {
-                std.posix.close(h);
-            }
+            closeHandle(h);
         }
         self.memory = &[0]u8{};
         self.bump_offset = 0;
@@ -587,4 +610,27 @@ test "shm tiny size rejected" {
     try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", 1024, .server));
     try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", 0, .server));
     try std.testing.expectError(error.OutOfMemory, SharedArena.init("takyon_w1_tiny", layout.MIN_ARENA_SIZE - 1, .read_only));
+}
+
+test "shm teardown seam counts and injects failures" {
+    const base_unmaps = unmap_calls;
+    const base_closes = close_calls;
+    var scratch: [64]u8 = [_]u8{0xAB} ** 64;
+    // Normal path records calls without touching real mappings.
+    inject_teardown_error = true;
+    defer {
+        inject_teardown_error = false;
+    }
+    unmapSegment(&scratch);
+    try std.testing.expectEqual(base_unmaps + 1, unmap_calls);
+    // close() on a handle-less view is a no-op (no seam calls).
+    var view = SharedArena{
+        .memory = scratch[0..],
+        .handle = null,
+        .bump_offset = 0,
+    };
+    view.close();
+    try std.testing.expectEqual(base_unmaps + 1, unmap_calls);
+    try std.testing.expectEqual(base_closes, close_calls);
+    try std.testing.expectEqual(@as(usize, 0), view.memory.len);
 }
