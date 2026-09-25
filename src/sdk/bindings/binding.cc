@@ -10,6 +10,7 @@
 #include <node_api.h>
 #include <stdint.h>
 #include <string.h>
+#include <new>
 
 // NODE_GYP_MODULE_NAME is defined by node-gyp builds; zig builds define
 // nothing, so fall back to the module name to keep both paths working.
@@ -36,6 +37,17 @@ extern "C" {
     int32_t takyon_scan_prefix(const char* key, uint32_t key_len, uint32_t* out, uint32_t out_cap);
     int32_t takyon_scan_range(const char* key, uint32_t key_len, const char* lo, uint32_t lo_len,
                               const char* hi, uint32_t hi_len, uint32_t* out, uint32_t out_cap);
+    int32_t takyon_filter_u32(const uint32_t* values, uint32_t len, uint8_t op, uint32_t target,
+                              uint32_t* out, uint32_t out_cap);
+    int32_t takyon_filter_f64(const double* values, uint32_t len, uint8_t op, double target,
+                              uint32_t* out, uint32_t out_cap);
+    double takyon_agg_sum_f64(const double* values, uint32_t len);
+    double takyon_agg_sum_selected(const double* values, uint32_t values_len,
+                                   const uint32_t* sel, uint32_t sel_len);
+    double takyon_agg_min_selected(const double* values, uint32_t values_len,
+                                   const uint32_t* sel, uint32_t sel_len);
+    double takyon_agg_max_selected(const double* values, uint32_t values_len,
+                                   const uint32_t* sel, uint32_t sel_len);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -367,6 +379,227 @@ napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {    (void)i
     CHECK_NAPI(napi_create_int32(env, result, &res));
     return res;
 }
+// Pushdown: filter a Uint32Array column, returning dense selection indices.
+// Args: (values: Uint32Array, op: 0..5 Eq..Lte, target: uint32) -> Uint32Array.
+napi_value FilterU32(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(3);
+
+    napi_typedarray_type vtype = napi_uint8_array;
+    size_t vlen = 0;
+    void* vdata = nullptr;
+    CHECK_NAPI(napi_get_typedarray_info(env, args[0], &vtype, &vlen, &vdata, nullptr, nullptr));
+    if (vtype != napi_uint32_array) {
+        napi_throw_type_error(env, nullptr, "values must be a Uint32Array");
+        return nullptr;
+    }
+    uint32_t op = 0;
+    CHECK_NAPI(napi_get_value_uint32(env, args[1], &op));
+    if (op > 5) {
+        napi_throw_range_error(env, nullptr, "op must be 0..5");
+        return nullptr;
+    }
+    uint32_t target = 0;
+    CHECK_NAPI(napi_get_value_uint32(env, args[2], &target));
+    if (vlen == 0 || vlen > 100000000) {
+        napi_throw_range_error(env, nullptr, "values length out of range");
+        return nullptr;
+    }
+
+    uint32_t* out = new (std::nothrow) uint32_t[vlen];
+    if (!out) {
+        napi_throw_error(env, nullptr, "out of memory");
+        return nullptr;
+    }
+    int32_t n = takyon_filter_u32((const uint32_t*)vdata, (uint32_t)vlen,
+                                  (uint8_t)op, target, out, (uint32_t)vlen);
+    napi_value result = nullptr;
+    if (n >= 0) {
+        void* data = nullptr;
+        napi_value arraybuffer;
+        napi_status st = napi_create_arraybuffer(env, (size_t)n * sizeof(uint32_t), &data, &arraybuffer);
+        if (st == napi_ok) {
+            if (n > 0) memcpy(data, out, (size_t)n * sizeof(uint32_t));
+            st = napi_create_typedarray(env, napi_uint32_array, (size_t)n, arraybuffer, 0, &result);
+        }
+        if (st != napi_ok) {
+            delete[] out;
+            const napi_extended_error_info* info_ = nullptr;
+            napi_get_last_error_info(env, &info_);
+            napi_throw_error(env, nullptr, info_ && info_->error_message ? info_->error_message : "N-API call failed");
+            return nullptr;
+        }
+    } else {
+        delete[] out;
+        napi_throw_error(env, nullptr, "filter_u32 failed");
+        return nullptr;
+    }
+    delete[] out;
+    return result;
+}
+
+// Pushdown: filter a Float64Array column. Args: (values: Float64Array, op: 0..5, target: number).
+napi_value FilterF64(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(3);
+
+    napi_typedarray_type vtype = napi_uint8_array;
+    size_t vlen = 0;
+    void* vdata = nullptr;
+    CHECK_NAPI(napi_get_typedarray_info(env, args[0], &vtype, &vlen, &vdata, nullptr, nullptr));
+    if (vtype != napi_float64_array) {
+        napi_throw_type_error(env, nullptr, "values must be a Float64Array");
+        return nullptr;
+    }
+    uint32_t op = 0;
+    CHECK_NAPI(napi_get_value_uint32(env, args[1], &op));
+    if (op > 5) {
+        napi_throw_range_error(env, nullptr, "op must be 0..5");
+        return nullptr;
+    }
+    double target = 0;
+    CHECK_NAPI(napi_get_value_double(env, args[2], &target));
+    if (vlen == 0 || vlen > 100000000) {
+        napi_throw_range_error(env, nullptr, "values length out of range");
+        return nullptr;
+    }
+
+    uint32_t* out = new (std::nothrow) uint32_t[vlen];
+    if (!out) {
+        napi_throw_error(env, nullptr, "out of memory");
+        return nullptr;
+    }
+    int32_t n = takyon_filter_f64((const double*)vdata, (uint32_t)vlen,
+                                  (uint8_t)op, target, out, (uint32_t)vlen);
+    napi_value result = nullptr;
+    if (n >= 0) {
+        void* data = nullptr;
+        napi_value arraybuffer;
+        napi_status st = napi_create_arraybuffer(env, (size_t)n * sizeof(uint32_t), &data, &arraybuffer);
+        if (st == napi_ok) {
+            if (n > 0) memcpy(data, out, (size_t)n * sizeof(uint32_t));
+            st = napi_create_typedarray(env, napi_uint32_array, (size_t)n, arraybuffer, 0, &result);
+        }
+        if (st != napi_ok) {
+            delete[] out;
+            const napi_extended_error_info* info_ = nullptr;
+            napi_get_last_error_info(env, &info_);
+            napi_throw_error(env, nullptr, info_ && info_->error_message ? info_->error_message : "N-API call failed");
+            return nullptr;
+        }
+    } else {
+        delete[] out;
+        napi_throw_error(env, nullptr, "filter_f64 failed");
+        return nullptr;
+    }
+    delete[] out;
+    return result;
+}
+
+// Reads a Float64Array argument (allows empty).
+static bool GetF64Array(napi_env env, napi_value arg, const double** out_data, uint32_t* out_len) {
+    napi_typedarray_type t = napi_uint8_array;
+    size_t len = 0;
+    void* data = nullptr;
+    if (napi_get_typedarray_info(env, arg, &t, &len, &data, nullptr, nullptr) != napi_ok) return false;
+    if (t != napi_float64_array || len > 100000000) return false;
+    *out_data = (const double*)data;
+    *out_len = (uint32_t)len;
+    return true;
+}
+
+// Reads a Uint32Array argument (allows empty).
+static bool GetU32Array(napi_env env, napi_value arg, const uint32_t** out_data, uint32_t* out_len) {
+    napi_typedarray_type t = napi_uint8_array;
+    size_t len = 0;
+    void* data = nullptr;
+    if (napi_get_typedarray_info(env, arg, &t, &len, &data, nullptr, nullptr) != napi_ok) return false;
+    if (t != napi_uint32_array || len > 100000000) return false;
+    *out_data = (const uint32_t*)data;
+    *out_len = (uint32_t)len;
+    return true;
+}
+
+napi_value AggSum(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+    const double* data = nullptr;
+    uint32_t len = 0;
+    if (!GetF64Array(env, args[0], &data, &len)) {
+        napi_throw_type_error(env, nullptr, "values must be a Float64Array");
+        return nullptr;
+    }
+    double sum = takyon_agg_sum_f64(len == 0 ? nullptr : data, len);
+    napi_value result;
+    CHECK_NAPI(napi_create_double(env, sum, &result));
+    return result;
+}
+
+napi_value AggSumSelected(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(2);
+    const double* data = nullptr;
+    uint32_t len = 0;
+    const uint32_t* sel = nullptr;
+    uint32_t sel_len = 0;
+    if (!GetF64Array(env, args[0], &data, &len) || !GetU32Array(env, args[1], &sel, &sel_len)) {
+        napi_throw_type_error(env, nullptr, "expected (Float64Array, Uint32Array)");
+        return nullptr;
+    }
+    double sum = takyon_agg_sum_selected(len == 0 ? nullptr : data, len,
+                                         sel_len == 0 ? nullptr : sel, sel_len);
+    napi_value result;
+    CHECK_NAPI(napi_create_double(env, sum, &result));
+    return result;
+}
+
+napi_value AggMinSelected(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(2);
+    const double* data = nullptr;
+    uint32_t len = 0;
+    const uint32_t* sel = nullptr;
+    uint32_t sel_len = 0;
+    if (!GetF64Array(env, args[0], &data, &len) || !GetU32Array(env, args[1], &sel, &sel_len)) {
+        napi_throw_type_error(env, nullptr, "expected (Float64Array, Uint32Array)");
+        return nullptr;
+    }
+    double m = takyon_agg_min_selected(len == 0 ? nullptr : data, len,
+                                       sel_len == 0 ? nullptr : sel, sel_len);
+    napi_value result;
+    CHECK_NAPI(napi_create_double(env, m, &result));
+    return result;
+}
+
+napi_value AggMaxSelected(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(2);
+    const double* data = nullptr;
+    uint32_t len = 0;
+    const uint32_t* sel = nullptr;
+    uint32_t sel_len = 0;
+    if (!GetF64Array(env, args[0], &data, &len) || !GetU32Array(env, args[1], &sel, &sel_len)) {
+        napi_throw_type_error(env, nullptr, "expected (Float64Array, Uint32Array)");
+        return nullptr;
+    }
+    double m = takyon_agg_max_selected(len == 0 ? nullptr : data, len,
+                                       sel_len == 0 ? nullptr : sel, sel_len);
+    napi_value result;
+    CHECK_NAPI(napi_create_double(env, m, &result));
+    return result;
+}
 
 napi_value StartVacuum(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -413,12 +646,18 @@ napi_value Init(napi_env env, napi_value exports) {
         { "remove_index", 0, RemoveIndex, 0, 0, 0, napi_default, 0 },
         { "scan_prefix", 0, ScanPrefix, 0, 0, 0, napi_default, 0 },
         { "scan_range", 0, ScanRange, 0, 0, 0, napi_default, 0 },
+        { "filter_u32", 0, FilterU32, 0, 0, 0, napi_default, 0 },
+        { "filter_f64", 0, FilterF64, 0, 0, 0, napi_default, 0 },
+        { "agg_sum", 0, AggSum, 0, 0, 0, napi_default, 0 },
+        { "agg_sum_selected", 0, AggSumSelected, 0, 0, 0, napi_default, 0 },
+        { "agg_min_selected", 0, AggMinSelected, 0, 0, 0, napi_default, 0 },
+        { "agg_max_selected", 0, AggMaxSelected, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 13, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 19, desc));
     return exports;
 }
 
