@@ -31,6 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (every documented line executes literally).
 - Admin `SCAN`/`RANGE` over TCP: the daemon serves its lock-free ART
   view remotely (`OK <n> <offsets>`), covered by E2E vs live daemon.
+- Self-driving crash E2E (`e2e_crash_auto_test.js`, in the harness):
+  5000 snapshot keys + residual WAL verified across a real SIGKILL.
 - Sealed relational row headers (`row.zig`: 12B magic+version+CRC32
   with tamper/truncation tests) and a deterministic 1500-key ART sweep
   (insert/search/remove/scan cross-check, fixed seed).

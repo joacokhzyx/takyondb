@@ -29,6 +29,8 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe
       - name: Run native scan E2E (live daemon)
         run: node scripts/e2e_scan_test.js
+      - name: Run crash-recovery E2E (SIGKILL, live daemon)
+        run: node scripts/e2e_crash_auto_test.js
       - name: Run native scan bench (live daemon, informational)
         run: node scripts/bench_scan.js 3000
       - name: Run TS relational unit tests

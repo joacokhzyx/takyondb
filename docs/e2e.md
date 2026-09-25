@@ -46,11 +46,13 @@ CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
    at offset 20 with `0xFF` (simulated torn write), and reboots. Asserts the
    daemon logs `CRC32 corruption detected` and truncates the bad sector
    without panicking.
-3. **Crash recovery (`scripts/e2e_crash_recovery_test.{ts,js}`)** — phase 1
-   inserts 5000 `SNAP-xxxxx` keys, triggers a checkpoint, writes 4086 bytes
-   of `0xAA` residual payload + `notifyArena`, and asks the operator to
-   SIGKILL the daemon; phase 2 (`--verify`) asserts all 5000 snapshot keys
-   resolve **and** the residual WAL bytes are intact.
+3. **Crash recovery (`scripts/e2e_crash_auto_test.js`)** — fully
+   self-driving on an isolated `--data-dir`: phase 1 inserts 5000
+   `SNAP-xxxxx` keys, checkpoints, writes 4086 bytes of `0xAA` residual
+   payload + `notifyArena`, SIGKILLs the daemon itself, reboots, and
+   asserts all 5000 snapshot keys resolve **and** the residual WAL bytes
+   are intact. (The legacy `e2e_crash_recovery_test.ts` needs a manual
+   SIGKILL and is kept for interactive debugging only.)
 4. **Vacuum (`scripts/e2e_vacuum_test.js`)** — boots the daemon on the real
    64 MB layout, inserts `user:1`, starts vacuum, and performs 20 000 string
    updates. Asserts no string-arena OOM (compaction keeps up) and the final
