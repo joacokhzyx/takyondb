@@ -57,6 +57,29 @@ pub fn filterU32(values: []const u32, op: rfilter.CmpOp, target: u32, out: []u32
     return n;
 }
 
+/// Writes indices `i` with `values[i] <op> target` into `out` (dense run).
+/// f64 variant (scalar; NaN never matches Eq, always matches Ne).
+pub fn filterF64(values: []const f64, op: rfilter.CmpOp, target: f64, out: []u32) usize {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < values.len and n < out.len) : (i += 1) {
+        const v = values[i];
+        const match = switch (op) {
+            .Eq => v == target,
+            .Ne => v != target,
+            .Gt => v > target,
+            .Gte => v >= target,
+            .Lt => v < target,
+            .Lte => v <= target,
+        };
+        if (match) {
+            out[n] = @intCast(i);
+            n += 1;
+        }
+    }
+    return n;
+}
+
 /// Kahan-compensated sum over a borrowed slice (no allocation).
 pub fn kahanSum(values: []const f64) f64 {
     var sum: f64 = 0;
@@ -94,6 +117,21 @@ test "column filterU32 truncates and handles edges" {
     var out: [9]u32 = undefined;
     try std.testing.expectEqual(@as(usize, 1), filterU32(&odd, .Eq, 9, out[0..]));
     try std.testing.expectEqual(@as(u32, 8), out[0]);
+}
+
+test "column filterF64 covers all operators" {
+    const vals = [_]f64{ 1.5, 2.5, 3.5, 4.5 };
+    var out: [4]u32 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), filterF64(&vals, .Eq, 2.5, out[0..]));
+    try std.testing.expectEqual(@as(u32, 1), out[0]);
+    try std.testing.expectEqual(@as(usize, 3), filterF64(&vals, .Ne, 2.5, out[0..]));
+    try std.testing.expectEqual(@as(usize, 2), filterF64(&vals, .Gt, 2.5, out[0..]));
+    try std.testing.expectEqual(@as(usize, 1), filterF64(&vals, .Lt, 2.0, out[0..]));
+    // NaN semantics: never Eq, always Ne.
+    const nan = std.math.nan(f64);
+    const with_nan = [_]f64{ nan, 1.0 };
+    try std.testing.expectEqual(@as(usize, 0), filterF64(&with_nan, .Eq, nan, out[0..]));
+    try std.testing.expectEqual(@as(usize, 2), filterF64(&with_nan, .Ne, nan, out[0..]));
 }
 
 test "column kahanSum keeps small addends" {
