@@ -29,6 +29,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Full SQL-subset CRUD: `CREATE TABLE`, `INSERT`, `UPDATE`/`DELETE`
   (WHERE required), `ORDER BY`, `COUNT(*)`, `JOIN` via `executeSql`
   (every documented line executes literally).
+- Admin `SCAN`/`RANGE` over TCP: the daemon serves its lock-free ART
+  view remotely (`OK <n> <offsets>`), covered by E2E vs live daemon.
 - CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
   one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
 - CI: `windows-2022` pinned (0.14.1 std does not compile on the

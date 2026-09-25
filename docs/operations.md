@@ -21,6 +21,25 @@ zig build run -Doptimize=ReleaseSafe [-- <mem_bytes>]
 * Shutdown: `SIGINT`/`Ctrl+C` triggers a graceful WAL drain + shutdown;
   `SIGKILL` skips it (recovery path is snapshot + WAL replay).
 
+## Admin TCP endpoint (`127.0.0.1:7723`, `--port`)
+
+Line-based ASCII: one line in, one line out, then close. Covered by
+`scripts/e2e_admin_scan_test.js`.
+
+| Command | Response |
+| --- | --- |
+| `PING` | `PONG` |
+| `HEALTH` | `OK uptime_s=<n> arena=<bytes> ring=<depth>` |
+| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u>` |
+| `CHECKPOINT` | `QUEUED` (or `FULL` when the ring is full) |
+| `SCAN <prefix> [max]` | `OK <n> <o1>,<o2>,...` (offsets with prefix; default 64, cap 128) |
+| `RANGE <prefix> <lo> <hi> [max]` | same, suffix in [`lo`, `hi`]; `-` = unbounded |
+| other | `ERR unknown command` (malformed SCAN/RANGE get `ERR bad ...`) |
+
+`SCAN`/`RANGE` read the daemon's own lock-free ART view (best-effort
+under concurrent writers). Prefixes with spaces are not expressible
+through the space-split protocol — use the N-API `scan_prefix` then.
+
 ## Packaging (built in CI from `zig-out/`, never committed)
 
 | OS | Script | Output |
