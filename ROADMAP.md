@@ -33,11 +33,17 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 ## Next: correctness hardening
 
-- [ ] Node freelist (unlinked ART nodes still await reclamation)
-- [ ] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
-      (first step shipped: deterministic 1500-key ART sweep in `art.zig`)
+- [x] Node freelist (shipped: size-segregated quarantine `freelist.zig` +
+      10 orphan points in `art.zig` + opt-in reuse with quiescence contract;
+      epoch-based default-on reuse future)
+- [x] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
+      (shipped: deterministic 3000-case xorshift sweep in `fuzz_surface.zig`
+      over gated entrypoints + pure kernels; strict op validation fix)
 - [ ] `shm_unlink` ownership + multi-tenant segments (named arenas)
-- [ ] `munmap`/`CloseHandle` failure injection tests
+      (shipped: `resolveShmName` validation + OS namespacing + share-match
+      reject; pending: name-keyed multi-mapping + unlink ownership)
+- [x] `munmap`/`CloseHandle` failure injection tests (shipped: teardown
+      injection seam `unmapSegment`/`closeHandle` + counters + failure tests)
 
 ## Next: relational hardening (zero-copy, no copy-paste SQL engines)
 
@@ -58,7 +64,8 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
       (shipped: fixed codec Zig + TS + `catalogKey`; pending: reboot E2E without JSON)
 - [x] Row checksums for relational rows (`row.zig` sealed 12B header
       with CRC32 + tamper tests; background scrubber future)
-- [ ] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
+- [x] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
+      (seeded 20k LCG42 + hardware report + CI gate after dist build)
 
 ## Next: performance truth
 
