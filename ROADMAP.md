@@ -75,7 +75,10 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 - [x] Daemon TCP/admin protocol (PING/HEALTH/METRICS/CHECKPOINT plus
       SCAN/RANGE over the native index; graceful drain on SIGINT)
-- [ ] Checksums on record headers, background scrubber
+- [x] Checksums on record headers, background scrubber (shipped: sealed
+      TREC envelope `record_crc.zig` + allocation-free `scrub.zig` walker +
+      C-ABI/N-API `verify_record`/`scrub_records` + TS mirror `scrub.ts`;
+      daemon write-path migration + periodic scrub wiring future)
 - [x] Packaging from CI artifacts only (no committed binaries;
       `packaging/{linux,macos,windows}` + `ci.yml` artifacts + release job)
 
