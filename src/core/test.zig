@@ -32,4 +32,5 @@ comptime {
     _ = @import("relational/executor.zig");
     _ = @import("relational/column.zig");
     _ = @import("c_abi/exports.zig");
+    _ = @import("c_abi/fuzz_surface.zig");
 }
