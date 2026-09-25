@@ -5,7 +5,7 @@ Relational smoke runs without daemon: see `e2e-relational.md`
 
 E2E suites exercise the real daemon (`zig-out/bin/takyondb[.exe]`) plus the
 compiled N-API addon (`zig-out/bin/takyondb_bridge.node`). Run them via the
-harness (all five suites, timeouts enforced, nonzero exit on failure):
+harness (all seven suites, timeouts enforced, nonzero exit on failure):
 
 ```bash
 zig build -Doptimize=ReleaseSafe   # daemon + bridge
@@ -14,10 +14,15 @@ cd scripts && npm run test:e2e
 
 Or typecheck without running: `cd scripts && npm run typecheck`.
 Single suites: `node scripts/e2e_vacuum_test.js`,
-`node scripts/benchmark_chaos.js`, or (with `NODE_PATH` pointing at
-`src/sdk/ts/node_modules`) `node -r ts-node/transpile-only
-scripts/e2e_zerocopy_test.ts`. Shared spawn/timeout helpers live in
-`scripts/helpers/daemon.ts`.
+`node scripts/e2e_scan_test.js`, `node scripts/e2e_admin_scan_test.js`,
+`node scripts/e2e_crash_auto_test.js`,
+`node scripts/benchmark_chaos.js`, or (from `scripts/` with `NODE_PATH`
+pointing at `src/sdk/ts/node_modules`) `node -r ts-node/transpile-only
+scripts/e2e_zerocopy_test.ts` and `e2e_corruption_test.ts`. Note:
+`e2e_zerocopy_test.js` is self-contained and is what CI runs; the stale
+`e2e_corruption_test.js` companion (it required nonexistent TS paths)
+was removed — run the `.ts` via ts-node. Shared spawn/timeout helpers
+live in `scripts/helpers/daemon.ts`.
 
 CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
 `benchmark_chaos.js` on all three OSes.
@@ -61,3 +66,11 @@ CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
    mixed read/insert/update ops with periodic checkpoints and vacuum
    running. Asserts completion (kills the daemon, exits 0) and reports
    p50/p95/p99/max latency; numbers are informational, not gates.
+6. **Scan (`scripts/e2e_scan_test.js`)** — boots the daemon, inserts 2000
+   `SCAN-xxxxx` + 500 `OTHER-xxxxx` keys, and asserts native
+   `scan_prefix` returns exact sets plus truncation/empty cases, and
+   `scan_range` returns exact bounded ranges.
+7. **Admin scan (`scripts/e2e_admin_scan_test.js`)** — boots the daemon,
+   inserts 40 keys, and asserts the TCP admin protocol (`PING`, unknown
+   command, full/capped scans, bounded/unbounded ranges, bad-arg
+   rejections).
