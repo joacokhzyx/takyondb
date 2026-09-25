@@ -56,18 +56,22 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 
 ## Next: performance truth
 
-- [ ] Reproducible `npm run bench` (pinned workload + hardware report)
+- [x] Reproducible `npm run bench` (pinned workload + hardware report;
+      `scripts/bench_proxy.js` pooled vs per-op + `bench_scan.js` vs daemon vivo)
 - [ ] `SharedArrayBuffer` real + `Atomics.wait/notify` instead of
       external `ArrayBuffer` re-mapping per worker
-- [ ] Zero-alloc hot paths in the SDK (pooled `DataView`/`TextEncoder`)
-- [ ] Published p50/p95/p99 with methodology, not marketing numbers
+- [x] Zero-alloc hot paths in the SDK (pooled `DataView`/`TextEncoder`/codecs/scratch;
+      measured insert -32%, find+update p50/p99 -54%/-55%)
+- [x] Published p50/p95/p99 with methodology, not marketing numbers
+      (`docs/performance-truth.md`: KV chaos + pooled proxy + seeded relational)
 
 ## Next: operability
 
 - [x] Daemon TCP/admin protocol (PING/HEALTH/METRICS/CHECKPOINT plus
       SCAN/RANGE over the native index; graceful drain on SIGINT)
 - [ ] Checksums on record headers, background scrubber
-- [ ] Packaging from CI artifacts only (no committed binaries)
+- [x] Packaging from CI artifacts only (no committed binaries;
+      `packaging/{linux,macos,windows}` + `ci.yml` artifacts + release job)
 
 ## Non-goals (for now)
 
