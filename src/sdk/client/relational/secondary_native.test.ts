@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { TakyonBindings } from '../proxy';
-import { NativeSecondaryIndex, SECONDARY_SEP } from './secondary_native';
+import { NativeSecondaryIndex, SECONDARY_SEP, padI64Hex16, padU32Hex } from './secondary_native';
 
 function mockBindings(store: Map<string, number>): TakyonBindings {
   const buffer = new ArrayBuffer(1024);
@@ -87,5 +87,27 @@ describe('NativeSecondaryIndex', () => {
     const idx = new NativeSecondaryIndex(plain, 't', 'c');
     expect(() => idx.lookup(1)).toThrow();
     expect(() => idx.lookupRange(1, 2)).toThrow();
+  });
+  it('pads u32 hex order-preserving without NUL', () => {
+    expect(padU32Hex(0)).toBe('00000000');
+    expect(padU32Hex(0xffffffff)).toBe('ffffffff');
+    expect(padU32Hex(2) < padU32Hex(10)).toBe(true);
+    expect(() => padU32Hex(-1)).toThrow();
+  });
+  it('pads i64 hex with negatives first', () => {
+    expect(padI64Hex16(-5) < padI64Hex16(0)).toBe(true);
+    expect(padI64Hex16(0) < padI64Hex16(5)).toBe(true);
+  });
+  it('ranges numerically without caller zero-pad', () => {
+    const store = new Map<string, number>();
+    const bindings = mockBindings(store);
+    const idx = new NativeSecondaryIndex(bindings, 't', 'age');
+    // Padded entries (new write path).
+    bindings.insert_index(`idx:t:age:${padU32Hex(2)}\x1Fa`, 1);
+    bindings.insert_index(`idx:t:age:${padU32Hex(28)}\x1Fb`, 2);
+    bindings.insert_index(`idx:t:age:${padU32Hex(30)}\x1Fc`, 3);
+    expect(idx.lookupNumericRange(2, 28).sort((a, b) => a - b)).toEqual([1, 2]);
+    expect(idx.cardinality()).toBe(3);
+    expect(() => idx.lookupNumericRange(9, 2)).toThrow();
   });
 });

@@ -18,6 +18,23 @@ import { TakyonBindings } from '../proxy';
 /** Separator between value and pk inside secondary keys (U+001F). */
 export const SECONDARY_SEP = '\x1F';
 
+/** Order-preserving NUL-free 8-hex encoding of a u32 (mirrors Zig padU32Hex). */
+export function padU32Hex(value: number): string {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
+    throw new Error(`u32 out of range: ${value}`);
+  }
+  return (value >>> 0).toString(16).padStart(8, '0');
+}
+
+/** Order-preserving 16-hex encoding of an i64-range integer (sign-bias flipped). */
+export function padI64Hex16(value: number): string {
+  if (!Number.isInteger(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+    throw new Error(`int out of safe range: ${value}`);
+  }
+  const biased = BigInt(value) ^ BigInt('0x8000000000000000');
+  return (biased & BigInt('0xFFFFFFFFFFFFFFFF')).toString(16).padStart(16, '0');
+}
+
 /** Upper sentinel appended to hi bounds so `value<SEP>*` sorts below it. */
 const HI_SENTINEL = '\uFFFF';
 
@@ -98,5 +115,29 @@ export class NativeSecondaryIndex {
     if (rc === 1) return true;
     if (rc === 0) return false;
     throw new Error(`remove_index failed for secondary '${this.column}'`);
+  }
+
+  /**
+   * Numeric range over u32 values stored with `padU32Hex` (no manual
+   * zero-pad by callers): byte order == numeric order.
+   * Entries must have been added with the padded form.
+   */
+  public lookupNumericRange(lo: number, hi: number, maxResults = 1024): number[] {
+    const scan = this.bindings.scan_range;
+    if (!scan) throw new Error('bridge has no scan_range (rebuild the addon)');
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo > hi) {
+      throw new Error(`invalid numeric range [${lo}, ${hi}]`);
+    }
+    const loBound = `${padU32Hex(lo)}${SECONDARY_SEP}`;
+    const hiBound = `${padU32Hex(hi)}${SECONDARY_SEP}${HI_SENTINEL}`;
+    const out = scan.call(this.bindings, `idx:${this.table}:${this.column}:`, loBound, hiBound, maxResults);
+    return Array.from(out);
+  }
+
+  /** Counts entries under this index prefix (cardinality). */
+  public cardinality(maxResults = 4096): number {
+    const scan = this.bindings.scan_prefix;
+    if (!scan) throw new Error('bridge has no scan_prefix (rebuild the addon)');
+    return scan.call(this.bindings, `idx:${this.table}:${this.column}:`, maxResults).length;
   }
 }
