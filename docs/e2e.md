@@ -79,3 +79,7 @@ CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
    descriptors as `__catalog__` records via `CatalogRecordStore`,
    checkpoints, SIGKILLs, reboots, and asserts both descriptors decode
    identically with no JSON sidecar (requires the SDK dist build).
+9. **Refcount (`scripts/e2e_refcount_test.js`)** — boots the daemon,
+   connects twice over one mapping, drops the first client, and asserts
+   the second still reads/writes; then drops it and asserts a fresh
+   connect works (guards use-after-unmap on shared mappings).
