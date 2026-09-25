@@ -41,3 +41,9 @@ jobs:
         run: |
           cd src/sdk/ts
           npm run test:unit -- ../client/relational
+      - name: Build SDK dist (required by benches)
+        run: |
+          cd src/sdk/ts
+          npm run build
+      - name: Run relational bench (seeded TS engine, gate)
+        run: node scripts/bench_relational.js
