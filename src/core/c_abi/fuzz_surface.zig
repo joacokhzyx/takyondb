@@ -47,8 +47,29 @@ test "fuzz engine-gated entrypoints never panic while down" {
     }
 }
 
-test "fuzz pure kernels validate bounds" {
-    var rng: u64 = 0xFEDCBA987654321;
+test "shm names resolve to OS form with validation" {
+    var buf: [128]u8 = undefined;
+    // Null, empty, and legacy sentinel all mean the default segment.
+    try std.testing.expectEqualStrings(if (@import("builtin").os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master", try exports.resolveShmName(null, &buf));
+    try std.testing.expectEqualStrings(if (@import("builtin").os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master", try exports.resolveShmName("", &buf));
+    try std.testing.expectEqualStrings(if (@import("builtin").os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master", try exports.resolveShmName("shm://local", &buf));
+    // Custom basenames pass through with the OS prefix.
+    const custom = try exports.resolveShmName("tenant-a.db1", &buf);
+    if (@import("builtin").os.tag == .windows) {
+        try std.testing.expectEqualStrings("Local\\tenant-a.db1", custom);
+    } else {
+        try std.testing.expectEqualStrings("/tenant-a.db1", custom);
+    }
+    // Bad names fail closed: separators, slashes, spaces, NUL-hostile bytes.
+    try std.testing.expectError(error.InvalidSchema, exports.resolveShmName("a/b", &buf));
+    try std.testing.expectError(error.InvalidSchema, exports.resolveShmName("a b", &buf));
+    try std.testing.expectError(error.InvalidSchema, exports.resolveShmName("a:b", &buf));
+    var long: [66]u8 = [_]u8{'x'} ** 66;
+    long[65] = 0;
+    try std.testing.expectError(error.InvalidSchema, exports.resolveShmName(long[0..65 :0], &buf));
+}
+
+test "fuzz pure kernels validate bounds" {    var rng: u64 = 0xFEDCBA987654321;
     var vals: [64]u32 = undefined;
     var fvals: [64]f64 = undefined;
     for (&vals, 0..) |*v, k| v.* = @truncate(k * 2654435761);
