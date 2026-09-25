@@ -1433,7 +1433,8 @@ test "ART opt-in reuse recycles quarantined nodes" {
     }
 }
 
-test "ART shrink root Node256 -> Node48 on delete" {    var buf: [512 * 1024]u8 = undefined;
+test "ART shrink root Node256 -> Node48 on delete" {
+    var buf: [512 * 1024]u8 = undefined;
     @memset(&buf, 0);
     var idx = ArtIndex.init(buf[0..], 0, 4, 8);
 

@@ -69,7 +69,8 @@ test "shm names resolve to OS form with validation" {
     try std.testing.expectError(error.InvalidSchema, exports.resolveShmName(long[0..65 :0], &buf));
 }
 
-test "fuzz pure kernels validate bounds" {    var rng: u64 = 0xFEDCBA987654321;
+test "fuzz pure kernels validate bounds" {
+    var rng: u64 = 0xFEDCBA987654321;
     var vals: [64]u32 = undefined;
     var fvals: [64]f64 = undefined;
     for (&vals, 0..) |*v, k| v.* = @truncate(k * 2654435761);
