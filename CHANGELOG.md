@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (`relational.yml` builds ReleaseSafe, runs scan E2E + bench).
 - Durable secondary indexes (`NativeSecondaryIndex` over engine ART
   with exact + range lookup, optional UNIQUE).
+- Durable catalog DDL (`saveCatalog/loadCatalogDefs/restoreCatalog`:
+  versioned JSON with atomic write + revalidation on restore).
 - CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
   one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
 - CI: `windows-2022` pinned (0.14.1 std does not compile on the

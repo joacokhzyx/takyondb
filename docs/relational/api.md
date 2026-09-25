@@ -9,3 +9,4 @@
 - `assertUnique/assertForeignKey/bootCatalog/lookupByColumn`
 - `ArtMirror.mirrorPk/lookupPk/unmirrorPk/syncTable/scanTable/scanRange`
 - `NativeSecondaryIndex.add/lookup/lookupRange/remove` (`unique?`)
+- `saveCatalog/loadCatalogDefs/restoreCatalog/snapshotCatalog` (DDL durable)
