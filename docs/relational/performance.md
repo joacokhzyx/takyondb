@@ -32,4 +32,5 @@ node scripts/bench_scan.js 10000  # point vs prefix scan vs rango
 
 Workload: `20k` filas seeded (`LCG 42`), `p50/p95/p99` vía
 `performance.now()`, reporte de hardware (`platform/arch/cpus/node`)
-en cada salida JSON. Informativo, no gate de CI.
+en cada salida JSON. Corre como gate en `Relational Checks` (tras el
+build de dist); los números son metodología publicada, no marketing.
