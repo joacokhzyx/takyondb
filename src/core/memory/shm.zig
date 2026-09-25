@@ -35,6 +35,27 @@ pub const OsHandle = if (builtin.os.tag == .windows) std.os.windows.HANDLE else 
 ///     (POSIX O_RDONLY + PROT_READ; Windows FILE_MAP_READ).
 pub const OpenMode = enum { server, read_write, read_only };
 
+/// Attach-open retry budget. Reopening an existing segment sporadically
+/// fails with EACCES on macOS/Windows CI runners (object-lifecycle races,
+/// AV holds); genuine errors surface unchanged after the budget, so this
+/// rides out transients without masking real failures. NotFound always
+/// fails fast (a missing segment is definitive).
+const ATTACH_RETRIES: u8 = 5;
+
+/// Opens an existing POSIX segment with bounded transient tolerance.
+/// See ATTACH_RETRIES.
+fn openAttach(posix_name: [:0]const u8, flags: c_int) ShmError!std.posix.fd_t {
+    var attempt: u8 = 0;
+    while (true) : (attempt += 1) {
+        const res = std.c.shm_open(posix_name.ptr, flags, @as(c_uint, 0o666));
+        if (res >= 0) return res;
+        const err = mapPosixOpenErr(lastErrno());
+        if (err == error.NotFound or attempt >= ATTACH_RETRIES) return err;
+        if (err != error.AccessDinied and err != error.MapFailed) return err;
+        std.Thread.sleep(5 * std.time.ns_per_ms);
+    }
+}
+
 /// Normalizes a segment name to POSIX `shm_open` form (leading `/`).
 fn posixName(name: []const u8, buf: *[256]u8) ShmError![:0]const u8 {
     if (name.len == 0 or name.len > 255) return error.SystemResources;
@@ -124,15 +145,24 @@ pub const SharedArena = struct {
                 win_handle = h.?;
                 created = (w.GetLastError() != .ALREADY_EXISTS);
             } else {
-                const h = OpenFileMappingW(access, w.FALSE, win_name);
-                if (h == null or h.? == w.INVALID_HANDLE_VALUE) {
-                    return switch (w.GetLastError()) {
+                var attempt: u8 = 0;
+                while (true) : (attempt += 1) {
+                    const h = OpenFileMappingW(access, w.FALSE, win_name);
+                    if (h != null and h.? != w.INVALID_HANDLE_VALUE) {
+                        win_handle = h.?;
+                        break;
+                    }
+                    const err = switch (w.GetLastError()) {
                         .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.NotFound,
                         .ACCESS_DENIED => error.AccessDinied,
                         else => error.MapFailed,
                     };
+                    // Same transient tolerance as POSIX openAttach; a
+                    // missing segment is definitive and fails fast.
+                    if (err == error.NotFound or attempt >= ATTACH_RETRIES) return err;
+                    if (err != error.AccessDinied and err != error.MapFailed) return err;
+                    std.Thread.sleep(5 * std.time.ns_per_ms);
                 }
-                win_handle = h.?;
             }
 
             // Map the whole section (size 0) and learn its real size via
@@ -193,9 +223,7 @@ pub const SharedArena = struct {
             var fd: posix.fd_t = undefined;
             if (is_server) {
                 const c_crw: c_int = @bitCast(posix.O{ .ACCMODE = .RDWR, .CREAT = true });
-                const res = std.c.shm_open(posix_name.ptr, c_crw, @as(c_uint, 0o666));
-                if (res < 0) return mapPosixOpenErr(lastErrno());
-                fd = res;
+                fd = try openAttach(posix_name, c_crw);
                 const st = posix.fstat(fd) catch {
                     posix.close(fd);
                     return error.MapFailed;
@@ -218,9 +246,7 @@ pub const SharedArena = struct {
                     @bitCast(posix.O{ .ACCMODE = .RDONLY })
                 else
                     @bitCast(posix.O{ .ACCMODE = .RDWR });
-                const res = std.c.shm_open(posix_name.ptr, c_flag, @as(c_uint, 0o666));
-                if (res < 0) return mapPosixOpenErr(lastErrno());
-                fd = res;
+                fd = try openAttach(posix_name, c_flag);
             }
 
             // Attach paths must agree on the segment size exactly.
