@@ -39,17 +39,54 @@ pub export fn takyon_init() callconv(.c) i32 {
     return 0;
 }
 
+/// Default segment basename (namespaced per-OS below). Custom names arrive
+/// via `name_ptr` ("shm://local" from the current bridge means default).
+pub const DEFAULT_SHM_BASENAME = "TakyonDB_Master";
+
+/// Resolves a caller segment name to its OS form. Empty, null, or the
+/// legacy `"shm://local"` sentinel mean the default segment.Basename rules:
+/// 1..64 chars of `[A-Za-z0-9._-]`; POSIX gets a leading `/`, Windows a
+/// `Local\` prefix. Full name-keyed multi-tenancy (one mapping per name)
+/// is future; the engine still owns a single mapping and rejects a second
+/// name while attached.
+pub fn resolveShmName(name_ptr: ?[*:0]const u8, out: *[128]u8) ![]u8 {
+    const raw = if (name_ptr) |p| std.mem.span(p) else "";
+    const base = if (raw.len == 0 or std.mem.eql(u8, raw, "shm://local")) DEFAULT_SHM_BASENAME else raw;
+    if (base.len == 0 or base.len > 64) return error.InvalidSchema;
+    for (base) |b| {
+        const ok = (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or (b >= '0' and b <= '9') or b == '.' or b == '_' or b == '-';
+        if (!ok) return error.InvalidSchema;
+    }
+    if (builtin.os.tag == .windows) {
+        const prefix = "Local\\";
+        const total = prefix.len + base.len;
+        if (total > out.len) return error.NoSpace;
+        @memcpy(out[0..prefix.len], prefix);
+        @memcpy(out[prefix.len..][0..base.len], base);
+        return out[0..total];
+    }
+    if (1 + base.len > out.len) return error.NoSpace;
+    out[0] = '/';
+    @memcpy(out[1..][0..base.len], base);
+    return out[0 .. 1 + base.len];
+}
+
+var engine_name_buf: [128]u8 = [_]u8{0} ** 128;
+var engine_name_len: usize = 0;
+
 pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) ?*anyopaque {
-    _ = name_ptr;
-    const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
+    var name_buf: [128]u8 = undefined;
+    const shm_name = resolveShmName(name_ptr, &name_buf) catch return null;
 
     engine_mutex.lock();
     defer engine_mutex.unlock();
 
     if (arena_ready) {
-        // Engine already mapped: share it. Sizes must agree; a second size
-        // would need multi-tenant segments (future work), so fail loudly.
+        // Engine already mapped: share it. Sizes and names must agree; a
+        // second segment needs name-keyed multi-tenant mappings (future),
+        // so fail loudly.
         if (arena.memory.len != size) return null;
+        if (engine_name_len != shm_name.len or !std.mem.eql(u8, engine_name_buf[0..engine_name_len], shm_name)) return null;
         engine_refs += 1;
         ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, false) catch return null;
         art_index = art.ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
@@ -65,6 +102,8 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
     };
     arena_ready = true;
     engine_refs = 1;
+    @memcpy(engine_name_buf[0..shm_name.len], shm_name);
+    engine_name_len = shm_name.len;
 
     if (arena.memory.len < layout.RING_OFFSET) {
         var owned = arena;
@@ -99,6 +138,7 @@ pub export fn takyon_disconnect_shm() callconv(.c) void {
     defer engine_mutex.unlock();
     if (!arena_ready) return;
     engine_refs = 0;
+    engine_name_len = 0;
     var owned = arena;
     owned.close();
     arena.memory = &[0]u8{};
