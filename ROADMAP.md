@@ -52,6 +52,7 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
       (`column.zig` filterU32/filterF64 + selected aggs via C-ABI/N-API
       `pushdown.ts` with TS fallback; zero-copy arena wiring future)
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
+      (shipped: fixed codec Zig + TS + `catalogKey`; pending: reboot E2E without JSON)
 - [x] Row checksums for relational rows (`row.zig` sealed 12B header
       with CRC32 + tamper tests; background scrubber future)
 - [ ] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
