@@ -48,7 +48,9 @@ covered by tests/CI; unchecked items are the "something very big" pipeline.
 - [x] Pushdown kernels (`column.zig`: SIMD `filterU32`, Kahan `kahanSum`;
       arena wiring future)
 - [ ] Multi-root ART for secondary indexes
-- [ ] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
+- [x] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
+      (`column.zig` filterU32/filterF64 + selected aggs via C-ABI/N-API
+      `pushdown.ts` with TS fallback; zero-copy arena wiring future)
 - [ ] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
 - [x] Row checksums for relational rows (`row.zig` sealed 12B header
       with CRC32 + tamper tests; background scrubber future)

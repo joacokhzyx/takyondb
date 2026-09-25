@@ -4,8 +4,11 @@
 - Scan: `O(n)` zero-copy, sin deserializar, proyección temprana.
 - Filtro: comparación directa en `DataView`, sin alloc (pooled).
 - Join hash: build en `Map<val,pk[]>`, probe streaming.
-- Agregación: single-pass en TS; kernel Zig `kahanSum` en
-  `src/core/relational/column.zig` (wiring a arena futuro).
+- Agregación: single-pass en TS; kernels Zig `kahanSum/kahanSumSelected/
+  minSelected/maxSelected` en `src/core/relational/column.zig` expuestos vía
+  C-ABI (`takyon_filter_u32/f64`, `takyon_agg_*_selected`) + N-API
+  (`filter_u32/f64`, `agg_sum*`) y `pushdown.ts` con fallback TS idéntico
+  (cero-copy arena→kernel como trabajo futuro: hoy el TS columnariza filas).
 - Strings: bump + vacuum double-buffer ya existente.
 
 Benchmarks: `benchmarks/relational/bench.js` (harness real, seeded) +
