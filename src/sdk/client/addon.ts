@@ -56,6 +56,13 @@ export interface LoadBindingsOptions {
      * tests and for unusual layouts.
      */
     packageRoot?: string;
+    /**
+     * Override the `<platform>-<arch>` key used for the prebuild lookup and
+     * the supported-platform check. Exists so the "no prebuild for this
+     * platform" path is testable on a machine that does have one; production
+     * callers never set it.
+     */
+    platform?: string;
 }
 
 export interface AddonResolution {
@@ -117,11 +124,12 @@ function findPackageRoot(start: string): string {
 export function addonCandidates(options: LoadBindingsOptions = {}): string[] {
     const env = options.env ?? (typeof process !== 'undefined' ? process.env : {});
     const root = options.packageRoot ?? findPackageRoot(__dirname);
+    const platform = options.platform ?? currentPlatform();
     const out: string[] = [];
 
     if (options.addonPath) out.push(options.addonPath);
     if (env.TAKYON_ADDON_PATH) out.push(env.TAKYON_ADDON_PATH);
-    out.push(path.join(root, 'prebuilds', currentPlatform(), ADDON_BASENAME));
+    out.push(path.join(root, 'prebuilds', platform, ADDON_BASENAME));
     out.push(path.join(root, 'build', 'Release', ADDON_BASENAME));
     out.push(path.join(root, ADDON_BASENAME));
     // In-repo development: the monorepo builds the addon into zig-out/.
@@ -153,7 +161,7 @@ export function classifyAddonSource(candidate: string, options: LoadBindingsOpti
 
 /** Resolve the addon path without loading it. Throws if nothing is found. */
 export function resolveAddon(options: LoadBindingsOptions = {}): AddonResolution {
-    const platform = currentPlatform();
+    const platform = options.platform ?? currentPlatform();
     const supported = (SUPPORTED_PLATFORMS as readonly string[]).includes(platform);
     const env = options.env ?? (typeof process !== 'undefined' ? process.env : {});
 

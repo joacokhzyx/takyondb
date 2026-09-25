@@ -74,6 +74,29 @@ function assemblePrebuild() {
     step(`assembled prebuilds/${PLATFORM_KEY}/takyondb_bridge.node`);
 }
 
+/**
+ * Build the SDK dist before packing.
+ *
+ * `npm pack` does not compile TypeScript, so a job that only ran `npm ci`
+ * packed a tarball with no dist/ at all: the very first CI run of this
+ * harness failed on all three platforms with "Cannot find module
+ * .../takyondb/dist/index.js". That is precisely the class of defect this
+ * job exists to catch, and it would have shipped a package whose main entry
+ * point did not exist. Building here makes the harness self-contained.
+ */
+function buildDist() {
+    step('building the SDK dist (npm pack does not compile TypeScript)');
+    execFileSync('npm', ['run', 'build'], {
+        cwd: PKG_DIR,
+        stdio: 'inherit',
+        shell: process.platform === 'win32',
+    });
+    const entry = path.join(PKG_DIR, 'dist', 'index.js');
+    if (!fs.existsSync(entry)) {
+        fail(`dist/index.js missing after build: the tarball would have no entry point`);
+    }
+}
+
 function pack() {
     step('npm pack');
     const out = execFileSync('npm', ['pack', '--pack-destination', REPO_ROOT], {
@@ -231,6 +254,7 @@ async function main() {
     let exitCode = 0;
 
     try {
+        buildDist();
         assemblePrebuild();
         tarball = pack();
         installInto(tarball, consumer);

@@ -41,11 +41,29 @@ describe('addonCandidates', () => {
         expect(candidates).not.toContain(undefined as unknown as string);
     });
 
-    it('always offers a prebuild candidate for the running platform', () => {
+    it('says so explicitly, and lists the platforms that do have prebuilds', () => {
+        // Reachable only via the platform override: on a supported machine
+        // the "no prebuild" branch would otherwise never execute.
+        const root = tmpDir();
+        try {
+            resolveAddon({ env: {}, packageRoot: root, platform: 'sunos-sparc' });
+            expect.unreachable('should have thrown');
+        } catch (err) {
+            const msg = (err as Error).message;
+            expect(msg).toContain('sunos-sparc has no bundled prebuild');
+            expect(msg).toContain('Supported platforms:');
+            for (const p of SUPPORTED_PLATFORMS) {
+                expect(msg).toContain(p);
+            }
+        }
+    });
+
+    it('falls back to the current platform when no override is given', () => {
         const root = tmpDir();
         const candidates = addonCandidates({ env: {}, packageRoot: root });
-        const prebuild = path.join(root, 'prebuilds', platformKey, 'takyondb_bridge.node');
-        expect(candidates).toContain(prebuild);
+        expect(candidates).toContain(
+            path.join(root, 'prebuilds', `${process.platform}-${process.arch}`, 'takyondb_bridge.node'),
+        );
     });
 });
 
@@ -87,20 +105,27 @@ describe('resolveAddon failures', () => {
         }
     });
 
-    it('names the supported platforms when the current one has no prebuild', () => {
+    it('enumerates the supported platforms only when the current one is unsupported', () => {
         const root = tmpDir();
-        // Simulate an unlisted platform by probing a root that cannot work and
-        // checking the message still enumerates the supported set.
+        const platform = `${process.platform}-${process.arch}`;
+        const isSupported = (SUPPORTED_PLATFORMS as readonly string[]).includes(platform);
         try {
             resolveAddon({ env: {}, packageRoot: root });
             expect.unreachable('should have thrown');
         } catch (err) {
             const msg = (err as Error).message;
-            for (const p of SUPPORTED_PLATFORMS) {
-                expect(SUPPORTED_PLATFORMS).toContain(p);
+            expect(msg).toContain(platform);
+            if (isSupported) {
+                // A supported platform with no staged prebuild: list what was
+                // probed rather than blaming the platform.
+                expect(msg).toContain('none of these paths exist');
+                expect(msg).not.toContain('has no bundled prebuild');
+            } else {
+                expect(msg).toContain('has no bundled prebuild');
+                for (const p of SUPPORTED_PLATFORMS) {
+                    expect(msg).toContain(p);
+                }
             }
-            expect(SUPPORTED_PLATFORMS.length).toBeGreaterThan(0);
-            expect(msg).toContain('linux-x64');
         }
     });
 });
