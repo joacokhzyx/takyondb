@@ -15,6 +15,14 @@ const { hashJoin } = require(`${rel}/join`);
 const { Transaction } = require(`${rel}/transaction`);
 
 const N = 20000;
+// Per-table seeds. Reported verbatim in the workload block: the previous
+// report claimed a single seed of 42 while seedOrders used 7, so the run was
+// not reproducible from the output alone.
+const SEEDS = { users: 42, orders: 7 };
+// Repetitions. A single pass includes JIT tier-up and makes the percentiles a
+// property of when the timer started rather than of the engine.
+const REPS = Number(process.env.BENCH_REPS || 3);
+const WARMUP = Number(process.env.BENCH_WARMUP || 1);
 
 function lcg(seed) {
   let s = seed >>> 0;
@@ -36,7 +44,7 @@ function seedUsers(db, n) {
     { name: 'age', type: 'uint32' },
     { name: 'balance', type: 'float64', nullable: true },
   ]);
-  const rand = lcg(42);
+  const rand = lcg(SEEDS.users);
   const tx = new Transaction(db);
   for (let i = 0; i < n; i++) {
     tx.insert('users', {
@@ -54,7 +62,7 @@ function seedOrders(db, n) {
     { name: 'id', type: 'string', primaryKey: true },
     { name: 'user_id', type: 'string' },
   ]);
-  const rand = lcg(7);
+  const rand = lcg(SEEDS.orders);
   const tx = new Transaction(db);
   for (let i = 0; i < n; i++) {
     tx.insert('orders', { id: `o${i}`, user_id: `u${Math.floor(rand() * n)}` });
@@ -147,15 +155,30 @@ function main() {
   const names = only === 'all' ? Object.keys(suites) : [only];
   for (const n of names) if (!suites[n]) throw new Error(`unknown suite '${n}'`);
   const results = {};
-  for (const n of names) results[n] = suites[n]();
+  for (const n of names) {
+    // Warm up, then keep the best repetition: the least noise-sensitive
+    // estimator when the loop is dominated by steady-state work.
+    for (let w = 0; w < WARMUP; w++) suites[n]();
+    const runs = [];
+    for (let r = 0; r < REPS; r++) runs.push(suites[n]());
+    results[n] = {
+      ...runs[0],
+      best_p50_ms: Math.min(...runs.map((x) => x.p50_ms)),
+      reps: REPS,
+    };
+  }
   console.log(
     JSON.stringify(
       {
         suite: 'relational',
         hardware: hardware(),
-        workload: { rows: N, seeded: true, seed: 42 },
+        workload: { rows: N, seeded: true, seeds: SEEDS, reps: REPS, warmup: WARMUP },
         methodology:
-          'Seeded in-memory workload over the TS relational engine (no IPC/daemon). Per-op wall times via performance.now(); p50/p95/p99 over samples. CI gate on green completion; numbers informational until hardware-pinned thresholds land.',
+          'Seeded in-memory workload over the TS relational engine (no IPC/daemon, no native pushdown). ' +
+            `Per-table LCG seeds are reported in the workload block. ${WARMUP} warmup pass then ${REPS} timed ` +
+            'repetitions; best_p50_ms is the minimum across repetitions, the other percentiles come from the first ' +
+            'repetition. CI gate on green completion and row-count assertions; the timings themselves are ' +
+            'informational because shared CI hardware is not a stable reference.',
         results,
       },
       null,

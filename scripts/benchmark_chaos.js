@@ -93,20 +93,69 @@ if (isMainThread) {
     });
 
     function analyzeResults(lats) {
+        if (!Array.isArray(lats) || lats.length === 0) {
+            console.error('[Chaos] FAILURE: no latency samples were collected');
+            process.exitCode = 1;
+            return;
+        }
         lats.sort((a, b) => a - b);
         const p50 = lats[Math.floor(lats.length * 0.5)];
         const p95 = lats[Math.floor(lats.length * 0.95)];
         const p99 = lats[Math.floor(lats.length * 0.99)];
         const max = lats[lats.length - 1];
         
+        // Hardware report: the README quotes these percentiles, and without
+        // this they cannot be attributed to any machine, so "ran on consumer
+        // hardware" was not checkable by anyone.
+        const os = require('os');
+        const hardware = {
+            platform: os.platform(),
+            arch: os.arch(),
+            cpu_model: (os.cpus()[0] || {}).model || 'unknown',
+            cpus: os.cpus().length,
+            totalmem_mb: Math.round(os.totalmem() / 1048576),
+            node: process.version,
+        };
+        
         console.log(`\n========================================`);
         console.log(`[Chaos Benchmark Results]`);
+        console.log(`Hardware: ${hardware.cpu_model} (${hardware.cpus}x ${hardware.arch}, node ${hardware.node})`);
+        console.log(`Workload: ${TOTAL_WORKERS} worker_threads, ${OPERATIONS_PER_WORKER} ops each,`);
+        console.log(`          20% read / 40% insert / 40% update (seeded LCG per worker),`);
+        console.log(`          vacuum running and a checkpoint every 500ms.`);
         console.log(`Total Operations: ${lats.length}`);
         console.log(`p50 Latency: ${p50.toFixed(3)} ms`);
         console.log(`p95 Latency: ${p95.toFixed(3)} ms`);
         console.log(`p99 Latency: ${p99.toFixed(3)} ms`);
         console.log(`Max Latency: ${max.toFixed(3)} ms`);
         console.log(`========================================\n`);
+        
+        const report = {
+            suite: 'chaos-saturated',
+            hardware,
+            workload: {
+                workers: TOTAL_WORKERS,
+                ops_per_worker: OPERATIONS_PER_WORKER,
+                mix: '20% read / 40% insert / 40% update',
+                seed: 'LCG 12345 + workerId per worker',
+                note: 'per-worker sequence is deterministic; cross-worker interleaving is not',
+            },
+            methodology:
+                'Saturated multi-worker run against a live daemon through the N-API addon. Per-op wall time via ' +
+                'performance.now() around the addon call, pooled into one sample set. Helper objects (TextEncoder, ' +
+                'delta pointer buffer) are hoisted per worker so the numbers reflect engine cost rather than V8 ' +
+                'allocation. Absolute values are machine and scheduler specific.',
+            results: {
+                ops: lats.length,
+                p50_ms: p50,
+                p95_ms: p95,
+                p99_ms: p99,
+                max_ms: max,
+            },
+        };
+        if (process.env.BENCH_JSON_PATH) {
+            require('fs').writeFileSync(process.env.BENCH_JSON_PATH, JSON.stringify(report, null, 2));
+        }
     }
 
 } else {
@@ -124,6 +173,20 @@ if (isMainThread) {
     }
 
     const latencies = new Float64Array(ops);
+    
+    // Worker-scoped, reused for every op. These used to be constructed inside
+    // the timed region (a TextEncoder plus an 8-byte ArrayBuffer + DataView +
+    // Uint8Array per operation), so the published p50/p95/p99 figures were
+    // measuring V8 allocation and GC as much as the engine. Constructing a
+    // TextEncoder is expensive enough to dominate an op; hoisting it is what
+    // the SDK itself does, and it is what makes this number about the engine.
+    const encoder = new TextEncoder();
+    const STRING_BUMP_OFFSET = 10485760;
+    const STRING_ARENA_START = 10485764;
+    const bumpArray = new Uint32Array(memoryBuffer, STRING_BUMP_OFFSET, 1);
+    const deltaPtrBuf = new ArrayBuffer(8);
+    const deltaPtrView = new DataView(deltaPtrBuf);
+    const deltaPtrBytes = new Uint8Array(deltaPtrBuf);
     
     for (let i = 0; i < ops; i++) {
         const start = performance.now();
@@ -152,25 +215,20 @@ if (isMainThread) {
     parentPort.postMessage({ type: 'done', latencies: Array.from(latencies) });
     
     function updateString(recordOffset, value) {
-        const bytes = new TextEncoder().encode(value);
+        const bytes = encoder.encode(value);
         const strLen = bytes.length;
         
-        const STRING_BUMP_OFFSET = 10485760;
-        const STRING_ARENA_START = 10485764;
-        
-        const atomicArr = new Uint32Array(memoryBuffer, STRING_BUMP_OFFSET, 1);
-        Atomics.compareExchange(atomicArr, 0, 0, STRING_ARENA_START);
-        const allocatedOffset = Atomics.add(atomicArr, 0, strLen);
+        Atomics.compareExchange(bumpArray, 0, 0, STRING_ARENA_START);
+        const allocatedOffset = Atomics.add(bumpArray, 0, strLen);
         
         const dest = new Uint8Array(memoryBuffer, allocatedOffset, strLen);
         dest.set(bytes);
         
         takyondb.notifyArena(allocatedOffset, strLen);
         
-        const ptrBuf = new ArrayBuffer(8);
-        const ptrView = new DataView(ptrBuf);
-        ptrView.setUint32(0, allocatedOffset, true);
-        ptrView.setUint32(4, strLen, true);
-        takyondb.pushDelta(recordOffset + FIELD_OFFSET_USERNAME, new Uint8Array(ptrBuf));
+        // Reused scratch instead of a fresh ArrayBuffer + DataView per op.
+        deltaPtrView.setUint32(0, allocatedOffset, true);
+        deltaPtrView.setUint32(4, strLen, true);
+        takyondb.pushDelta(recordOffset + FIELD_OFFSET_USERNAME, deltaPtrBytes);
     }
 }
