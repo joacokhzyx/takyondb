@@ -60,12 +60,13 @@ jobs:
     - name: Run E2E Zero-Copy Test
       run: node scripts/e2e_zerocopy_test.js
 
-    - name: Clean stale SHM between suites (Linux)
-      # The zero-copy suite leaves a 16MB POSIX segment behind (there is no
-      # shm_unlink ownership yet); chaos needs 64MB and the engine refuses
-      # size mismatches, so unlink first. See run-e2e.js cleanStaleShm.
-      if: runner.os == 'Linux'
-      run: rm -f /dev/shm/TakyonDB_Master ./data.takyon ./data.takyon.snap
+    - name: Clean stale SHM between suites
+      # Suites leave differently-sized segments behind (no shm_unlink
+      # ownership yet): 16MB POSIX SHM on Linux, 16MB file on macOS
+      # (file-backed backend). The engine refuses size mismatches.
+      # See run-e2e.js cleanStaleShm.
+      if: runner.os != 'Windows'
+      run: rm -f /dev/shm/TakyonDB_Master /tmp/takyondb_TakyonDB_Master ./data.takyon ./data.takyon.snap
 
     - name: Run Chaos Engine Benchmark
       run: node scripts/benchmark_chaos.js

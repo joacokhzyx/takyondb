@@ -20,12 +20,21 @@ function cleanStaleShm() {
   // suite carries a foreign layout (or no magic at all), and the daemon
   // rightly refuses to truncate/reuse it (BadVersion/SizeMismatch).
   // Windows named mappings die with their processes; nothing to do there.
-  if (process.platform !== 'linux') return;
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return;
   const fs = require('fs');
-  try {
-    fs.unlinkSync('/dev/shm/TakyonDB_Master');
-  } catch (e) {
-    // Absent segment: nothing to clean.
+  if (process.platform === 'linux') {
+    try {
+      fs.unlinkSync('/dev/shm/TakyonDB_Master');
+    } catch (e) {
+      // Absent segment: nothing to clean.
+    }
+  }
+  if (process.platform === 'darwin') {
+    try {
+      fs.unlinkSync('/tmp/takyondb_TakyonDB_Master');
+    } catch (e) {
+      // Absent file: nothing to clean.
+    }
   }
 }
 

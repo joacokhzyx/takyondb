@@ -20,9 +20,13 @@ async function run() {
   try { fs.unlinkSync(join(__dirname, '../data.takyon')); } catch (e) {}
   try { fs.unlinkSync(join(__dirname, '../data.takyon.snap')); } catch (e) {}
   // A stale POSIX segment from another run carries a foreign size/layout;
-  // the engine refuses to reuse it, so unlink first (Linux only).
+  // the engine refuses to truncate/reuse it, so unlink first (Linux only).
+  // Same for the macOS file-backed segment.
   if (process.platform === 'linux') {
     try { fs.unlinkSync('/dev/shm/TakyonDB_Master'); } catch (e) {}
+  }
+  if (process.platform === 'darwin') {
+    try { fs.unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
   }
 
   console.log('[E2E Scan] Starting TakyonDB daemon in background...');

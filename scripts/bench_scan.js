@@ -26,6 +26,9 @@ async function run() {
   if (process.platform === 'linux') {
     try { fs.unlinkSync('/dev/shm/TakyonDB_Master'); } catch (e) {}
   }
+  if (process.platform === 'darwin') {
+    try { fs.unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
+  }
 
   const { spawn } = require('child_process');
   const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
