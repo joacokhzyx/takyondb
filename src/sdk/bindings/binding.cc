@@ -48,6 +48,9 @@ extern "C" {
                                    const uint32_t* sel, uint32_t sel_len);
     double takyon_agg_max_selected(const double* values, uint32_t values_len,
                                    const uint32_t* sel, uint32_t sel_len);
+    int32_t takyon_verify_record(const uint8_t* buf, uint32_t len);
+    int32_t takyon_scrub_records(const uint8_t* buf, uint32_t len, uint32_t* ok_out,
+                                 uint32_t* corrupt_out, uint32_t* bytes_out, uint32_t* truncated_out);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -635,6 +638,61 @@ napi_value DisconnectShm(napi_env env, napi_callback_info info) {
     return res;
 }
 
+// Scrubber: verifies one sealed envelope. Arg: Uint8Array -> boolean.
+napi_value VerifyRecord(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+
+    napi_typedarray_type t = napi_uint8_array;
+    size_t len = 0;
+    void* data = nullptr;
+    CHECK_NAPI(napi_get_typedarray_info(env, args[0], &t, &len, &data, nullptr, nullptr));
+    if (t != napi_uint8_array || len == 0 || len > 100000000) {
+        napi_throw_type_error(env, nullptr, "buf must be a non-empty Uint8Array");
+        return nullptr;
+    }
+    int32_t rc = takyon_verify_record((const uint8_t*)data, (uint32_t)len);
+    napi_value result;
+    CHECK_NAPI(napi_get_boolean(env, rc == 1, &result));
+    return result;
+}
+
+// Scrubber: walks concatenated sealed envelopes. Arg: Uint8Array -> {ok, corrupt, bytes, truncated}.
+napi_value ScrubRecords(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    REQUIRE_ARGC(1);
+
+    napi_typedarray_type t = napi_uint8_array;
+    size_t len = 0;
+    void* data = nullptr;
+    CHECK_NAPI(napi_get_typedarray_info(env, args[0], &t, &len, &data, nullptr, nullptr));
+    if (t != napi_uint8_array || len == 0 || len > 100000000) {
+        napi_throw_type_error(env, nullptr, "buf must be a non-empty Uint8Array");
+        return nullptr;
+    }
+    uint32_t ok = 0, corrupt = 0, bytes = 0, truncated = 0;
+    int32_t rc = takyon_scrub_records((const uint8_t*)data, (uint32_t)len, &ok, &corrupt, &bytes, &truncated);
+    if (rc != 0) {
+        napi_throw_error(env, nullptr, "scrub_records failed");
+        return nullptr;
+    }
+    napi_value obj, v;
+    CHECK_NAPI(napi_create_object(env, &obj));
+    CHECK_NAPI(napi_create_uint32(env, ok, &v));
+    CHECK_NAPI(napi_set_named_property(env, obj, "ok", v));
+    CHECK_NAPI(napi_create_uint32(env, corrupt, &v));
+    CHECK_NAPI(napi_set_named_property(env, obj, "corrupt", v));
+    CHECK_NAPI(napi_create_uint32(env, bytes, &v));
+    CHECK_NAPI(napi_set_named_property(env, obj, "bytes", v));
+    CHECK_NAPI(napi_get_boolean(env, truncated != 0, &v));
+    CHECK_NAPI(napi_set_named_property(env, obj, "truncated", v));
+    return obj;
+}
+
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         { "initSharedMemory", 0, InitSharedMemory, 0, 0, 0, napi_default, 0 },
@@ -652,12 +710,14 @@ napi_value Init(napi_env env, napi_value exports) {
         { "agg_sum_selected", 0, AggSumSelected, 0, 0, 0, napi_default, 0 },
         { "agg_min_selected", 0, AggMinSelected, 0, 0, 0, napi_default, 0 },
         { "agg_max_selected", 0, AggMaxSelected, 0, 0, 0, napi_default, 0 },
+        { "verify_record", 0, VerifyRecord, 0, 0, 0, napi_default, 0 },
+        { "scrub_records", 0, ScrubRecords, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 19, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, 21, desc));
     return exports;
 }
 
