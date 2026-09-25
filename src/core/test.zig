@@ -9,6 +9,7 @@ comptime {
     _ = @import("memory/shm.zig");
     _ = @import("memory/layout.zig");
     _ = @import("memory/vacuum.zig");
+    _ = @import("memory/record_crc.zig");
     _ = @import("ipc/ring_buffer.zig");
     _ = @import("index/art.zig");
     _ = @import("storage/wal.zig");
@@ -24,6 +25,7 @@ comptime {
     _ = @import("relational/join.zig");
     _ = @import("relational/tx.zig");
     _ = @import("relational/index.zig");
+    _ = @import("relational/multiroot.zig");
     _ = @import("relational/persist.zig");
     _ = @import("relational/sql.zig");
     _ = @import("relational/executor.zig");
