@@ -33,6 +33,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   view remotely (`OK <n> <offsets>`), covered by E2E vs live daemon.
 - Self-driving crash E2E (`e2e_crash_auto_test.js`, in the harness):
   5000 snapshot keys + residual WAL verified across a real SIGKILL.
+- Corruption E2E in CI (`relational.yml` runs the torn-write suite
+  via ts-node from `scripts/`, matching the harness invocation).
 - Sealed relational row headers (`row.zig`: 12B magic+version+CRC32
   with tamper/truncation tests) and a deterministic 1500-key ART sweep
   (insert/search/remove/scan cross-check, fixed seed).

@@ -31,6 +31,10 @@ jobs:
         run: node scripts/e2e_scan_test.js
       - name: Run crash-recovery E2E (SIGKILL, live daemon)
         run: node scripts/e2e_crash_auto_test.js
+      - name: Run corruption E2E (torn write, live daemon)
+        run: |
+          cd scripts
+          NODE_PATH=../src/sdk/ts/node_modules node -r ts-node/register/transpile-only e2e_corruption_test.ts
       - name: Run native scan bench (live daemon, informational)
         run: node scripts/bench_scan.js 3000
       - name: Run TS relational unit tests
