@@ -1597,3 +1597,77 @@ test "ART scanRange bounds suffixes" {
     var tiny: [3]u32 = undefined;
     try std.testing.expectEqual(@as(usize, 3), idx.scanRange("r:", "000", "039", tiny[0..]));
 }
+
+test "ART deterministic sweep mixes inserts, searches, removes" {
+    // No std.testing.fuzz in this toolchain: a fixed-seed xorshift sweep
+    // gives reproducible coverage of interleaved index operations.
+    var buf: [4 * 1024 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    var state: u64 = 0x12345678ABCDEF01;
+    const step = struct {
+        fn next(s: *u64) u64 {
+            s.* ^= s.* << 13;
+            s.* ^= s.* >> 7;
+            s.* ^= s.* << 17;
+            return s.*;
+        }
+    }.next;
+
+    const hexDigit = struct {
+        fn f(nibble: u8) u8 {
+            return if (nibble < 10) '0' + nibble else 'a' + (nibble - 10);
+        }
+    }.f;
+
+    // Unique-by-construction keys: 4 hex digits of index + 4 of entropy.
+    const COUNT = 1500;
+    var keys: [COUNT][8]u8 = undefined;
+    var values: [COUNT]u32 = undefined;
+    var n: usize = 0;
+    while (n < COUNT) : (n += 1) {
+        const v = step(&state);
+        var j: usize = 0;
+        while (j < 4) : (j += 1) {
+            keys[n][j] = hexDigit(@truncate((n >> @intCast(j * 4)) & 0xF));
+            keys[n][4 + j] = hexDigit(@truncate((v >> @intCast(j * 4)) & 0xF));
+        }
+        // Values stay clear of 0 (missing-slot sentinel in some callers)
+        // and below the 4MiB test arena (insert rejects out-of-range).
+        values[n] = @as(u32, @truncate(v % 4000000)) + 8;
+        try idx.insert(keys[n][0..], values[n]);
+    }
+    n = 0;
+    while (n < COUNT) : (n += 1) {
+        try std.testing.expectEqual(@as(?u32, values[n]), idx.search(keys[n][0..]));
+    }
+    // Remove every third key; the rest keep exact values.
+    n = 0;
+    while (n < COUNT) : (n += 1) {
+        if (n % 3 == 0) {
+            try std.testing.expect(try idx.remove(keys[n][0..]));
+            try std.testing.expectEqual(@as(?u32, null), idx.search(keys[n][0..]));
+        } else {
+            try std.testing.expectEqual(@as(?u32, values[n]), idx.search(keys[n][0..]));
+        }
+    }
+    // Prefix-scan cross-check: collect every surviving key that starts
+    // with "00" and require the scan to return exactly that offset set.
+    var out: [512]u32 = undefined;
+    const m = idx.scanPrefix("00", out[0..]);
+    var want: [COUNT]u32 = undefined;
+    var want_n: usize = 0;
+    n = 0;
+    while (n < COUNT) : (n += 1) {
+        if (n % 3 == 0) continue;
+        if (keys[n][0] != '0' or keys[n][1] != '0') continue;
+        want[want_n] = values[n];
+        want_n += 1;
+    }
+    try std.testing.expect(want_n > 0);
+    try std.testing.expectEqual(want_n, m);
+    std.mem.sort(u32, out[0..m], {}, comptime std.sort.asc(u32));
+    std.mem.sort(u32, want[0..want_n], {}, comptime std.sort.asc(u32));
+    try std.testing.expectEqualSlices(u32, want[0..want_n], out[0..m]);
+}
