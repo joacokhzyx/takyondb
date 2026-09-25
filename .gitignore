@@ -29,6 +29,8 @@ build/
 coverage/
 *.log
 .npm/
+# LICENSE copy staged by src/sdk/ts prepack (do not commit; source is /LICENSE)
+src/sdk/ts/LICENSE
 
 # Compiled JS next to TS sources (generate via tsc, do not commit)
 src/sdk/**/*.js

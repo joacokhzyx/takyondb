@@ -12,7 +12,7 @@
   },
   "files": [
     "dist",
-    "../../../LICENSE",
+    "LICENSE",
     "README.md"
   ],
   "repository": {
@@ -32,6 +32,7 @@
     "build:addon": "cd ../../../ && zig build",
     "test": "tsc --noEmit && vitest run",
     "test:unit": "vitest run",
+    "prepack": "cp ../../../LICENSE ./LICENSE",
     "test:relational": "vitest run ../client/relational",
     "bench:relational": "node ../../../scripts/bench_relational.js",
     "lint": "cd .. && node ./ts/node_modules/eslint/bin/eslint.js client takyon.ts index.ts",

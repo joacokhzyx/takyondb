@@ -3,6 +3,17 @@
 TypeScript wrapper for the TakyonDB ultra-low-latency storage engine
 (zero-copy shared-memory client + fluent collection API).
 
+## Runtime requirements
+
+- Anything touching shared memory (`TakyonDB`, `TakyonClient`,
+  collections, `ArtMirror`) needs two things the NPM tarball does NOT
+  ship: the compiled N-API addon (`zig-out/bin/takyondb_bridge.node`,
+  via `zig build`) and a running daemon (`zig build run`). Pass the
+  addon as `bindings`; see `scripts/e2e_*.{js,ts}` for wiring examples.
+- Pure-TS modules work standalone: `RelationalDatabase` + tables,
+  queries, joins, SQL subset (`client/relational/`), schemas, catalog
+  persistence, and key namespacing need no daemon.
+
 ## Scripts
 
 Run from this directory (`src/sdk/ts`):
