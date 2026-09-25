@@ -46,7 +46,7 @@ through the space-split protocol — use the N-API `scan_prefix` then.
 | --- | --- | --- |
 | Linux | `packaging/linux/build_deb.sh` | `takyondb_1.0.0_amd64.deb` — installs `takyondb` to `/usr/local/bin`, bridge `.so` to `/usr/local/lib`, systemd unit from `packaging/linux/takyondb.service` |
 | macOS | `packaging/macos/build_pkg.sh` | `TakyonDB-1.0.0.pkg` — installs `takyondb` to `/usr/local/bin`, LaunchDaemon from `com.takyondb.daemon.plist` |
-| Windows | `iscc packaging/windows/installer.iss` | `TakyonDB-Setup-v1.0.0.exe` — installs `takyondb.exe` + `takyondb_bridge.dll` (also references `COMMERCIAL_LICENSE.md`, which no longer exists — see inconsistencies) |
+| Windows | `iscc packaging/windows/installer.iss` | `TakyonDB-Setup-v1.0.0.exe` — installs `takyondb.exe` + `takyondb_bridge.dll` (bundles `LICENSE` + `README.md`; MIT-only since license migration) |
 
 CI uploads `packaging/{windows/Output/*.exe,linux/*.deb,macos/*.pkg}` plus
 `zig-out/bin/*` and `zig-out/lib/*` as `installers-<os>` artifacts.
