@@ -288,6 +288,27 @@ async function waitForFileStable(target, options = {}) {
   );
 }
 
+/**
+ * Poll until no stray daemons remain, or the window expires.
+ *
+ * A raw listStrayDaemons() check right after a suite finishes races with
+ * SIGKILL delivery: the signal has been sent but the kernel has not reaped
+ * the process yet, so a correctly reaped daemon can still show up. A
+ * genuinely leaked daemon (the bug this guards against) never goes away, so
+ * a short grace window separates "dying" from "leaked" without weakening
+ * the check.
+ */
+async function waitForNoStrays(options = {}) {
+  const { graceMs = 3000, pollMs = 100 } = options;
+  const deadline = Date.now() + graceMs;
+  let strays = listStrayDaemons();
+  while (strays.pids.length > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    strays = listStrayDaemons();
+  }
+  return strays;
+}
+
 module.exports = {
   REPO_ROOT,
   READY,
@@ -297,5 +318,6 @@ module.exports = {
   withDaemon,
   waitForFileStable,
   listStrayDaemons,
+  waitForNoStrays,
   DEFAULT_READY_TIMEOUT_MS,
 };

@@ -3,7 +3,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const { listStrayDaemons } = require('./helpers/daemon');
+const { waitForNoStrays } = require('./helpers/daemon');
 
 const SDK_NODE_MODULES = path.join(__dirname, '..', 'src', 'sdk', 'ts', 'node_modules');
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS || process.env.E2E_TIMEOUT || 120000);
@@ -125,8 +125,9 @@ async function main() {
     // while holding the SHM segment and the admin port, so every later suite
     // in this run degrades — the signature symptom was `admin SCAN`
     // answering "OK 0". Fail loudly here instead of letting it poison the
-    // rest of the run.
-    const strays = listStrayDaemons();
+    // rest of the run. The grace window avoids racing with SIGKILL delivery
+    // for daemons that were reaped correctly.
+    const strays = await waitForNoStrays();
     if (strays.pids.length > 0) {
       console.error(
         `[run-e2e] STRAY DAEMONS after '${res.name}': pids ${strays.pids.join(', ')} ` +
