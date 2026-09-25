@@ -45,5 +45,7 @@ jobs:
         run: |
           cd src/sdk/ts
           npm run build
+      - name: Run catalog-reboot E2E (DDL via __catalog__, SIGKILL)
+        run: node scripts/e2e_catalog_reboot_test.js
       - name: Run relational bench (seeded TS engine, gate)
         run: node scripts/bench_relational.js
