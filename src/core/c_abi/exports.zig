@@ -12,6 +12,8 @@ const layout = @import("../memory/layout.zig");
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
 const art = @import("../index/art.zig");
+const column = @import("../relational/column.zig");
+const rfilter = @import("../relational/filter.zig");
 
 // Global statics for E2E Zero-Copy Test
 var ring_buffer: RingBuffer = undefined;
@@ -264,6 +266,62 @@ export fn takyon_verify_test_value() callconv(.c) i32 {
 }
 
 const vacuum = @import("../memory/vacuum.zig");
+
+/// Pushdown kernel: filter u32 column with SIMD (`column.filterU32`).
+/// `op` is `rfilter.CmpOp` as u8 (0=Eq..5=Lte). Returns count written or -1 on error.
+export fn takyon_filter_u32(values_ptr: ?[*]const u32, len: u32, op: u8, target: u32, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
+    if (len == 0) return 0;
+    if (op > 5) return -1;
+    if (out_cap == 0) return -1;
+    const values = (values_ptr orelse return -1)[0..len];
+    const out = (out_ptr orelse return -1)[0..out_cap];
+    const cmp: rfilter.CmpOp = @enumFromInt(op);
+    const n = column.filterU32(values, cmp, target, out);
+    return @as(i32, @intCast(n));
+}
+
+/// Pushdown kernel: filter f64 column (`column.filterF64`). Same contract as u32.
+export fn takyon_filter_f64(values_ptr: ?[*]const f64, len: u32, op: u8, target: f64, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
+    if (len == 0) return 0;
+    if (op > 5) return -1;
+    if (out_cap == 0) return -1;
+    const values = (values_ptr orelse return -1)[0..len];
+    const out = (out_ptr orelse return -1)[0..out_cap];
+    const cmp: rfilter.CmpOp = @enumFromInt(op);
+    const n = column.filterF64(values, cmp, target, out);
+    return @as(i32, @intCast(n));
+}
+
+/// Pushdown kernel: Kahan sum over f64 column. Returns 0 on empty; NaN on bad pointer.
+export fn takyon_agg_sum_f64(values_ptr: ?[*]const f64, len: u32) callconv(.c) f64 {
+    if (len == 0) return 0;
+    const values = (values_ptr orelse return std.math.nan(f64))[0..len];
+    return column.kahanSum(values);
+}
+
+/// Pushdown kernel: Kahan sum over a selection vector. OOB entries stop the scan.
+export fn takyon_agg_sum_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+    if (sel_len == 0) return 0;
+    const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
+    const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
+    return column.kahanSumSelected(values, sel, sel_len);
+}
+
+/// Pushdown kernel: min over a selection vector (0 when empty, mirrors TS).
+export fn takyon_agg_min_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+    if (sel_len == 0) return 0;
+    const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
+    const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
+    return column.minSelected(values, sel, sel_len);
+}
+
+/// Pushdown kernel: max over a selection vector (0 when empty, mirrors TS).
+export fn takyon_agg_max_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+    if (sel_len == 0) return 0;
+    const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
+    const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
+    return column.maxSelected(values, sel, sel_len);
+}
 
 export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
