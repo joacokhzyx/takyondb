@@ -552,7 +552,11 @@ test "shm corrupted magic yields BadVersion" {
     defer SharedArena.unlink(tname);
 
     var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
-    srv.close();
+    defer srv.close();
+    // Windows named sections die with the last handle (no unlink
+    // equivalent), so only POSIX proves persistence across close; on
+    // Windows the creator stays mapped (attach-while-open works there).
+    if (builtin.os.tag != .windows) srv.close();
 
     // Corrupt the 8-byte magic header through a plain RW attach.
     var rw = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .read_write);
@@ -569,7 +573,10 @@ test "shm size mismatch rejected" {
     defer SharedArena.unlink(tname);
 
     var srv = try SharedArena.init(tname, layout.MIN_ARENA_SIZE, .server);
-    srv.close();
+    defer srv.close();
+    // Same platform-lifecycle note as the BadVersion test above: only
+    // POSIX proves persistence across close.
+    if (builtin.os.tag != .windows) srv.close();
 
     const bigger = layout.MIN_ARENA_SIZE + 4096;
     try std.testing.expectError(error.SizeMismatch, SharedArena.init(tname, bigger, .server));
