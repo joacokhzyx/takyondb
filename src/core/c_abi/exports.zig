@@ -35,11 +35,11 @@ var engine_mutex = std.Thread.Mutex{};
 var engine_refs: usize = 0;
 
 /// Initializes the TakyonDB engine context.
-export fn takyon_init() callconv(.c) i32 {
+pub export fn takyon_init() callconv(.c) i32 {
     return 0;
 }
 
-export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) ?*anyopaque {
+pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) ?*anyopaque {
     _ = name_ptr;
     const shm_name = if (builtin.os.tag == .windows) "Local\\TakyonDB_Master" else "/TakyonDB_Master";
 
@@ -94,7 +94,7 @@ export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(.c) 
 /// segment, closes its OS handle and invalidates engine state. Safe to
 /// call when disconnected (no-op). Call only when no thread will touch
 /// the engine afterwards (end of process/tests).
-export fn takyon_disconnect_shm() callconv(.c) void {
+pub export fn takyon_disconnect_shm() callconv(.c) void {
     engine_mutex.lock();
     defer engine_mutex.unlock();
     if (!arena_ready) return;
@@ -107,7 +107,7 @@ export fn takyon_disconnect_shm() callconv(.c) void {
     ring_ready = false;
 }
 
-export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
+pub export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (key_len == 0 or key_len > 256) return -1;
     if (value_offset >= arena.memory.len) return -1;
@@ -116,7 +116,7 @@ export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: 
     return 0;
 }
 
-export fn takyon_search_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
+pub export fn takyon_search_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (key_len == 0 or key_len > 256) return -1;
     const key = key_ptr[0..key_len];
@@ -131,7 +131,7 @@ export fn takyon_search_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i
 /// Removes a key from the ART index.
 /// Returns: 1 if the key was present and deleted, 0 if the key was not
 /// found, -1 on error (!arena_ready, key_len 0 or >256, or remove failed).
-export fn takyon_remove_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
+pub export fn takyon_remove_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (key_len == 0 or key_len > 256) return -1;
     const key = key_ptr[0..key_len];
@@ -142,7 +142,7 @@ export fn takyon_remove_index(key_ptr: [*]const u8, key_len: u32) callconv(.c) i
 /// Collects up to `out_cap` value offsets whose keys start with `key`.
 /// Returns the count written, or -1 on error (!arena_ready, bad key_len,
 /// or out_cap == 0). Never writes past `out_cap` entries.
-export fn takyon_scan_prefix(key_ptr: [*]const u8, key_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
+pub export fn takyon_scan_prefix(key_ptr: [*]const u8, key_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (key_len == 0 or key_len > 256) return -1;
     if (out_cap == 0) return -1;
@@ -156,7 +156,7 @@ export fn takyon_scan_prefix(key_ptr: [*]const u8, key_len: u32, out_ptr: [*]u32
 /// within [`lo`, `hi`] (lexicographic). Empty `lo`/`hi` (len 0, pointer
 /// may be null) means unbounded on that side. Returns the count written,
 /// or -1 on error (!arena_ready, bad lengths, `lo > hi`, out_cap == 0).
-export fn takyon_scan_range(key_ptr: [*]const u8, key_len: u32, lo_ptr: ?[*]const u8, lo_len: u32, hi_ptr: ?[*]const u8, hi_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
+pub export fn takyon_scan_range(key_ptr: [*]const u8, key_len: u32, lo_ptr: ?[*]const u8, lo_len: u32, hi_ptr: ?[*]const u8, hi_len: u32, out_ptr: [*]u32, out_cap: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (key_len == 0 or key_len > 256) return -1;
     if (lo_len > 256 or hi_len > 256) return -1;
@@ -190,7 +190,7 @@ pub inline fn rdtsc() u64 {
 }
 
 /// Dispatches a raw mutation delta directly into the C-ABI.
-export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) callconv(.c) i32 {
+pub export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) callconv(.c) i32 {
     if (!ring_ready or !arena_ready) return -1;
     // Delta payload is a fixed 48B inline buffer. Anything larger belongs in
     // the string arena and must go through takyon_notify_arena.
@@ -217,7 +217,7 @@ export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) call
     return -1; // Buffer full
 }
 
-export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
+pub export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
     if (!ring_ready or !arena_ready) return -1;
     // size==0 is rejected: WAL uses header.length==0 as end-of-log sentinel.
     if (size == 0) return -1;
@@ -238,7 +238,7 @@ export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
     return -1; // Buffer full
 }
 
-export fn takyon_trigger_checkpoint() callconv(.c) i32 {
+pub export fn takyon_trigger_checkpoint() callconv(.c) i32 {
     if (!ring_ready) return -1;
     const delta = DeltaMessage{
         .offset = 0,
@@ -254,7 +254,7 @@ export fn takyon_trigger_checkpoint() callconv(.c) i32 {
 }
 
 /// E2E Verification function: Pops the RingBuffer and returns the processed value as i32
-export fn takyon_verify_test_value() callconv(.c) i32 {
+pub export fn takyon_verify_test_value() callconv(.c) i32 {
     if (!ring_ready) return -2;
     if (ring_buffer.pop()) |delta| {
         if (delta.size == 4) {
@@ -271,9 +271,9 @@ const vacuum = @import("../memory/vacuum.zig");
 
 /// Pushdown kernel: filter u32 column with SIMD (`column.filterU32`).
 /// `op` is `rfilter.CmpOp` as u8 (0=Eq..5=Lte). Returns count written or -1 on error.
-export fn takyon_filter_u32(values_ptr: ?[*]const u32, len: u32, op: u8, target: u32, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
-    if (len == 0) return 0;
+pub export fn takyon_filter_u32(values_ptr: ?[*]const u32, len: u32, op: u8, target: u32, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
     if (op > 5) return -1;
+    if (len == 0) return 0;
     if (out_cap == 0) return -1;
     const values = (values_ptr orelse return -1)[0..len];
     const out = (out_ptr orelse return -1)[0..out_cap];
@@ -283,9 +283,9 @@ export fn takyon_filter_u32(values_ptr: ?[*]const u32, len: u32, op: u8, target:
 }
 
 /// Pushdown kernel: filter f64 column (`column.filterF64`). Same contract as u32.
-export fn takyon_filter_f64(values_ptr: ?[*]const f64, len: u32, op: u8, target: f64, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
-    if (len == 0) return 0;
+pub export fn takyon_filter_f64(values_ptr: ?[*]const f64, len: u32, op: u8, target: f64, out_ptr: ?[*]u32, out_cap: u32) callconv(.c) i32 {
     if (op > 5) return -1;
+    if (len == 0) return 0;
     if (out_cap == 0) return -1;
     const values = (values_ptr orelse return -1)[0..len];
     const out = (out_ptr orelse return -1)[0..out_cap];
@@ -295,14 +295,14 @@ export fn takyon_filter_f64(values_ptr: ?[*]const f64, len: u32, op: u8, target:
 }
 
 /// Pushdown kernel: Kahan sum over f64 column. Returns 0 on empty; NaN on bad pointer.
-export fn takyon_agg_sum_f64(values_ptr: ?[*]const f64, len: u32) callconv(.c) f64 {
+pub export fn takyon_agg_sum_f64(values_ptr: ?[*]const f64, len: u32) callconv(.c) f64 {
     if (len == 0) return 0;
     const values = (values_ptr orelse return std.math.nan(f64))[0..len];
     return column.kahanSum(values);
 }
 
 /// Pushdown kernel: Kahan sum over a selection vector. OOB entries stop the scan.
-export fn takyon_agg_sum_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+pub export fn takyon_agg_sum_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
     if (sel_len == 0) return 0;
     const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
     const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
@@ -310,7 +310,7 @@ export fn takyon_agg_sum_selected(values_ptr: ?[*]const f64, values_len: u32, se
 }
 
 /// Pushdown kernel: min over a selection vector (0 when empty, mirrors TS).
-export fn takyon_agg_min_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+pub export fn takyon_agg_min_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
     if (sel_len == 0) return 0;
     const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
     const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
@@ -318,7 +318,7 @@ export fn takyon_agg_min_selected(values_ptr: ?[*]const f64, values_len: u32, se
 }
 
 /// Pushdown kernel: max over a selection vector (0 when empty, mirrors TS).
-export fn takyon_agg_max_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
+pub export fn takyon_agg_max_selected(values_ptr: ?[*]const f64, values_len: u32, sel_ptr: ?[*]const u32, sel_len: u32) callconv(.c) f64 {
     if (sel_len == 0) return 0;
     const values = if (values_len == 0) &[_]f64{} else (values_ptr orelse return std.math.nan(f64))[0..values_len];
     const sel = (sel_ptr orelse return std.math.nan(f64))[0..sel_len];
@@ -327,7 +327,7 @@ export fn takyon_agg_max_selected(values_ptr: ?[*]const f64, values_len: u32, se
 
 /// Scrubber: verifies one sealed KV envelope.
 /// Returns 1 when valid, 0 when corrupt, -1 on bad args (null/empty).
-export fn takyon_verify_record(buf_ptr: ?[*]const u8, len: u32) callconv(.c) i32 {
+pub export fn takyon_verify_record(buf_ptr: ?[*]const u8, len: u32) callconv(.c) i32 {
     if (len == 0) return -1;
     const buf = (buf_ptr orelse return -1)[0..len];
     return if (rcrc.verify(buf)) @as(i32, 1) else @as(i32, 0);
@@ -335,7 +335,7 @@ export fn takyon_verify_record(buf_ptr: ?[*]const u8, len: u32) callconv(.c) i32
 
 /// Scrubber: walks concatenated sealed envelopes in a caller buffer.
 /// Writes ok/corrupt/bytes/truncated counts; returns 0 or -1 on bad args.
-export fn takyon_scrub_records(buf_ptr: ?[*]const u8, len: u32, ok_out: ?*u32, corrupt_out: ?*u32, bytes_out: ?*u32, truncated_out: ?*u32) callconv(.c) i32 {
+pub export fn takyon_scrub_records(buf_ptr: ?[*]const u8, len: u32, ok_out: ?*u32, corrupt_out: ?*u32, bytes_out: ?*u32, truncated_out: ?*u32) callconv(.c) i32 {
     const ok_p = ok_out orelse return -1;
     const corrupt_p = corrupt_out orelse return -1;
     const bytes_p = bytes_out orelse return -1;
@@ -350,13 +350,13 @@ export fn takyon_scrub_records(buf_ptr: ?[*]const u8, len: u32, ok_out: ?*u32, c
     return 0;
 }
 
-export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
+pub export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
     if (@as(usize, string_field_offset) >= arena.memory.len) return -1;
     vacuum.spawnVacuum(&arena, &art_index, string_field_offset) catch return -1;
     return 0;
 }
 
-export fn takyon_stop_vacuum() callconv(.c) void {
+pub export fn takyon_stop_vacuum() callconv(.c) void {
     vacuum.stopVacuum();
 }
