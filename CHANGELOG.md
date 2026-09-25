@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with exact + range lookup, optional UNIQUE).
 - CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
   one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
+- SHM attach fixes: POSIX open-first without `O_EXCL` (macOS poisoned
+  the `O_EXCL`-fail → immediate-reopen sequence with EACCES; also
+  self-heals crashed creates); Windows size check via `VirtualQuery`
+  (`GetFileSizeEx` is meaningless for pagefile-backed sections).
 - Relational phase 1 (TS): `Database/Table/Query/Join/Agg/Tx/SQL` in
   `src/sdk/client/relational/` with 20+ vitest cases, exported from index,
   included in `dist` build.
