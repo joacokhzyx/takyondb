@@ -13,6 +13,7 @@ comptime {
     _ = @import("memory/scrub.zig");
     _ = @import("ipc/ring_buffer.zig");
     _ = @import("index/art.zig");
+    _ = @import("index/freelist.zig");
     _ = @import("storage/wal.zig");
     _ = @import("storage/snapshot.zig");
     _ = @import("storage/recovery.zig");
