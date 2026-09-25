@@ -66,6 +66,17 @@ fn posixName(name: []const u8, buf: *[256]u8) ShmError![:0]const u8 {
     return slice[0 .. slice.len - 1 :0];
 }
 
+/// Normalizes a segment name to a macOS file-backed path (/tmp).
+/// Strips one leading `/` (so daemon names like `/TakyonDB_Master` work)
+/// and rejects any remaining `/` to prevent path escape.
+fn macosPath(name: []const u8, buf: *[512]u8) ShmError![]const u8 {
+    var clean = name;
+    if (clean.len > 0 and clean[0] == '/') clean = clean[1..];
+    if (clean.len == 0 or clean.len > 200) return error.SystemResources;
+    if (std.mem.indexOfScalar(u8, clean, '/') != null) return error.SystemResources;
+    return std.fmt.bufPrint(buf, "/tmp/takyondb_{s}", .{clean}) catch return error.SystemResources;
+}
+
 /// Granular mapping of POSIX `shm_open` errno values to ShmError.
 fn mapPosixOpenErr(e: std.posix.E) ShmError {
     return switch (e) {
@@ -201,6 +212,86 @@ pub const SharedArena = struct {
 
             mem = mapped;
             handle = win_handle;
+        } else if (builtin.os.tag == .macos) {
+            // File-backed mappings: macOS shm_open deterministically
+            // denies reopening existing objects (EACCES, 5/5 CI runs;
+            // raw-libc controls succeed, root cause unidentified after
+            // exhaustive diagnosis). Regular files share the identical
+            // zero-copy mmap semantics with boring, reliable open().
+            const posix = std.posix;
+            var path_buf: [512]u8 = undefined;
+            const path = try macosPath(name, &path_buf);
+
+            const is_server_m = mode == .server;
+            const read_only_m = mode == .read_only;
+
+            var created_m = false;
+            var file_m: std.fs.File = undefined;
+            if (is_server_m) {
+                file_m = std.fs.cwd().createFile(path, .{ .read = true, .truncate = false, .exclusive = false, .mode = 0o666 }) catch |err| return switch (err) {
+                    error.AccessDenied => error.AccessDinied,
+                    else => error.MapFailed,
+                };
+                const end = file_m.getEndPos() catch {
+                    file_m.close();
+                    return error.MapFailed;
+                };
+                if (end == 0) {
+                    created_m = true;
+                    file_m.setEndPos(size) catch {
+                        file_m.close();
+                        return error.MapFailed;
+                    };
+                } else if (end != size) {
+                    file_m.close();
+                    return error.SizeMismatch;
+                }
+            } else {
+                file_m = std.fs.cwd().openFile(path, .{ .mode = if (read_only_m) .read_only else .read_write }) catch |err| return switch (err) {
+                    error.FileNotFound => error.NotFound,
+                    error.AccessDenied => error.AccessDinied,
+                    else => error.MapFailed,
+                };
+                const end = file_m.getEndPos() catch {
+                    file_m.close();
+                    return error.MapFailed;
+                };
+                if (end != size) {
+                    file_m.close();
+                    return error.SizeMismatch;
+                }
+            }
+
+            const prot_m: u32 = if (read_only_m) posix.PROT.READ else (posix.PROT.READ | posix.PROT.WRITE);
+            const mapped_m = posix.mmap(
+                null,
+                size,
+                prot_m,
+                .{ .TYPE = .SHARED },
+                file_m.handle,
+                0,
+            ) catch |err| {
+                file_m.close();
+                return switch (err) {
+                    error.AccessDenied => error.AccessDinied,
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.MapFailed,
+                };
+            };
+            mem = mapped_m[0..size];
+
+            if (created_m) {
+                writeHeader(mem);
+            } else {
+                if (!checkHeader(mem)) {
+                    const aligned: []align(std.heap.page_size_min) u8 = @alignCast(mem);
+                    posix.munmap(aligned);
+                    file_m.close();
+                    return error.BadVersion;
+                }
+                if (is_server_m) writeHeader(mem);
+            }
+            handle = file_m.handle;
         } else {
             const posix = std.posix;
 
@@ -262,8 +353,8 @@ pub const SharedArena = struct {
             }
 
             // Portable mmap through std.posix: shared, backed by the shm fd.
-            // Read-only clients get a PROT_READ-only view. Works on Linux
-            // and macOS (DIRECT I/O is a WAL concern, not a mapping concern).
+            // Read-only clients get a PROT_READ-only view. Linux-only path
+            // (macOS uses file-backed mappings above).
             const prot: u32 = if (read_only) posix.PROT.READ else (posix.PROT.READ | posix.PROT.WRITE);
             const mapped = posix.mmap(
                 null,
@@ -304,12 +395,18 @@ pub const SharedArena = struct {
         };
     }
 
-    /// Removes the OS name for `name` (POSIX `shm_unlink`; no-op on Windows)
-    /// so a segment can be explicitly torn down, e.g. between tests. Does
-    /// not unmap existing mappings; they must still be closed.
+    /// Removes the OS name for `name` (POSIX `shm_unlink`, macOS file
+    /// delete; no-op on Windows) so a segment can be explicitly torn down,
+    /// e.g. between tests. Does not unmap existing mappings; they must
+    /// still be closed.
     pub fn unlink(name: []const u8) void {
         if (builtin.os.tag == .windows) return;
-        if (name.len == 0 or name.len > 255) return;
+        if (builtin.os.tag == .macos) {
+            var path_buf: [512]u8 = undefined;
+            const path = macosPath(name, &path_buf) catch return;
+            std.fs.deleteFileAbsolute(path) catch {};
+            return;
+        }
         var name_buf: [256]u8 = undefined;
         const posix_name = posixName(name, &name_buf) catch return;
         _ = std.c.shm_unlink(posix_name.ptr);
