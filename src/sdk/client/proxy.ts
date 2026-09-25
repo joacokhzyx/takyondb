@@ -25,6 +25,12 @@ export interface TakyonBindings {
     remove_index(key: string): number;
     scan_prefix?(prefix: string, max_results?: number): Uint32Array;
     scan_range?(prefix: string, lo?: string, hi?: string, max_results?: number): Uint32Array;
+    filter_u32?(values: Uint32Array, op: number, target: number): Uint32Array;
+    filter_f64?(values: Float64Array, op: number, target: number): Uint32Array;
+    agg_sum?(values: Float64Array): number;
+    agg_sum_selected?(values: Float64Array, sel: Uint32Array): number;
+    agg_min_selected?(values: Float64Array, sel: Uint32Array): number;
+    agg_max_selected?(values: Float64Array, sel: Uint32Array): number;
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;
