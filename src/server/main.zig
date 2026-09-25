@@ -12,12 +12,13 @@ const layout = core.layout;
 const RingBuffer = core.ring_buffer.RingBuffer;
 const DeltaMessage = core.ring_buffer.DeltaMessage;
 const WalManager = core.wal.WalManager;
+const ArtIndex = core.art.ArtIndex;
 
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
 
 // ============================================================================
-// Admin TCP endpoint (part 2: listen + PING + HEALTH + METRICS + CHECKPOINT).
+// Admin TCP endpoint (listen + PING + HEALTH + METRICS + CHECKPOINT + SCAN + RANGE).
 //
 // Protocol: line-based ASCII over TCP on 127.0.0.1:<port> (--port, default
 // 7723). A dedicated thread accepts one connection at a time (sequential);
@@ -36,7 +37,14 @@ var global_wal: ?*WalManager = null;
 //   CHECKPOINT -> push an is_arena==2 delta into the ring (same as the
 //             --checkpoint-sec timer); "QUEUED\n" on success, "FULL\n" if
 //             the ring is full.
+//   SCAN <prefix> [max] -> "OK <n> <o1>,<o2>,...\n" (offsets whose keys
+//             start with prefix, at most max, default 64, cap 128).
+//             Best-effort lock-free read like point lookups; concurrent
+//             writers may cause transient misses.
+//   RANGE <prefix> <lo> <hi> [max] -> same, restricted to suffixes in
+//             [lo, hi] (`-` = unbounded side).
 //   other  -> "ERR unknown command\n"
+//   (malformed SCAN/RANGE -> "ERR ...\n" describing the problem)
 //
 // Shutdown: the thread polls the listener with a 100ms timeout and checks
 // server_running between polls, so SIGINT stops it promptly; main joins it
@@ -49,7 +57,48 @@ const AdminCtx = struct {
     arena_len: usize,
     rb: *RingBuffer,
     wal: *WalManager,
+    art: *ArtIndex,
 };
+
+/// Writes a scan result line: "OK <n> <o1>,...". Shared by SCAN/RANGE.
+fn writeScanResult(stream: std.net.Stream, offsets: []const u32) void {
+    var out: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&out);
+    const w = fbs.writer();
+    w.print("OK {d}", .{offsets.len}) catch {
+        stream.writeAll("ERR internal\n") catch {};
+        return;
+    };
+    if (offsets.len > 0) {
+        w.writeByte(' ') catch {
+            stream.writeAll("ERR internal\n") catch {};
+            return;
+        };
+        for (offsets, 0..) |o, i| {
+            if (i > 0) w.writeByte(',') catch {
+                stream.writeAll("ERR internal\n") catch {};
+                return;
+            };
+            w.print("{d}", .{o}) catch {
+                stream.writeAll("ERR internal\n") catch {};
+                return;
+            };
+        }
+    }
+    w.writeByte('\n') catch {
+        stream.writeAll("ERR internal\n") catch {};
+        return;
+    };
+    stream.writeAll(fbs.getWritten()) catch {};
+}
+
+/// Parses an optional max-results argument (default 64, cap 128).
+fn parseScanMax(s: ?[]const u8) ?u32 {
+    const raw = s orelse return 64;
+    const n = std.fmt.parseInt(u32, raw, 10) catch return null;
+    if (n == 0 or n > 128) return null;
+    return n;
+}
 
 fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
     var buf: [1024]u8 = undefined;
@@ -98,6 +147,36 @@ fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
         } else {
             stream.writeAll("FULL\n") catch {};
         }
+    } else if (std.mem.startsWith(u8, line, "SCAN ")) {
+        var parts = std.mem.splitScalar(u8, line["SCAN ".len..], ' ');
+        const prefix = parts.next() orelse "";
+        const max = parseScanMax(parts.next());
+        if (prefix.len == 0 or prefix.len > 256 or max == null or parts.next() != null) {
+            stream.writeAll("ERR bad scan (want: SCAN <prefix> [max 1..128])\n") catch {};
+            return;
+        }
+        var out: [128]u32 = undefined;
+        const n = ctx.art.scanPrefix(prefix, out[0..max.?]);
+        writeScanResult(stream, out[0..n]);
+    } else if (std.mem.startsWith(u8, line, "RANGE ")) {
+        var parts = std.mem.splitScalar(u8, line["RANGE ".len..], ' ');
+        const prefix = parts.next() orelse "";
+        const lo_raw = parts.next() orelse "";
+        const hi_raw = parts.next() orelse "";
+        const max = parseScanMax(parts.next());
+        if (prefix.len == 0 or prefix.len > 256 or max == null or parts.next() != null) {
+            stream.writeAll("ERR bad range (want: RANGE <prefix> <lo|-> <hi|-> [max 1..128])\n") catch {};
+            return;
+        }
+        const lo: []const u8 = if (std.mem.eql(u8, lo_raw, "-")) "" else lo_raw;
+        const hi: []const u8 = if (std.mem.eql(u8, hi_raw, "-")) "" else hi_raw;
+        if (lo.len > 256 or hi.len > 256) {
+            stream.writeAll("ERR bad range (want: RANGE <prefix> <lo|-> <hi|-> [max 1..128])\n") catch {};
+            return;
+        }
+        var out: [128]u32 = undefined;
+        const n = ctx.art.scanRange(prefix, lo, hi, out[0..max.?]);
+        writeScanResult(stream, out[0..n]);
     } else {
         stream.writeAll("ERR unknown command\n") catch {};
     }
@@ -283,7 +362,12 @@ pub fn main() !void {
     try wal.spawnWalFlusher(&rb, arena.memory);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
 
-    // 4b. Start admin TCP endpoint thread (PING + HEALTH + METRICS + CHECKPOINT). Joined on shutdown.
+    // 4b. Read-only ART view for admin SCAN/RANGE (same canonical
+    // offsets as the C-ABI; lock-free best-effort reads, never mutated
+    // here). Init is idempotent: it only CAS-claims a zero bump word.
+    var art_index = ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+
+    // 4c. Start admin TCP endpoint thread (PING + HEALTH + METRICS + CHECKPOINT + SCAN + RANGE). Joined on shutdown.
     const admin_start_ms = std.time.milliTimestamp();
     var admin_ctx = AdminCtx{
         .port = admin_port,
@@ -291,6 +375,7 @@ pub fn main() !void {
         .arena_len = arena.memory.len,
         .rb = &rb,
         .wal = &wal,
+        .art = &art_index,
     };
     const admin_thread = try std.Thread.spawn(.{}, adminThreadFn, .{&admin_ctx});
 
