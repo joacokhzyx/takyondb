@@ -9,7 +9,16 @@ const NUM_INSERTS = 10000;
 
 if (isMainThread) {
     console.log(`[E2E] Connecting to TakyonDB Engine (Shared Memory)...`);
-    
+
+    // Isolate from previous suites: a leftover segment carries foreign ART
+    // state (same 16MB size would attach instead of failing).
+    if (process.platform === 'linux') {
+        try { require('fs').unlinkSync('/dev/shm/TakyonDB_Master'); } catch (e) {}
+    }
+    if (process.platform === 'darwin') {
+        try { require('fs').unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
+    }
+
     // Connect to the shared memory block created by the server
     const memoryBuffer = takyondb.initSharedMemory(1024 * 1024 * 16);
     if (!memoryBuffer) {

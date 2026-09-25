@@ -22,6 +22,14 @@ async function run() {
     const fs = require('fs');
     try { fs.unlinkSync(join(__dirname, '../data.takyon')); } catch (e) {}
     try { fs.unlinkSync(join(__dirname, '../data.takyon.snap')); } catch (e) {}
+    // Isolate from previous suites: a leftover segment carries a foreign
+    // size and the engine rightly refuses it (this suite needs 64MB).
+    if (process.platform === 'linux') {
+        try { fs.unlinkSync('/dev/shm/TakyonDB_Master'); } catch (e) {}
+    }
+    if (process.platform === 'darwin') {
+        try { fs.unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
+    }
 
     console.log(`[E2E Vacuum] Starting TakyonDB daemon in background...`);
     const { spawn } = require('child_process');

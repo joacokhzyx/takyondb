@@ -28,6 +28,13 @@ if (isMainThread) {
     const fs = require('fs');
     try { fs.unlinkSync(join(__dirname, '../data.takyon')); } catch (e) {}
     try { fs.unlinkSync(join(__dirname, '../data.takyon.snap')); } catch (e) {}
+    // Isolate from previous suites (foreign-size segments are refused).
+    if (process.platform === 'linux') {
+        try { fs.unlinkSync('/dev/shm/TakyonDB_Master'); } catch (e) {}
+    }
+    if (process.platform === 'darwin') {
+        try { fs.unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
+    }
 
     console.log(`[Chaos] Starting TakyonDB daemon...`);
     const { spawn } = require('child_process');
