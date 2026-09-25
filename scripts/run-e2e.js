@@ -9,6 +9,7 @@ const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS || process.env.E2E_TIMEOUT 
 const SUITES = [
   { name: 'zerocopy', file: 'e2e_zerocopy_test.ts', ts: true },
   { name: 'crash', file: 'e2e_crash_auto_test.js', ts: false },
+  { name: 'catalog', file: 'e2e_catalog_reboot_test.js', ts: false, needsDist: true },
   { name: 'corruption', file: 'e2e_corruption_test.ts', ts: true },
   { name: 'vacuum', file: 'e2e_vacuum_test.js', ts: false },
   { name: 'scan', file: 'e2e_scan_test.js', ts: false },
@@ -94,6 +95,20 @@ function runSuite(suite, timeoutMs) {
 
 async function main() {
   console.log(`[run-e2e] Running ${SUITES.length} suites (per-suite timeout ${TIMEOUT_MS}ms, cwd=scripts/)...`);
+  if (SUITES.some((s) => s.needsDist)) {
+    console.log('[run-e2e] Building SDK dist (required by catalog suite)...');
+    const { spawnSync } = require('child_process');
+    const built = spawnSync('npm', ['run', 'build'], {
+      cwd: path.join(__dirname, '..', 'src', 'sdk', 'ts'),
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
+    if (built.status !== 0) {
+      console.error('[run-e2e] FATAL: SDK dist build failed; cannot run dist-gated suites.');
+      process.exitCode = 1;
+      return;
+    }
+  }
   const results = [];
   for (const suite of SUITES) {
     console.log(`\n[run-e2e] --- suite '${suite.name}' (${suite.file}) ---`);
