@@ -31,6 +31,8 @@ export interface TakyonBindings {
     agg_sum_selected?(values: Float64Array, sel: Uint32Array): number;
     agg_min_selected?(values: Float64Array, sel: Uint32Array): number;
     agg_max_selected?(values: Float64Array, sel: Uint32Array): number;
+    verify_record?(buf: Uint8Array): boolean;
+    scrub_records?(buf: Uint8Array): { ok: number; corrupt: number; bytes: number; truncated: boolean };
     trigger_checkpoint(): number;
     start_vacuum(string_offset: number): number;
     stop_vacuum?(): number;
