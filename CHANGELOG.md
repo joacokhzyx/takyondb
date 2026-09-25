@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- E2E daemons now die via SIGKILL on teardown: plain `kill()` left zombies
+  holding the SHM segment and TCP port, poisoning the next suite
+  (`admin SCAN` saw `OK 0` after `scan`). Verified back-to-back with no strays.
 - `CatalogRecordStore` + self-driving reboot E2E: DDL persists as
   `__catalog__` ART records (payloads in the string arena) and survives a
   real SIGKILL with no JSON sidecar (wired into `relational.yml` after the
