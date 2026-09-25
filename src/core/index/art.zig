@@ -6,6 +6,7 @@
 // ============================================================================
 
 const std = @import("std");
+const freelist = @import("freelist.zig");
 
 /// Cache line alignment to avoid false sharing
 pub const CACHE_LINE = 64;
@@ -218,6 +219,14 @@ pub const ArtIndex = struct {
     pub fn init(arena_mem: []u8, root_ptr_offset: usize, bump_alloc_offset: usize, arena_start: u32) ArtIndex {
         const bump_ptr: *u32 = @ptrCast(@alignCast(arena_mem.ptr + bump_alloc_offset));
         _ = @cmpxchgStrong(u32, bump_ptr, 0, arena_start, .monotonic, .monotonic);
+        // Register node size classes once (idempotent) so orphaned nodes
+        // quarantined below map to reusable classes.
+        freelist.initClasses([_]u32{
+            freelist.alignSize(@sizeOf(Node4)),
+            freelist.alignSize(@sizeOf(Node16)),
+            freelist.alignSize(@sizeOf(Node48)),
+            freelist.alignSize(@sizeOf(Node256)),
+        });
         return .{
             .arena_mem = arena_mem,
             .root_ptr_offset = root_ptr_offset,
@@ -237,8 +246,13 @@ pub const ArtIndex = struct {
     }
 
     pub fn allocNode(self: *ArtIndex, size: u32) ArtError!u32 {
-        const align_mask: u32 = 7;
-        const aligned_size = (size + align_mask) & ~align_mask;
+        const aligned_size = freelist.alignSize(size);
+        // Opt-in reuse (default off): popped offsets are quarantined nodes
+        // from this same arena layout; bounds-checked before use. Requires
+        // external quiescence, like remove().
+        if (freelist.reuse(aligned_size)) |off| {
+            if (@as(usize, off) + aligned_size <= self.arena_mem.len) return off;
+        }
         const bump_ptr = try self.u32Slot(self.bump_alloc_offset);
         var cur = @atomicLoad(u32, bump_ptr, .monotonic);
         while (true) {
@@ -339,6 +353,7 @@ pub const ArtIndex = struct {
                         if (node.isFull()) {
                             const grown = try self.growNode(cur_raw, .Node4, noff);
                             if (@cmpxchgStrong(u32, link, cur_raw, grown, .release, .monotonic) == null) {
+                                freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node4)));
                                 cur_raw = grown;
                                 continue;
                             }
@@ -373,6 +388,7 @@ pub const ArtIndex = struct {
                         if (node.isFull()) {
                             const grown = try self.growNode(cur_raw, .Node16, noff);
                             if (@cmpxchgStrong(u32, link, cur_raw, grown, .release, .monotonic) == null) {
+                                freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node16)));
                                 cur_raw = grown;
                                 continue;
                             }
@@ -404,6 +420,7 @@ pub const ArtIndex = struct {
                         if (node.isFull()) {
                             const grown = try self.growNode(cur_raw, .Node48, noff);
                             if (@cmpxchgStrong(u32, link, cur_raw, grown, .release, .monotonic) == null) {
+                                freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node48)));
                                 cur_raw = grown;
                                 continue;
                             }
@@ -1106,8 +1123,8 @@ pub const ArtIndex = struct {
     /// Builds a fresh Node48 copying every occupied slot of a Node256
     /// (including TERMINATOR slot 0 via child_index rebuild). Returns the
     /// new node raw pointer. The caller swaps the parent link with CAS;
-    /// the old Node256 is orphaned (leaked until a freelist is added),
-    /// the same way the grow path orphans the old node.
+    /// the old Node256 is orphaned (quarantined in the freelist on CAS
+    /// success), the same way the grow path orphans the old node.
     fn shrink256to48(self: *ArtIndex, noff: u32) ArtError!u32 {
         const src = try self.nodeAt(noff, Node256);
         const dst_off = try self.allocZeroed(@sizeOf(Node48));
@@ -1129,7 +1146,7 @@ pub const ArtIndex = struct {
 
     /// Builds a fresh Node16 copying every occupied entry of a Node48
     /// (including TERMINATOR byte 0x00). The old Node48 is orphaned on CAS
-    /// success (leaked until a freelist is added), like the grow path.
+    /// success (quarantined in the freelist), like the grow path.
     fn shrink48to16(self: *ArtIndex, noff: u32) ArtError!u32 {
         const src = try self.nodeAt(noff, Node48);
         const dst_off = try self.allocZeroed(@sizeOf(Node16));
@@ -1154,7 +1171,7 @@ pub const ArtIndex = struct {
 
     /// Builds a fresh Node4 copying the occupied entries of a Node16
     /// (including TERMINATOR entries). The old Node16 is orphaned on CAS
-    /// success (leaked until a freelist is added), like the grow path.
+    /// success (quarantined in the freelist), like the grow path.
     fn shrink16to4(self: *ArtIndex, noff: u32) ArtError!u32 {
         const src = try self.nodeAt(noff, Node16);
         const c = @atomicLoad(u8, &src.count, .acquire);
@@ -1177,8 +1194,8 @@ pub const ArtIndex = struct {
     /// ART levels are positional (level d indexes key[d]), so this never
     /// bypasses a level (no chain compression): it only swaps the node type
     /// at the same level. Shrinking orphans the old (bigger) node the same
-    /// way the grow path does (leaked until a freelist/reclamation pass is
-    /// added). Stops at the first concurrently modified level (link mismatch
+    /// way the grow path does (quarantined in the freelist; reuse is opt-in
+    /// and needs quiescence). Stops at the first concurrently modified level (link mismatch
     /// or CAS failure).
     fn collapseEmpty(self: *ArtIndex, links: []*u32, raws: []u32, types: []NodeType) void {
         var i: usize = links.len;
@@ -1196,6 +1213,7 @@ pub const ArtIndex = struct {
                     if (node.count != 0) break;
                     if (is_root) break; // Never clear the root slot.
                     if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                    freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node4)));
                 },
                 .Node16 => {
                     const node = self.nodeAt(noff, Node16) catch break;
@@ -1203,9 +1221,11 @@ pub const ArtIndex = struct {
                     if (c == 0) {
                         if (is_root) break; // Never clear the root slot.
                         if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node16)));
                     } else if (c <= SHRINK_16_TO_4) {
                         const shrunk = self.shrink16to4(noff) catch break;
                         if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node16)));
                     } else break;
                 },
                 .Node48 => {
@@ -1214,9 +1234,11 @@ pub const ArtIndex = struct {
                     if (c == 0) {
                         if (is_root) break; // Never clear the root slot.
                         if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node48)));
                     } else if (c <= SHRINK_48_TO_16) {
                         const shrunk = self.shrink48to16(noff) catch break;
                         if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node48)));
                     } else break;
                 },
                 .Node256 => {
@@ -1225,9 +1247,11 @@ pub const ArtIndex = struct {
                     if (c == 0) {
                         if (is_root) break; // Never clear the root slot.
                         if (@cmpxchgStrong(u32, links[i], cur, 0, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node256)));
                     } else if (c <= SHRINK_256_TO_48) {
                         const shrunk = self.shrink256to48(noff) catch break;
                         if (@cmpxchgStrong(u32, links[i], cur, shrunk, .release, .monotonic) != null) break;
+                        freelist.quarantine(noff, freelist.alignSize(@sizeOf(Node256)));
                     } else break;
                 },
                 .Leaf => break,
@@ -1353,8 +1377,63 @@ test "ART bulk insert/search 2000 keys" {
     }
 }
 
-test "ART shrink root Node256 -> Node48 on delete" {
+test "ART grow quarantines orphaned nodes for the freelist" {
+    freelist.resetForTests();
+    defer freelist.resetForTests();
     var buf: [512 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    // 17 single-byte keys force root growth 4 -> 16 -> 48 (2 orphans).
+    var i: u8 = 1;
+    while (i <= 17) : (i += 1) {
+        const k = [_]u8{i};
+        try idx.insert(k[0..], i);
+    }
+    const st = freelist.stats();
+    try std.testing.expect(st.quarantined >= 2);
+    try std.testing.expectEqual(@as(usize, 0), st.reused);
+    // Tree stays correct after quarantine (accounting only by default).
+    i = 1;
+    while (i <= 17) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expectEqual(@as(?u32, i), idx.search(k[0..]));
+    }
+}
+
+test "ART opt-in reuse recycles quarantined nodes" {
+    freelist.resetForTests();
+    defer freelist.resetForTests();
+    var buf: [512 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    var i: u8 = 1;
+    while (i <= 17) : (i += 1) {
+        const k = [_]u8{i};
+        try idx.insert(k[0..], i);
+    }
+    // Quiescent point: no concurrent readers; enable reuse and grow more.
+    // Reused nodes must serve correct data (no corruption from recycling).
+    freelist.reuse_enabled = true;
+    i = 18;
+    while (i <= 60) : (i += 1) {
+        const k = [_]u8{ 200, i };
+        try idx.insert(k[0..], i);
+    }
+    i = 1;
+    while (i <= 17) : (i += 1) {
+        const k = [_]u8{i};
+        try std.testing.expectEqual(@as(?u32, i), idx.search(k[0..]));
+    }
+    i = 18;
+    while (i <= 60) : (i += 1) {
+        const k = [_]u8{ 200, i };
+        try std.testing.expectEqual(@as(?u32, i), idx.search(k[0..]));
+    }
+}
+
+test "ART shrink root Node256 -> Node48 on delete" {    var buf: [512 * 1024]u8 = undefined;
     @memset(&buf, 0);
     var idx = ArtIndex.init(buf[0..], 0, 4, 8);
 
