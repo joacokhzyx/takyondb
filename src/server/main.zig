@@ -226,11 +226,70 @@ fn initArenaCompat(name: []const u8, size: usize) !SharedArena {
     return try SharedArena.init(name, size, .server);
 }
 
+fn printVersion() void {
+    // stdout on purpose: `takyondb --version` should be pipeable, while the
+    // startup banner below goes to stderr via std.debug.print.
+    const out = std.io.getStdOut().writer();
+    out.print("{s} {s}\n", .{ core.version.name, core.version.version }) catch {};
+}
+
+fn printHelp() void {
+    const out = std.io.getStdOut().writer();
+    out.print(
+        \\{s} {s} - zero-copy shared-memory storage daemon
+        \\
+        \\Usage:
+        \\  takyondb [arena_bytes] [options]
+        \\
+        \\Options:
+        \\  --data-dir <dir>       Directory for the WAL and snapshots (default: ".")
+        \\  --checkpoint-sec <n>   Seconds between automatic checkpoints (default: 60)
+        \\  --port <n>             Admin TCP port on 127.0.0.1 (default: 7723)
+        \\  --version, -V          Print the version and exit
+        \\  --help, -h             Print this help and exit
+        \\
+        \\The first positional argument is the arena size in bytes
+        \\(minimum {d}); it defaults to 64 MiB.
+        \\
+        \\Admin protocol (one command per line on 127.0.0.1:<port>):
+        \\  PING | HEALTH | METRICS | CHECKPOINT | SCAN <prefix> [max]
+        \\  RANGE <prefix> <lo> <hi> [max]
+        \\
+        \\Signals:
+        \\  SIGINT   Graceful shutdown: drains, checkpoints, and unlinks the
+        \\           shared-memory name. SIGKILL leaves the name for recovery.
+        \\
+    , .{
+        core.version.name,
+        core.version.version,
+        core.layout.MIN_ARENA_SIZE,
+    }) catch {};
+}
+
 pub fn main() !void {
+    const builtin = @import("builtin");
+
+    // --version / --help are answered before any side effect (no SHM
+    // segment, no WAL, no port bind) so an operator or a packaging script
+    // can interrogate the binary safely. Both exit 0.
+    {
+        var it = std.process.args();
+        _ = it.skip();
+        while (it.next()) |arg| {
+            if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+                printVersion();
+                return;
+            }
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                printHelp();
+                return;
+            }
+        }
+    }
+
     std.debug.print("[TakyonDB-Daemon] Starting TakyonDB Standalone Server...\n", .{});
 
     // Register SIGINT handler (stub for Windows - Windows needs SetConsoleCtrlHandler usually)
-    const builtin = @import("builtin");
     if (builtin.os.tag == .windows) {
         // Simple Windows Ctrl+C handler
         _ = std.os.windows.kernel32.SetConsoleCtrlHandler(windowsCtrlCHandler, std.os.windows.TRUE);

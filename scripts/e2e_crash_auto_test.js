@@ -7,6 +7,8 @@ const { join } = require('path');
 const fs = require('fs');
 const os = require('os');
 
+const { startDaemon, stopDaemon, waitForFileStable } = require('./helpers/daemon');
+
 const ARENA_SIZE = 16 * 1024 * 1024;
 const N = 5000;
 const RESIDUAL_OFFSET = 3000000;
@@ -31,20 +33,6 @@ function cleanShm() {
   }
 }
 
-function spawnDaemon(dataDir) {
-  const { spawn } = require('child_process');
-  const daemonBin = join(
-    __dirname,
-    process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb',
-  );
-  const daemon = spawn(daemonBin, [String(ARENA_SIZE), '--data-dir', dataDir], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  daemon.unref();
-  return daemon;
-}
-
 function connect() {
   const mem = takyondb.initSharedMemory(ARENA_SIZE);
   if (!mem) fail('shared memory connect failed');
@@ -56,39 +44,49 @@ async function run() {
   cleanShm();
 
   console.log('[E2E Crash] Phase 1: boot, insert, checkpoint, residual...');
-  let daemon = spawnDaemon(dataDir);
-  await sleep(1000);
+  let daemon = await startDaemon({ args: [String(ARENA_SIZE), '--data-dir', dataDir] });
   connect();
 
   const pad = (i) => i.toString().padStart(5, '0');
   for (let i = 0; i < N; i++) {
     if (takyondb.insert_index(`SNAP-${pad(i)}`, 4096 + i * 64) !== 0) {
-      daemon.kill('SIGKILL');
+      await stopDaemon(daemon);
       return fail(`insert SNAP-${pad(i)}`);
     }
   }
   if (takyondb.trigger_checkpoint() !== 0) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('checkpoint not queued');
   }
-  await sleep(2000); // snapshot + WAL rotation
+  // Wait for the snapshot artifact instead of guessing how long the
+  // checkpoint takes: a fixed sleep either wastes time or gets SIGKILLed
+  // mid-write on a loaded host.
+  await waitForFileStable(join(dataDir, 'data.takyon.snap'), {
+    minSize: 4096,
+    label: 'snapshot',
+  });
 
   const view = new DataView(connect());
   for (let i = 0; i < RESIDUAL_SIZE; i++) view.setUint8(RESIDUAL_OFFSET + i, 0xaa);
   if (takyondb.notifyArena(RESIDUAL_OFFSET, RESIDUAL_SIZE) !== 0) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('residual notifyArena');
   }
-  await sleep(1000); // flusher writes the sector to disk
+  // The residual delta must reach the WAL before the crash, otherwise the
+  // suite would "pass" a recovery it never actually exercised. Wait for
+  // the WAL to stop growing rather than sleeping a fixed second.
+  await waitForFileStable(join(dataDir, 'data.takyon'), {
+    minSize: 4096,
+    label: 'WAL after residual',
+  });
 
   console.log('[E2E Crash] SIGKILLing daemon...');
-  daemon.kill('SIGKILL');
-  await sleep(1000);
+  await stopDaemon(daemon);
+  try { takyondb.disconnect_shm(); } catch (e) {}
   cleanShm();
 
   console.log('[E2E Crash] Phase 2: reboot and verify...');
-  daemon = spawnDaemon(dataDir);
-  await sleep(1000);
+  daemon = await startDaemon({ args: [String(ARENA_SIZE), '--data-dir', dataDir] });
   const mem2 = connect();
 
   let errors = 0;
@@ -107,7 +105,7 @@ async function run() {
     }
   }
 
-  daemon.kill('SIGKILL');
+  await stopDaemon(daemon);
   try { takyondb.disconnect_shm(); } catch (e) {}
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {}
 

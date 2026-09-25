@@ -3,6 +3,8 @@
 // N-API addon, then validates takyon_scan_prefix end to end.
 const { join } = require('path');
 
+const { withDaemon } = require('./helpers/daemon');
+
 const ARENA_SIZE = 16 * 1024 * 1024;
 const N_SCAN = 2000;
 const N_OTHER = 500;
@@ -30,11 +32,7 @@ async function run() {
   }
 
   console.log('[E2E Scan] Starting TakyonDB daemon in background...');
-  const { spawn } = require('child_process');
-  const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
-  const daemon = spawn(daemonBin, [String(ARENA_SIZE)], { detached: true, stdio: 'ignore' });
-  daemon.unref();
-  await new Promise((r) => setTimeout(r, 1000));
+  await withDaemon({ args: [String(ARENA_SIZE)] }, async () => {
 
   const memoryBuffer = takyondb.initSharedMemory(ARENA_SIZE);
   if (!memoryBuffer) {
@@ -86,11 +84,11 @@ async function run() {
   if (Array.from(takyondb.scan_range('SCAN-', '00019', '00010', 16)).length !== 0) {
     return fail('inverted range should be empty');
   }
+  });
 
-  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
   console.log('[E2E Scan] SUCCESS: native prefix scan passed.');
-  process.exit(0);
+  process.exit(process.exitCode || 0);
 }
 
 run();

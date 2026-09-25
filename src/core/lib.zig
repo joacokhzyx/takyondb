@@ -11,6 +11,7 @@ comptime {
 
 pub const shm = @import("memory/shm.zig");
 pub const layout = @import("memory/layout.zig");
+pub const version = @import("version.zig");
 pub const ring_buffer = @import("ipc/ring_buffer.zig");
 pub const wal = @import("storage/wal.zig");
 pub const recovery = @import("storage/recovery.zig");

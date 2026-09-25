@@ -5,6 +5,7 @@
 // Output: JSON with hardware, workload, and per-op p50/avg timings.
 // Informational, not a CI gate.
 const { join } = require('path');
+const { startDaemon } = require('./helpers/daemon');
 const os = require('os');
 const { performance } = require('perf_hooks');
 
@@ -30,16 +31,14 @@ async function run() {
     try { fs.unlinkSync('/tmp/takyondb_TakyonDB_Master'); } catch (e) {}
   }
 
-  const { spawn } = require('child_process');
-  const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
-  let daemon;
+  // Readiness handshake instead of a blind 1s sleep, and the helper's exit
+  // safety net reaps the daemon on every failure path below (a leaked
+  // daemon spins at ~25% CPU and poisons the next suite).
   try {
-    daemon = spawn(daemonBin, [String(ARENA_SIZE)], { detached: true, stdio: 'ignore' });
+    await startDaemon({ args: [String(ARENA_SIZE)] });
   } catch (e) {
-    return fail(`cannot spawn daemon (run 'zig build' first): ${e.message}`);
+    return fail(`cannot start daemon (run 'zig build -Doptimize=ReleaseSafe' first): ${e.message}`);
   }
-  daemon.unref();
-  await new Promise((r) => setTimeout(r, 1000));
 
   const mem = takyondb.initSharedMemory(ARENA_SIZE);
   if (!mem) return fail('shared memory connect failed');
@@ -76,7 +75,6 @@ async function run() {
   if (narrowRes.length === 0) return fail('narrow scan empty');
   const narrowMs = timeIt(() => takyondb.scan_prefix('B-000', 2048), 50);
 
-  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
 
   console.log(

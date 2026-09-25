@@ -2,6 +2,8 @@ const { Worker, isMainThread, parentPort, workerData } = require('worker_threads
 const { join } = require('path');
 const { performance } = require('perf_hooks');
 
+const { startDaemon } = require('./helpers/daemon');
+
 const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
 let takyondb;
 try {
@@ -37,16 +39,12 @@ if (isMainThread) {
     }
 
     console.log(`[Chaos] Starting TakyonDB daemon...`);
-    const { spawn } = require('child_process');
-    const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
-    const daemon = spawn(daemonBin, {
-        detached: true,
-        stdio: 'ignore'
-    });
-    daemon.unref();
-
-    // Wait for daemon
-    setTimeout(() => {
+    // Explicit arena size instead of the daemon default: the two numbers
+    // lived in different files and a mismatch is a hard connect failure.
+    // startDaemon replaces the blind `setTimeout(..., 1000)` with a real
+    // readiness handshake, and the helper's exit safety net guarantees the
+    // daemon dies even on the early-exit paths below.
+    startDaemon({ args: [String(MEMORY_SIZE)] }).then((daemon) => {
         const memoryBuffer = takyondb.initSharedMemory(MEMORY_SIZE);
         if (!memoryBuffer) {
             console.error("[Chaos] Failed to map shared memory");
@@ -70,14 +68,14 @@ if (isMainThread) {
                     completed++;
                     if (completed === TOTAL_WORKERS) {
                         analyzeResults(latencies);
-                        daemon.kill('SIGKILL');
+                        daemon.proc.kill('SIGKILL');
                         process.exit(0);
                     }
                 }
             });
             worker.on('error', (err) => {
                 console.error(`Worker error:`, err);
-                daemon.kill('SIGKILL');
+                daemon.proc.kill('SIGKILL');
                 process.exit(1);
             });
         }
@@ -89,8 +87,10 @@ if (isMainThread) {
         }, 500);
         
         setTimeout(() => clearInterval(chaosInterval), 5000);
-        
-    }, 1000);
+    }).catch((e) => {
+        console.error(`[Chaos] FAILURE: ${e.message}`);
+        process.exit(1);
+    });
 
     function analyzeResults(lats) {
         lats.sort((a, b) => a - b);

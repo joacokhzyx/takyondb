@@ -471,7 +471,17 @@ test "WAL Lock-Free Flusher Integration" {
     const mem = @as([*]u8, @ptrFromInt(mem_start))[0..mem_size];
     var rb = try RingBuffer.init(mem, capacity, true);
 
-    var wal = try WalManager.init(arena.allocator(), "data.takyon");
+    // Filesystem state goes to a per-test temp dir. A cwd-relative
+    // "data.takyon" is shared with the other storage tests, and WalManager
+    // seeds `bytes_written` from the live file size on init, so a leftover
+    // file silently shifts every sector accounting below.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    const wal_path = try std.fmt.allocPrintZ(arena.allocator(), "{s}/flusher.takyon", .{dirpath});
+
+    var wal = try WalManager.init(arena.allocator(), wal_path);
     // No defer shutdown, we do it explicitly
 
     // 2. Spawn flusher background thread
@@ -507,23 +517,38 @@ test "WAL Lock-Free Flusher Integration" {
         std.Thread.yield() catch {};
     }
 
-    // Ensure all flusher writes finish BEFORE checking size
+    // Ensure all flusher writes finish BEFORE checking size.
     wal.running.store(false, .release);
     if (wal.flusher_thread) |th| {
         th.join();
         wal.flusher_thread = null;
     }
 
+    // Stopping and joining the loop is NOT enough: the trailing partial
+    // sector is written by flushBuffer, which the loop only calls from its
+    // idle branch. Waiting on that idle flush is a race — the producer
+    // drains the ring, then the test stops the loop, and whether the loop
+    // got one more idle turn before noticing `running == false` is
+    // timing-dependent. That race failed this test on ~25% of CI runs on
+    // windows-2022 (slower host). Flush explicitly after the join so the
+    // on-disk state is deterministic, and the invariant below holds on
+    // every OS instead of only where timing happens to cooperate.
+    try wal.flushBuffer();
+
+    // Full sectors hold SECTOR_PAYLOAD bytes (4 trailing CRC bytes), and
+    // flushBuffer above pads and writes the trailing partial sector.
+    const payload = 100_000 * (@sizeOf(WalEntryHeader) + 4);
+    const sectors = payload / SECTOR_PAYLOAD + (if (payload % SECTOR_PAYLOAD == 0) @as(usize, 0) else 1);
+    const expected_size: u64 = @intCast(sectors * SECTOR_SIZE);
+    // Portable invariant: the flusher's own accounting covers every
+    // payload byte and nothing else (no rotation: payload << SEGMENT_MAX).
+    try std.testing.expectEqual(expected_size, wal.bytes_written);
     if (builtin.os.tag == .windows) {
+        // Windows-only: prove durability reached the file, not just the
+        // in-memory counter.
         var size: i64 = 0;
         _ = std.os.windows.kernel32.GetFileSizeEx(wal.fd, &size);
-        // Full sectors hold SECTOR_PAYLOAD bytes (4 trailing CRC bytes),
-        // and the flusher pads + writes the trailing partial sector on
-        // idle (flushBuffer no-ops only when empty), so count it too.
-        const payload = 100_000 * (@sizeOf(WalEntryHeader) + 4);
-        const sectors = payload / SECTOR_PAYLOAD + (if (payload % SECTOR_PAYLOAD == 0) @as(usize, 0) else 1);
-        const expected_size = @as(i64, @intCast(sectors * SECTOR_SIZE));
-        try std.testing.expectEqual(expected_size, size);
+        try std.testing.expectEqual(@as(i64, @intCast(expected_size)), size);
     }
 
     const elapsed = timer.read();

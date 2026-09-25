@@ -1,5 +1,7 @@
 const { join } = require('path');
 
+const { startDaemon } = require('./helpers/daemon');
+
 // Canonical layout mirror (see src/core/memory/layout.zig).
 const STRING_BUMP_OFFSET = 10485760; // 10MB
 const STRING_DATA_START = 10485764;
@@ -32,16 +34,10 @@ async function run() {
     }
 
     console.log(`[E2E Vacuum] Starting TakyonDB daemon in background...`);
-    const { spawn } = require('child_process');
-    const daemonBin = join(__dirname, process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb');
-    const daemon = spawn(daemonBin, {
-        detached: true,
-        stdio: 'ignore'
-    });
-    daemon.unref();
-
-    // Wait for daemon to initialize shared memory
-    await new Promise(r => setTimeout(r, 1000));
+    // Pass the arena size explicitly instead of relying on the daemon
+    // default happening to equal ARENA_SIZE: a mismatch is a hard connect
+    // failure ("SizeMismatch"), and the two numbers lived in different files.
+    await startDaemon({ args: [String(ARENA_SIZE)] });
 
     console.log(`[E2E Vacuum] Initializing 64MB shared memory...`);
     const memoryBuffer = takyondb.initSharedMemory(ARENA_SIZE);
@@ -135,9 +131,8 @@ async function run() {
     const elapsedMs = searchEnd - searchStart;
     console.log(`[E2E Vacuum] Search returned the correct value ('${finalValue}') in ${elapsedMs * 1000} microseconds.`);
 
-    // Stop vacuum and kill daemon
+    // Stop vacuum; the daemon is reaped by the helper's exit safety net.
     try { takyondb.stop_vacuum(); } catch (e) {}
-    daemon.kill('SIGKILL');
 
     console.log(`[E2E Vacuum] SUCCESS: Memory Leak Test passed.`);
     process.exit(0);

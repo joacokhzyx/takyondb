@@ -6,6 +6,8 @@
 const { join } = require('path');
 const fs = require('fs');
 
+const { startDaemon, stopDaemon } = require('./helpers/daemon');
+
 const ARENA_SIZE = 16 * 1024 * 1024;
 
 const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
@@ -29,36 +31,32 @@ async function run() {
   }
 
   console.log('[E2E Refcount] Booting daemon...');
-  const { spawn } = require('child_process');
-  const daemonBin = join(
-    __dirname,
-    process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb',
-  );
-  const daemon = spawn(daemonBin, [String(ARENA_SIZE)], { detached: true, stdio: 'ignore' });
-  daemon.unref();
-  await sleep(1000);
+  // Explicit kills below stay (they are the suite's own intent); the helper
+  // adds a readiness handshake instead of a blind sleep plus an exit safety
+  // net that reaps the daemon even if a path forgets to kill it.
+  const daemon = await startDaemon({ args: [String(ARENA_SIZE)] });
 
   const memA = takyondb.initSharedMemory(ARENA_SIZE);
   if (!memA) return fail('client A connect failed');
   const memB = takyondb.initSharedMemory(ARENA_SIZE);
   if (!memB) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('client B shared connect failed');
   }
 
   if (takyondb.insert_index('ref:a', 300000) !== 0) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('insert via shared mapping');
   }
 
   // Drop client A: the mapping must survive for B (refs 2 -> 1).
   takyondb.disconnect_shm();
   if (takyondb.search_index('ref:a') !== 300000) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('client B lost the mapping after A disconnected');
   }
   if (takyondb.insert_index('ref:b', 300064) !== 0 || takyondb.search_index('ref:b') !== 300064) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('client B cannot write after A disconnected');
   }
 
@@ -66,15 +64,15 @@ async function run() {
   takyondb.disconnect_shm();
   const memC = takyondb.initSharedMemory(ARENA_SIZE);
   if (!memC) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('fresh connect after full teardown failed');
   }
   if (takyondb.search_index('ref:b') !== 300064) {
-    daemon.kill('SIGKILL');
+    await stopDaemon(daemon);
     return fail('fresh mapping lost prior inserts');
   }
 
-  daemon.kill('SIGKILL');
+  await stopDaemon(daemon);
   try { takyondb.disconnect_shm(); } catch (e) {}
   console.log('[E2E Refcount] SUCCESS: shared mapping survives partial disconnect.');
   process.exit(0);

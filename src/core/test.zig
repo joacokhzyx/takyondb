@@ -8,6 +8,7 @@
 comptime {
     _ = @import("memory/shm.zig");
     _ = @import("memory/layout.zig");
+    _ = @import("version.zig");
     _ = @import("memory/vacuum.zig");
     _ = @import("memory/record_crc.zig");
     _ = @import("memory/scrub.zig");

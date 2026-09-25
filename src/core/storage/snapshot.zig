@@ -382,22 +382,26 @@ test "snapshot + recovery round-trip preserves records and index" {
     const exp_str: u32 = str_bump_ptr.*;
     const exp_art_aligned: u32 = (exp_art_raw + 7) & ~@as(u32, 7);
 
-    std.fs.cwd().deleteFile("data.takyon") catch {};
-    std.fs.cwd().deleteFile("data.takyon.snap") catch {};
-    std.fs.cwd().deleteFile("data.takyon.snap.tmp") catch {};
-    defer {
-        std.fs.cwd().deleteFile("data.takyon") catch {};
-        std.fs.cwd().deleteFile("data.takyon.snap") catch {};
-        std.fs.cwd().deleteFile("data.takyon.snap.tmp") catch {};
-    }
+    // Filesystem state lives in a per-test temp dir. A cwd-relative
+    // "data.takyon" was shared with the other storage tests: on Windows a
+    // handle held by an earlier test makes deleteFile fail, so stale WAL
+    // bytes leaked into this test (the second casualty of the flaky WAL
+    // flusher test). tmpDir cleanup also removes the .snap and .snap.tmp
+    // sidecars for free, so the explicit deletes are no longer needed.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    const wal_path = try std.fmt.allocPrintZ(allocator, "{s}/snapshot_rt.takyon", .{dirpath});
+    const snap_path = try std.fmt.allocPrintZ(allocator, "{s}.snap", .{wal_path});
 
-    var wal = try WalManager.init(allocator, "data.takyon");
+    var wal = try WalManager.init(allocator, wal_path);
     defer wal.shutdown();
     try createSnapshot(mem, &wal, &ring);
 
     // Footer v2 sanity: magic/version/crc/active/art/str + trailing zeros.
     {
-        const snap_file = try std.fs.cwd().openFile("data.takyon.snap", .{});
+        const snap_file = try std.fs.cwd().openFile(snap_path, .{});
         defer snap_file.close();
         const stat = try snap_file.stat();
         try std.testing.expect(stat.size >= 8192);
@@ -419,7 +423,7 @@ test "snapshot + recovery round-trip preserves records and index" {
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     @memset(mem2, 0);
-    try recovery.recoverWal(allocator, "data.takyon", mem2);
+    try recovery.recoverWal(allocator, wal_path, mem2);
 
     // Record bytes survived verbatim.
     try std.testing.expectEqualSlices(u8, mem[layout.RECORD_START..exp_rec], mem2[layout.RECORD_START..exp_rec]);

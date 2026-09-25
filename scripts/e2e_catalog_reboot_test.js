@@ -10,6 +10,8 @@ const os = require('os');
 
 const ARENA_SIZE = 16 * 1024 * 1024;
 
+const { withDaemon, stopDaemon, waitForFileStable } = require('./helpers/daemon');
+
 const ADDON_PATH = join(__dirname, '../zig-out/bin/takyondb_bridge.node');
 const takyondb = require(ADDON_PATH);
 const { CatalogRecordStore } = require('../src/sdk/ts/dist/client/relational/catalog_record');
@@ -39,18 +41,18 @@ function cleanShm() {
   }
 }
 
-function spawnDaemon(dataDir) {
-  const { spawn } = require('child_process');
-  const daemonBin = join(
-    __dirname,
-    process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb',
-  );
-  const daemon = spawn(daemonBin, [String(ARENA_SIZE), '--data-dir', dataDir], {
-    detached: true,
-    stdio: 'ignore',
+/**
+ * Resolve once the snapshot for `dataDir` is on disk and has stopped growing.
+ * See waitForFileStable: a checkpoint is asynchronous, so a fixed sleep is
+ * a guess, and too short a guess gets the daemon SIGKILLed mid-snapshot
+ * (which surfaced as "bad catalog magic" on a loaded host).
+ */
+async function waitForSnapshot(dataDir, timeoutMs = 30000) {
+  return waitForFileStable(join(dataDir, 'data.takyon.snap'), {
+    timeoutMs,
+    minSize: 4096,
+    label: 'snapshot',
   });
-  daemon.unref();
-  return daemon;
 }
 
 function sameColumns(a, b) {
@@ -72,49 +74,44 @@ async function run() {
   cleanShm();
 
   console.log('[E2E Catalog] Phase 1: boot, save DDL, checkpoint...');
-  let daemon = spawnDaemon(dataDir);
-  await sleep(1000);
-  const mem = takyondb.initSharedMemory(ARENA_SIZE);
-  if (!mem) fail('shared memory connect failed');
-  const store = new CatalogRecordStore(takyondb, mem);
-  const usersOff = store.save('users', USERS);
-  const ordersOff = store.save('orders', ORDERS);
-  console.log(`[E2E Catalog] Saved users@${usersOff} orders@${ordersOff}.`);
-  if (takyondb.trigger_checkpoint() !== 0) {
-    daemon.kill('SIGKILL');
-    return fail('checkpoint not queued');
-  }
-  await sleep(2500); // snapshot + WAL rotation
-
-  console.log('[E2E Catalog] SIGKILLing daemon...');
-  daemon.kill('SIGKILL');
-  await sleep(1000);
+  await withDaemon({ args: [String(ARENA_SIZE), '--data-dir', dataDir] }, async (daemon) => {
+    const mem = takyondb.initSharedMemory(ARENA_SIZE);
+    if (!mem) fail('shared memory connect failed');
+    const store = new CatalogRecordStore(takyondb, mem);
+    const usersOff = store.save('users', USERS);
+    const ordersOff = store.save('orders', ORDERS);
+    console.log(`[E2E Catalog] Saved users@${usersOff} orders@${ordersOff}.`);
+    if (takyondb.trigger_checkpoint() !== 0) {
+      await stopDaemon(daemon);
+      return fail('checkpoint not queued');
+    }
+    // The whole point of phase 1 is an ungraceful death, so wait for the
+    // artifact instead of assuming a delay, then SIGKILL.
+    const snapSize = await waitForSnapshot(dataDir);
+    console.log(`[E2E Catalog] Snapshot on disk: ${snapSize} bytes.`);
+    await stopDaemon(daemon);
+  });
   try { takyondb.disconnect_shm(); } catch (e) {}
   cleanShm();
 
   console.log('[E2E Catalog] Phase 2: reboot and load DDL first...');
-  daemon = spawnDaemon(dataDir);
-  await sleep(1000);
-  const mem2 = takyondb.initSharedMemory(ARENA_SIZE);
-  if (!mem2) fail('reboot connect failed');
-  const store2 = new CatalogRecordStore(takyondb, mem2);
+  await withDaemon({ args: [String(ARENA_SIZE), '--data-dir', dataDir] }, async (daemon) => {
+    const mem2 = takyondb.initSharedMemory(ARENA_SIZE);
+    if (!mem2) fail('reboot connect failed');
+    const store2 = new CatalogRecordStore(takyondb, mem2);
 
-  const users = store2.load('users');
-  const orders = store2.load('orders');
-  if (!users || users.table !== 'users' || !sameColumns(users.columns, USERS)) {
-    daemon.kill('SIGKILL');
-    return fail(`users descriptor mismatch: ${JSON.stringify(users)}`);
-  }
-  if (!orders || orders.table !== 'orders' || !sameColumns(orders.columns, ORDERS)) {
-    daemon.kill('SIGKILL');
-    return fail(`orders descriptor mismatch: ${JSON.stringify(orders)}`);
-  }
-  if (store2.load('missing') !== null) {
-    daemon.kill('SIGKILL');
-    return fail('missing table should load null');
-  }
-
-  daemon.kill('SIGKILL');
+    const users = store2.load('users');
+    const orders = store2.load('orders');
+    if (!users || users.table !== 'users' || !sameColumns(users.columns, USERS)) {
+      return fail(`users descriptor mismatch: ${JSON.stringify(users)}`);
+    }
+    if (!orders || orders.table !== 'orders' || !sameColumns(orders.columns, ORDERS)) {
+      return fail(`orders descriptor mismatch: ${JSON.stringify(orders)}`);
+    }
+    if (store2.load('missing') !== null) {
+      return fail('missing table should load null');
+    }
+  });
   try { takyondb.disconnect_shm(); } catch (e) {}
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {}
 

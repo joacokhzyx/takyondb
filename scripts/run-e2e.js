@@ -3,6 +3,8 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
+const { listStrayDaemons } = require('./helpers/daemon');
+
 const SDK_NODE_MODULES = path.join(__dirname, '..', 'src', 'sdk', 'ts', 'node_modules');
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS || process.env.E2E_TIMEOUT || 120000);
 
@@ -117,6 +119,22 @@ async function main() {
     const res = await runSuite(suite, TIMEOUT_MS);
     console.log(`[run-e2e] suite '${res.name}': ${res.status} (code=${res.code}, ${res.durationMs}ms)`);
     results.push(res);
+
+    // A suite that fails an assertion used to leave its daemon running
+    // (SIGKILL was only on the happy path). That daemon spins at ~25% CPU
+    // while holding the SHM segment and the admin port, so every later suite
+    // in this run degrades — the signature symptom was `admin SCAN`
+    // answering "OK 0". Fail loudly here instead of letting it poison the
+    // rest of the run.
+    const strays = listStrayDaemons();
+    if (strays.pids.length > 0) {
+      console.error(
+        `[run-e2e] STRAY DAEMONS after '${res.name}': pids ${strays.pids.join(', ')} ` +
+          `(a suite leaked a daemon; the rest of this run is compromised)`
+      );
+      res.status = 'FAIL';
+      res.code = res.code === 0 ? 'stray-daemon' : res.code;
+    }
   }
 
   console.log('\n[run-e2e] Summary:');

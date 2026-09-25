@@ -40,6 +40,9 @@ jobs:
           cd scripts
           NODE_PATH=../src/sdk/ts/node_modules node -r ts-node/register/transpile-only e2e_corruption_test.ts
       - name: Run native scan bench (live daemon, informational)
+        # Explicit cap: without it a hung bench burns the whole 6h job
+        # budget and the failure surfaces as a cancelled run, not a timeout.
+        timeout-minutes: 5
         run: node scripts/bench_scan.js 3000
       - name: Run TS relational unit tests
         run: |
@@ -52,4 +55,5 @@ jobs:
       - name: Run catalog-reboot E2E (DDL via __catalog__, SIGKILL)
         run: node scripts/e2e_catalog_reboot_test.js
       - name: Run relational bench (seeded TS engine, gate)
+        timeout-minutes: 10
         run: node scripts/bench_relational.js

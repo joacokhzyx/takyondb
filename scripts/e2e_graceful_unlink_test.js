@@ -5,6 +5,8 @@
 const { join } = require('path');
 const fs = require('fs');
 
+const { startDaemon, stopDaemon } = require('./helpers/daemon');
+
 const ARENA_SIZE = 16 * 1024 * 1024;
 
 function fail(msg) {
@@ -29,31 +31,27 @@ async function run() {
   }
 
   console.log('[E2E Unlink] Booting daemon...');
-  const { spawn } = require('child_process');
-  const daemonBin = join(
-    __dirname,
-    process.platform === 'win32' ? '../zig-out/bin/takyondb.exe' : '../zig-out/bin/takyondb',
-  );
-  const daemon = spawn(daemonBin, [String(ARENA_SIZE)], { stdio: 'ignore' });
-  await sleep(1500);
-  if (daemon.exitCode !== null) return fail(`daemon exited early with code ${daemon.exitCode}`);
+  // Handshake instead of sleep(1500): if the daemon never reports ready we
+  // fail here with its output, not later with a confusing assertion.
+  const daemon = await startDaemon({ args: [String(ARENA_SIZE)] });
+  if (daemon.proc.exitCode !== null) return fail(`daemon exited early with code ${daemon.proc.exitCode}`);
 
   console.log('[E2E Unlink] Sending SIGINT...');
   const exited = new Promise((resolve) => {
     const timer = setTimeout(() => resolve('timeout'), 15000);
-    daemon.on('exit', (code) => {
+    daemon.proc.on('exit', (code) => {
       clearTimeout(timer);
       resolve(code);
     });
   });
   try {
-    daemon.kill('SIGINT');
+    daemon.proc.kill('SIGINT');
   } catch (e) {
     return fail(`SIGINT failed: ${e.message}`);
   }
   const code = await exited;
   if (code === 'timeout') {
-    try { daemon.kill('SIGKILL'); } catch (e) {}
+    await stopDaemon(daemon, 'SIGKILL');
     return fail('daemon did not exit on SIGINT within 15s');
   }
   console.log(`[E2E Unlink] Daemon exited with code ${code}.`);

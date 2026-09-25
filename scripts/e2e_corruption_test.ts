@@ -15,6 +15,7 @@ const bindings: TakyonBindings = {
     verifyTestValue: () => addon.verifyTestValue(),
     insert_index: (key: string, value_offset: number) => addon.insert_index(key, value_offset),
     search_index: (key: string) => addon.search_index(key),
+    remove_index: (key: string) => addon.remove_index(key),
     trigger_checkpoint: () => addon.trigger_checkpoint(),
     start_vacuum: (string_offset: number) => addon.start_vacuum(string_offset),
     stop_vacuum: () => addon.stop_vacuum(),
