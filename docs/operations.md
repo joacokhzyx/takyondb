@@ -19,7 +19,8 @@ zig build run -Doptimize=ReleaseSafe [-- <mem_bytes>]
   `/TakyonDB_Master` (POSIX shm). Single-tenant: the bridge's name argument
   is fixed inside the engine.
 * Shutdown: `SIGINT`/`Ctrl+C` triggers a graceful WAL drain + shutdown;
-  `SIGKILL` skips it (recovery path is snapshot + WAL replay).
+  the daemon owns the segment name and unlinks it on the way out
+  (`SIGKILL` skips it — recovery path is snapshot + WAL replay).
 
 ## Admin TCP endpoint (`127.0.0.1:7723`, `--port`)
 

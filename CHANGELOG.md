@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Daemon owns the SHM name: graceful shutdown unlinks the segment (mappings
+  persist until close; crash exits still leave it for recovery). Covered by
+  unlink idempotency tests + `e2e_graceful_unlink_test.js` (in CI + runner).
 - Reference-counted engine detach: `takyon_disconnect_shm` no longer unmaps
   while other clients hold the mapping (second client previously lost it —
   use-after-unmap class). Covered by `e2e_refcount_test.js` (in CI + runner).
