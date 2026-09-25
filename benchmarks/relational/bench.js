@@ -2,8 +2,9 @@
 // Real relational micro-benchmark over the TS engine (in-memory, zero-serdes).
 // Requires the SDK dist first: `cd src/sdk/ts && npm run build`.
 // Usage: `node bench.js [insert|scan|filter|join|agg|all]` (default: all).
-// Workload is seeded (LCG) so runs are reproducible; timings are gates-free
-// (informational) until hardware-pinned CI lands.
+// Workload is seeded (LCG) so runs are reproducible. Runs as a CI gate
+// (`Relational Checks` fails on crash/hang); reported numbers stay
+// informational until hardware-pinned thresholds land.
 const { performance } = require('perf_hooks');
 const os = require('os');
 
@@ -154,7 +155,7 @@ function main() {
         hardware: hardware(),
         workload: { rows: N, seeded: true, seed: 42 },
         methodology:
-          'Seeded in-memory workload over the TS relational engine (no IPC/daemon). Per-op wall times via performance.now(); p50/p95/p99 over samples. Informational, not a CI gate.',
+          'Seeded in-memory workload over the TS relational engine (no IPC/daemon). Per-op wall times via performance.now(); p50/p95/p99 over samples. CI gate on green completion; numbers informational until hardware-pinned thresholds land.',
         results,
       },
       null,
