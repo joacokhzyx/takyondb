@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Pushdown wired end-to-end: `filterF64` + selected-vector aggs
+  (`kahanSumSelected/minSelected/maxSelected`) in `column.zig`, C-ABI
+  `takyon_filter_u32/f64` + `takyon_agg_*_selected` (strict op validation),
+  N-API `filter_u32/f64` + `agg_sum*` , TS `pushdown.ts` with identical
+  fallback + parity tests, exported from the relational barrel.
+- Fixed `__catalog__` record codec (Zig `persist.zig`
+  `encode/decodeHeader/decodeColumn` + `catalogKey/isCatalogKey` plus TS
+  mirror `catalog_record.ts` with the same LE layout, round-trip and tamper
+  tests). Reboot E2E without the JSON sidecar is pending.
+- Logical multi-root secondaries: `multiroot.zig` registry (UNIQUE flags,
+  cardinality, order-preserving NUL-free hex pads) + TS `padU32Hex/
+  padI64Hex16`, `lookupNumericRange` (no caller zero-pad) and `cardinality()`
+  on `NativeSecondaryIndex`. Physical per-root arenas remain future.
+- Record integrity: sealed TREC envelope (`record_crc.zig`) +
+  allocation-free extent scrubber (`scrub.zig`) + C-ABI/N-API
+  `verify_record`/`scrub_records` + TS mirror `scrub.ts` (fallback tested).
+  Daemon write-path migration and periodic scrub wiring are future.
+- ART node freelist: size-segregated quarantine (`freelist.zig`) fed by all
+  10 grow/shrink orphan points in `art.zig`, stats observable, opt-in reuse
+  behind the quiescence contract (default off; epoch reclamation future).
+- C-ABI hardening: deterministic 3000-case xorshift sweep (`fuzz_surface.zig`)
+  over gated entrypoints + pure kernels, SHM name resolution with validation
+  (`resolveShmName`, OS namespacing, share-match reject), teardown injection
+  seam (`unmapSegment`/`closeHandle` + counters) with failure tests.
+- CI: seeded `bench:relational` runs as a gate after the dist build.
 - Fixed `vacuum WAL-logged relocation` test (overlapping 8B fat pointers
   at `OFF_A=16/OFF_B=20`): `OFF_B` is now 28 (disjoint, still unaligned).
   `zig build test` is fully green.
