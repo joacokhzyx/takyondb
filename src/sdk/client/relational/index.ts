@@ -29,4 +29,5 @@ export * from './persist';
 export * from './mirror';
 export * from './secondary_native';
 export * from './catalog_store';
+export * from './catalog_record';
 export * from './pushdown';
