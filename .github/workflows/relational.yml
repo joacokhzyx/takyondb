@@ -57,3 +57,11 @@ jobs:
       - name: Run relational bench (seeded TS engine, gate)
         timeout-minutes: 10
         run: node scripts/bench_relational.js
+      - name: Typecheck and run every example
+        # The examples were never executed by anything, and the docs listed
+        # one of the ten while calling three "upcoming" although they already
+        # existed. One of them (quickstart.ts) imported '../src/...' instead
+        # of '../../src/...' and could not resolve at all. Examples that are
+        # only read rot silently the moment an API changes shape.
+        timeout-minutes: 10
+        run: node scripts/examples_check.js

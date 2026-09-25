@@ -42,7 +42,8 @@
     "bench:relational": "node ../../../scripts/bench_relational.js",
     "lint": "cd .. && node ./ts/node_modules/eslint/bin/eslint.js client takyon.ts index.ts",
     "format": "prettier --write '../**/*.ts'",
-    "build:addon": "cd ../../../ && zig build -Doptimize=ReleaseSafe"
+    "build:addon": "cd ../../../ && zig build -Doptimize=ReleaseSafe",
+    "examples": "node ../../../scripts/examples_check.js"
   },
   "keywords": [
     "database",

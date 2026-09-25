@@ -5,6 +5,181 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+Nothing yet. The work below shipped under [0.1.0](#010---2026-09-25); this
+section is where anything after it goes.
+
+## [0.1.0] - 2026-09-25
+
+First versioned release. Pre-alpha: the engine, the SDK, the daemon and the
+installer packages are all installable and tested, but the API is not frozen
+and the daemon must not be exposed to untrusted networks or processes (see
+[SECURITY.md](SECURITY.md)).
+
+### Fixed
+
+- **Windows CI no longer fails at random.** `TakyonDB CI` failed 5 of the last
+  20 runs, every one on `windows-2022`, always the same two Zig tests. The
+  flusher test asserted the on-disk size after stopping the loop, but the
+  trailing partial sector is only written by `flushBuffer`, which the loop
+  calls from its idle branch: a timing race that slower hosts lose. It now
+  flushes explicitly after the join, and gained a portable
+  `bytes_written == expected sectors` invariant (previously the only sector
+  accounting check was Windows-gated, so Linux and macOS verified nothing).
+  The ten cwd-relative `data.takyon` paths shared by `wal.zig` and
+  `snapshot.zig` moved to `std.testing.tmpDir`: `WalManager` seeds
+  `bytes_written` from the live file size, so a leftover file silently shifted
+  every count, and on Windows an open handle makes `deleteFile` fail.
+- **E2E suites no longer leak daemons.** Every suite called
+  `daemon.kill('SIGKILL')` only on the happy path, so the first failing
+  assertion left a daemon spinning at ~25% CPU holding the SHM segment and the
+  admin port. Six were alive after one local run, and the signature symptom
+  was `admin SCAN` answering `OK 0`. `scripts/helpers/daemon.js` replaces the
+  dead `daemon.ts` with a real readiness handshake, a `stop()` that awaits the
+  actual exit, a `withDaemon()` try/finally, and a process-exit safety net;
+  `run-e2e.js` now fails a suite that leaked one.
+- **No more blind waits in the E2E suites.** The crash and catalog suites
+  slept 1000-2500 ms and hoped; on a loaded host the SIGKILL landed mid-write,
+  which is what produced "bad catalog magic". They now poll the artifact the
+  engine actually produces (snapshot on disk, WAL settled). Suite time fell
+  from ~28 s to ~7 s (crash 6075->874 ms, catalog 5578->666 ms,
+  admin-scan 6085->78 ms) purely from removing the fixed waits.
+- **The published tarball is no longer publishable without an entry point.**
+  `npm pack` does not compile TypeScript, so a job that ran only `npm ci`
+  produced a package with no `dist/` at all. `src/sdk/ts/scripts/prepack.mjs`
+  refuses to pack without `dist/index.js` and the addon loader.
+- `scripts/` typecheck was red: `e2e_corruption_test.ts` did not implement
+  `remove_index`.
+- `stopDaemon()` awaited the child's `exit` event on a process `startDaemon()`
+  had `unref`'d, so Node could exit silently with code 0 and skip every
+  cleanup step after that await.
+- `std.process.args()` is unimplemented on Windows in Zig 0.14.1; the daemon
+  argument probe uses `argsWithAllocator`.
+
+### Added
+
+- **`npm install takyondb` works.** The package shipped only `dist/`, with no
+  native addon and no code that knew where one came from; the README
+  quickstart declared `bindings` with no runtime value and pointed at a
+  repo-relative `zig-out` path that cannot exist inside `node_modules`.
+  - `loadBindings()` resolves the addon from an explicit path,
+    `TAKYON_ADDON_PATH`, the bundled `prebuilds/<platform>-<arch>/`, a
+    `node-gyp` `build/Release`, a flat copy, then the in-repo `zig-out`
+    build. An explicit path that does not exist fails immediately rather than
+    falling through, so you never silently get a different binary than you
+    asked for. Errors list every probed path, the platform, the supported
+    platforms and three concrete fixes.
+  - `new TakyonDB()` auto-loads when no bindings are passed; passing them still
+    works, so the mock seam used by the tests is untouched.
+  - The release job assembles `prebuilds/` from each OS artifact
+    (`linux-x64`, `darwin-arm64`, `win32-x64`) and refuses to publish unless
+    `npm pack --dry-run` shows all three plus the loader. The addon is N-API,
+    so one binary per platform covers every Node release.
+  - `scripts/pack_smoke.js` packs the tarball, installs it into a directory
+    outside the repository, and drives the installed package (loadBindings,
+    insert/find/update/delete through shared memory, native prefix and range
+    scan, the admin TCP protocol, and the addon-free relational path). It runs
+    as a `pack-smoke` job on all three OSes and caught the missing `dist/` on
+    its first run.
+  - The macOS `.pkg` now packages the N-API bridge; it previously shipped the
+    daemon only, so a macOS install produced a daemon Node could not talk to.
+- **`--version` and `--help` on the daemon**, answered before any side effect
+  (no segment, no WAL, no port bind), so packaging scripts and operators can
+  interrogate the binary safely.
+- `src/core/version.zig` is the Zig side of the version source of truth, with
+  a test for its shape.
+- `scripts/verify.sh` replays the CI matrix locally in one command, including
+  cross-compiling the daemon for `x86_64-windows` and `aarch64-macos` so
+  platform-specific compile errors surface in seconds instead of a CI
+  round-trip.
+- `scripts/docs_check.js` is a real checker: it resolves every relative link
+  and anchor in every markdown file, validates code fences, and runs in CI.
+  It was a stub that asserted four files existed and was not wired in.
+  `docs/index.md` was rewritten as a full, verified index; building it
+  surfaced two genuinely broken references (`docs/security.md` and
+  `relational/index.md`, which is `README.md`).
+- `scripts/project_stats.js` generates `docs/metrics.md` and `--check` fails
+  CI on drift, so the project counts cannot go stale again.
+- `scripts/check_version.js` makes version drift a build failure.
+- `scripts/examples_check.js` typechecks and *runs* all ten relational
+  examples, and is wired into CI.
+- `scripts/bench_pooling.js` measures the pooling optimization in isolation,
+  where both arms run identical code. This is what makes the pooling claim
+  re-derivable: avg -47.8%, p50 -56.4%, p95 -22.7%, p99 -72.8%.
+- `timeout-minutes` on the CI bench steps, so a hang reports as a timeout
+  instead of consuming the 6 h job budget.
+
+### Changed
+
+- The thirteen E2E and bench scripts that hardcoded the addon path now go
+  through `scripts/helpers/addon.js`, which delegates to the SDK loader.
+- `benchmark_chaos.js` hoisted a `TextEncoder`, an `ArrayBuffer`, a `DataView`
+  and a `Uint8Array` out of its timed region, so its percentiles measure the
+  engine rather than V8 allocation: p99 0.019-0.057 ms -> 0.011-0.012 ms. It
+  also now reports its hardware, which the README's table previously lacked
+  entirely, so those numbers could not be attributed to any machine.
+- `bench_proxy.js` now reports absolute cost of the shipped hot path with full
+  methodology, warmup, repetitions, throughput and p95. It no longer claims a
+  pooling delta, because that delta is not measurable at that level: a
+  per-operation control has to do the same work to be comparable, and go any
+  further and it is simply a faster algorithm.
+- `benchmarks/relational/bench.js` reports its per-table LCG seeds verbatim
+  (it claimed a single seed of 42 while `seedOrders` used 7, so a run could
+  not be reproduced from its own output) and adds a warmup pass plus
+  repetitions.
+- The daemon `--version` string and the Linux, macOS and Windows packagers all
+  read the version from `src/sdk/ts/package.json`. The packagers said `1.0.0`
+  while the SDK said `0.1.0`, reconciled only by a manual checklist item.
+- Removed `src/sdk/bindings/binding.gyp` and the `node-gyp` devDependency:
+  nothing referenced the gyp file, it linked `zig-out/lib/takyondb.lib` on
+  Windows which `build.zig` never emits, and it offered a second build path
+  that could not work.
+
+### Documentation
+
+- Removed the `SharedArrayBuffer` claim from the README and documented the
+  real mechanism: the addon returns an external `ArrayBuffer` (one `mmap` per
+  V8 isolate), because Node has no way to wrap a raw pointer in a SAB, so
+  `Atomics.wait` is structurally unavailable on it.
+- Corrected `docs/sdk.md`, which claimed the mapping is unmapped by the
+  `ArrayBuffer` finalizer (it is a deliberate no-op, and
+  `client.shutdownEngine()` is the explicit teardown) and that no close API
+  exists.
+- Corrected `docs/relational/performance.md`, which promised a `DataView`
+  comparison with no allocation; the filter is `matchesWhere` over JS objects
+  and compiles a `new RegExp` per row and per predicate.
+- Rewrote `docs/performance-truth.md`: every harness, what each one does and
+  does not include, how to reproduce each, and the reference run.
+- The README quickstart is now the flow `pack_smoke` executes: install, start
+  the daemon, connect, query, and talk to the admin port.
+- `examples/relational/` documented all ten examples instead of one, and
+  `quickstart.ts` no longer imports `../src/...` (which resolved to nothing).
+- `CHANGELOG.md` gained its first released-version section; until now it had
+  167 lines under `Unreleased` and no released heading at all.
+
+### Known issues
+
+- `linux-arm64` and `darwin-x64` have no prebuild: the CI matrix builds
+  `linux-x64`, `darwin-arm64` and `win32-x64`. On the other two,
+  `loadBindings()` says so explicitly instead of failing at `require` time.
+- The relational filter and aggregation paths in TypeScript do not reach the
+  Zig SIMD pushdown kernels yet, so the relational benchmark does not measure
+  them. See `docs/relational/performance.md`.
+- A historical `v1.0.0` git tag exists from before the SDK was versioned; it
+  does not correspond to this release. It is left in place rather than
+  rewritten.
+- CI timings are recorded, not gated: shared runners are not a stable
+  reference and a timing gate would be flaky by construction.
+
+
+---
+
+<details>
+<summary>Full entry-by-entry history of the cycle that became 0.1.0</summary>
+
+These are the original detailed entries that accumulated under `Unreleased`
+before this release was cut. They are kept verbatim so the record of *when*
+each capability landed is not lost; the summary above groups them by theme.
+
 ### Added
 - Daemon owns the SHM name: graceful shutdown unlinks the segment (mappings
   persist until close; crash exits still leave it for recovery). Covered by
@@ -170,3 +345,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Addon exposes an external `ArrayBuffer`, not a true `SharedArrayBuffer`.
 - Vacuum `remove()`/`insert()` on overlapping keys need external
   quiescence (the daemon never deletes).
+
+</details>

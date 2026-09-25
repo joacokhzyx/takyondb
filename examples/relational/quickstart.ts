@@ -1,10 +1,10 @@
 /**
  * TakyonDB relational quickstart (in-memory + zero-copy friendly).
- * Run with: npx ts-node --transpile-only examples_quickstart.ts
+ * Run with: npm --prefix src/sdk/ts run examples   (see examples/relational/README.md)
  */
-import { RelationalDatabase } from '../src/sdk/client/relational/database';
-import { QueryBuilder } from '../src/sdk/client/relational/query';
-import { executeSelect } from '../src/sdk/client/relational/executor';
+import { RelationalDatabase } from '../../src/sdk/client/relational/database';
+import { QueryBuilder } from '../../src/sdk/client/relational/query';
+import { executeSelect } from '../../src/sdk/client/relational/executor';
 
 const db = new RelationalDatabase();
 const users = db.createTable('users', [

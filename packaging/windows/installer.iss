@@ -2,7 +2,10 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "TakyonDB"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "0.1.0"
+; NOTE: fallback for local builds only. The release job passes
+;   /DMyAppVersion=<version>, read from src/sdk/ts/package.json.
+;   scripts/check_version.js fails CI if this drifts from the SDK version.
 #define MyAppPublisher "TakyonDB Team"
 #define MyAppURL "https://github.com/joacokhzyx/takyondb"
 #define MyAppExeName "takyondb.exe"

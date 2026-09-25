@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-VERSION="1.0.0"
+# Single source of truth for the version: src/sdk/ts/package.json. This used
+# to be hardcoded here as 1.0.0 while the SDK said 0.1.0, and nothing caught
+# it; scripts/check_version.js now fails CI if it is ever pinned again.
+VERSION="$(node -p "require('../../src/sdk/ts/package.json').version")"
 ARCH="amd64"
 PKG_DIR="takyondb_${VERSION}_${ARCH}"
 

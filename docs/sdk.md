@@ -100,12 +100,47 @@ Caution: `Collection.insert` checks JS `key.length` (UTF-16 code units), so
 a multibyte key can pass that check yet be rejected by the bridge's byte
 count. Empty keys are rejected at both layers.
 
-## Lifecycle
+## Lifecycle and memory mapping
 
-The SDK classes expose **no `close()`/`disconnect()`**: unmapping happens in
-the N-API external-`ArrayBuffer` finalizer, which calls
-`takyon_disconnect_shm` when the buffer is garbage-collected (explicit
-closes are welcome at the native layer, but there is no JS API for it yet).
-The addon exposes an external `ArrayBuffer`, not yet a real
-`SharedArrayBuffer`; each `worker_thread` re-maps the segment via
-`initSharedMemory`.
+**Where the mapping comes from.** `initSharedMemory` returns an *external*
+`ArrayBuffer` wrapping the mapped region, one `mmap` per V8 isolate. It is
+**not** a `SharedArrayBuffer`: Node exposes no API to wrap a raw pointer in
+one, so every `worker_thread` re-maps the same segment and gets its own
+`ArrayBuffer` object over the same physical pages. Consequently `Atomics.wait`
+and `Atomics.notify` are not available on this buffer (the spec requires a
+shared one and throws otherwise). The bump pointers *are* manipulated with
+`Atomics.compareExchange`/`Atomics.add`, but cross-worker correctness comes
+from the shared pages, not from V8-level atomics. The IPC ring is a Vyukov
+MPMC queue with per-slot sequence numbers driven by Zig-level atomics.
+
+**Teardown is explicit, and the GC finalizer is deliberately a no-op.**
+`ArrayBufferFinalizer` in `src/sdk/bindings/binding.cc` does nothing, on
+purpose: the engine owns one process-wide mapping guarded by a refcount, and
+V8 may collect any single worker's buffer (workers routinely discard theirs
+right after connecting). Unmapping there once pulled live memory out from
+under concurrent workers — use-after-unmap, silent `-1`s, and reused address
+ranges aliasing as corrupt index nodes.
+
+Use the refcounted teardown instead:
+
+```ts
+// Last disconnect tears the mapping down; earlier ones only drop a reference.
+takyondb.disconnect_shm();            // or takyon.client.shutdownEngine()
+```
+
+`TakyonClient.shutdownEngine()` returns a boolean and delegates to the same
+`disconnect_shm` entry point. A partial disconnect is safe while other clients
+still hold the mapping; the last one unmaps.
+
+**Finding the addon.** `loadBindings()` resolves the binary from, in order:
+an explicit `addonPath`, `TAKYON_ADDON_PATH`, the bundled
+`prebuilds/<platform>-<arch>/`, a `node-gyp` style `build/Release`, a flat
+copy, then the in-repo `zig-out/bin` build. An explicit path that does not
+exist fails immediately rather than falling through, so you never silently get
+a different binary than you asked for. The addon is N-API, so there is one
+binary per platform+arch and not per Node release.
+
+Prebuilds are published for `linux-x64`, `linux-arm64`, `darwin-x64`,
+`darwin-arm64` and `win32-x64` as far as CI produces them; on any other
+platform `loadBindings()` says so explicitly and lists the supported set
+instead of failing at `require` time.

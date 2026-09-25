@@ -2,6 +2,10 @@
 
 ## Supported Versions
 
+Current version: `0.1.0`. The canonical value lives in
+`src/sdk/ts/package.json`; `scripts/check_version.js` fails CI if this table
+drifts from it.
+
 | Version | Supported          |
 | ------- | ------------------ |
 | 0.1.x   | :white_check_mark: |

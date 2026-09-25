@@ -54,9 +54,9 @@ run() {
 }
 
 if [ "$RUN_E2E" -eq 1 ]; then
-  TOTAL_STEPS=8
+  TOTAL_STEPS=13
 else
-  TOTAL_STEPS=6
+  TOTAL_STEPS=9
 fi
 
 command -v zig >/dev/null 2>&1 || { echo "zig not found on PATH (need 0.14.1)" >&2; exit 1; }
@@ -85,6 +85,15 @@ else
   bad "typescript compiler not found at $TSC (run: npm ci --prefix src/sdk/ts)"
 fi
 
+step "Docs: links, anchors and fences"
+run "docs_check" node scripts/docs_check.js
+
+step "Docs: generated stats are current"
+run "project_stats --check" node scripts/project_stats.js --check
+
+step "Version consistency across SDK, Zig and packagers"
+run "check_version" node scripts/check_version.js
+
 step "Cross-compile the daemon for the other two CI platforms"
 # The Windows and macOS legs of the matrix cannot run here, but they can be
 # *compiled* for. Platform-specific compile errors (std.process.args() is
@@ -111,6 +120,16 @@ if [ "$RUN_E2E" -eq 1 ]; then
 
   step "E2E suites"
   run "run-e2e (10 suites)" npm --prefix scripts run test:e2e
+
+  step "Examples: typecheck and run every file"
+  # quickstart.ts imported '../src/...' instead of '../../src/...' and could
+  # not resolve at all; nothing executed the examples, so it went unnoticed.
+  run "examples_check" node scripts/examples_check.js
+
+  step "Pack, install the tarball clean, and use it"
+  # The gate that proves the published package is installable. It caught a
+  # tarball shipped with no dist/ on its first CI run.
+  run "pack_smoke" node scripts/pack_smoke.js
 fi
 
 printf '\n'

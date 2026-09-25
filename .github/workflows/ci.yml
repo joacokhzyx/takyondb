@@ -46,6 +46,22 @@ jobs:
     - name: Check Zig formatting
       run: zig fmt --check src/ build.zig
 
+    - name: Check documentation links and anchors
+      # Was a stub that only asserted four files existed, and was not wired
+      # into CI at all. Now it resolves every relative link and anchor in
+      # every markdown file, so a renamed page fails the build.
+      run: node scripts/docs_check.js
+
+    - name: Check project stats are current
+      # docs/metrics.md counts are generated; a drift means the page lies.
+      run: node scripts/project_stats.js --check
+
+    - name: Check version consistency
+      # The version lived in six places that disagreed (SDK 0.1.0, three
+      # packagers 1.0.0, a historical v1.0.0 tag). This makes the drift a
+      # build failure instead of a manual checklist item.
+      run: node scripts/check_version.js
+
     - name: Run Zig unit tests
       run: zig build test
 
