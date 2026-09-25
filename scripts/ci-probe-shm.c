@@ -47,5 +47,28 @@ int main(void) {
     printf("trunc-reopen fd=%d errno=%d (%s)\n", t2, errno, t2 < 0 ? strerror(errno) : "ok");
     if (t2 >= 0) close(t2);
     shm_unlink(m);
+
+    // Mirror the unit-test lifecycle exactly: create, size, mmap shared+w,
+    // write, munmap, close, then reopen (the tests fail this reopen).
+    const char *q = "/takyon_probe_life";
+    shm_unlink(q);
+    errno = 0;
+    int q1 = shm_open(q, O_RDWR | O_CREAT | O_EXCL, 0666);
+    printf("life-create fd=%d errno=%d (%s)\n", q1, errno, q1 < 0 ? strerror(errno) : "ok");
+    if (q1 >= 0) {
+        ftruncate(q1, 16777216);
+        void *mp = mmap(NULL, 16777216, PROT_READ | PROT_WRITE, MAP_SHARED, q1, 0);
+        printf("life-mmap ptr=%p errno=%d (%s)\n", mp, errno, mp == MAP_FAILED ? strerror(errno) : "ok");
+        if (mp != MAP_FAILED) {
+            ((volatile unsigned char *)mp)[8192] = 0x5A;
+            munmap(mp, 16777216);
+        }
+        close(q1);
+    }
+    errno = 0;
+    int q2 = shm_open(q, O_RDWR, 0666);
+    printf("life-reopen fd=%d errno=%d (%s)\n", q2, errno, q2 < 0 ? strerror(errno) : "ok");
+    if (q2 >= 0) close(q2);
+    shm_unlink(q);
     return 0;
 }
