@@ -54,6 +54,16 @@ jobs:
         cd src/sdk/ts
         npm test
 
+    - name: Fetch Windows node.lib for N-API link
+      # lib/node.lib is deliberately untracked (lean repo) but required by
+      # build.zig to link the addon on Windows. Fetch the exact matching
+      # import library from the official Node.js distribution.
+      if: runner.os == 'Windows'
+      run: |
+        New-Item -ItemType Directory -Force lib | Out-Null
+        $NodeVersion = (node -v).TrimStart('v')
+        Invoke-WebRequest -Uri "https://nodejs.org/dist/v$NodeVersion/win-x64/node.lib" -OutFile "lib/node.lib"
+
     - name: Build Zig Core (ReleaseSafe)
       run: zig build -Doptimize=ReleaseSafe
 
