@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Sealed relational row headers (`row.zig`: 12B magic+version+CRC32
   with tamper/truncation tests) and a deterministic 1500-key ART sweep
   (insert/search/remove/scan cross-check, fixed seed).
+- Pooled SDK hot paths (shared DataView/codecs/scratch, lazy views):
+  measured insert -32%, find+update p50/p99 -54%/-55%.
 - CI: `.gitattributes` forces LF (Windows `zig fmt` was red since day
   one); `macos-15` pinned for Zig 0.14.1 linker compat, no fail-fast.
 - CI: `windows-2022` pinned (0.14.1 std does not compile on the
