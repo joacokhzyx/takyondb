@@ -70,5 +70,22 @@ int main(void) {
     printf("life-reopen fd=%d errno=%d (%s)\n", q2, errno, q2 < 0 ? strerror(errno) : "ok");
     if (q2 >= 0) close(q2);
     shm_unlink(q);
+
+    // Replicate the engine fallback sequence exactly: O_EXCL|O_CREAT on an
+    // EXISTING object (expect EEXIST), then immediate plain reopen.
+    const char *f = "/takyon_probe_fb";
+    shm_unlink(f);
+    int f0 = shm_open(f, O_RDWR | O_CREAT | O_EXCL, 0666);
+    printf("fb-create fd=%d errno=%d (%s)\n", f0, errno, f0 < 0 ? strerror(errno) : "ok");
+    if (f0 >= 0) close(f0);
+    errno = 0;
+    int f1 = shm_open(f, O_RDWR | O_CREAT | O_EXCL, 0666);
+    printf("fb-excl fd=%d errno=%d (%s)\n", f1, errno, f1 < 0 ? strerror(errno) : "ok");
+    if (f1 >= 0) close(f1);
+    errno = 0;
+    int f2 = shm_open(f, O_RDWR, 0666);
+    printf("fb-fallback fd=%d errno=%d (%s)\n", f2, errno, f2 < 0 ? strerror(errno) : "ok");
+    if (f2 >= 0) close(f2);
+    shm_unlink(f);
     return 0;
 }
