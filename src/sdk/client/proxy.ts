@@ -125,8 +125,9 @@ export class TakyonClient {
     }
 
     /**
-     * Explicit process-wide engine teardown. Call only when no thread
-     * will touch the engine afterwards (end of process/tests).
+     * Reference-counted engine detach. Safe to call per client: the shared
+     * mapping stays valid while other clients hold it; teardown happens on
+     * the last disconnect. Call at end of process/tests.
      */
     public shutdownEngine(): boolean {
         const fn = this.bindings.disconnect_shm;

@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Reference-counted engine detach: `takyon_disconnect_shm` no longer unmaps
+  while other clients hold the mapping (second client previously lost it —
+  use-after-unmap class). Covered by `e2e_refcount_test.js` (in CI + runner).
 - E2E daemons now die via SIGKILL on teardown: plain `kill()` left zombies
   holding the SHM segment and TCP port, poisoning the next suite
   (`admin SCAN` saw `OK 0` after `scan`). Verified back-to-back with no strays.
