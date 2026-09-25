@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `CatalogRecordStore` + self-driving reboot E2E: DDL persists as
+  `__catalog__` ART records (payloads in the string arena) and survives a
+  real SIGKILL with no JSON sidecar (wired into `relational.yml` after the
+  dist build and into the local `run-e2e` runner).
 - Pushdown wired end-to-end: `filterF64` + selected-vector aggs
   (`kahanSumSelected/minSelected/maxSelected`) in `column.zig`, C-ABI
   `takyon_filter_u32/f64` + `takyon_agg_*_selected` (strict op validation),
@@ -14,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fixed `__catalog__` record codec (Zig `persist.zig`
   `encode/decodeHeader/decodeColumn` + `catalogKey/isCatalogKey` plus TS
   mirror `catalog_record.ts` with the same LE layout, round-trip and tamper
-  tests). Reboot E2E without the JSON sidecar is pending.
+  tests) plus the reboot path above.
 - Logical multi-root secondaries: `multiroot.zig` registry (UNIQUE flags,
   cardinality, order-preserving NUL-free hex pads) + TS `padU32Hex/
   padI64Hex16`, `lookupNumericRange` (no caller zero-pad) and `cardinality()`
