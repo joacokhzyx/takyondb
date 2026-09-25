@@ -46,14 +46,6 @@ jobs:
     - name: Check Zig formatting
       run: zig fmt --check src/ build.zig
 
-    - name: Diagnose macOS shm_open (temporary probe)
-      if: runner.os == 'macOS'
-      run: cc -o /tmp/shmprobe scripts/ci-probe-shm.c && /tmp/shmprobe
-
-    - name: Diagnose Zig shm_open flags (temporary probe)
-      if: runner.os == 'macOS'
-      run: zig run -lc scripts/ci-probe-zig-shm.zig
-
     - name: Run Zig unit tests
       run: zig build test
 
