@@ -74,3 +74,8 @@ CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
    inserts 40 keys, and asserts the TCP admin protocol (`PING`, unknown
    command, full/capped scans, bounded/unbounded ranges, bad-arg
    rejections).
+8. **Catalog reboot (`scripts/e2e_catalog_reboot_test.js`)** — boots the
+   daemon on an isolated `--data-dir`, persists `users` + `orders`
+   descriptors as `__catalog__` records via `CatalogRecordStore`,
+   checkpoints, SIGKILLs, reboots, and asserts both descriptors decode
+   identically with no JSON sidecar (requires the SDK dist build).
