@@ -107,7 +107,7 @@ async function run() {
     }
   }
 
-  daemon.kill();
+  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {}
 

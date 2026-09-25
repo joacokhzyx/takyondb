@@ -76,7 +76,7 @@ async function run() {
   if (narrowRes.length === 0) return fail('narrow scan empty');
   const narrowMs = timeIt(() => takyondb.scan_prefix('B-000', 2048), 50);
 
-  daemon.kill();
+  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
 
   console.log(

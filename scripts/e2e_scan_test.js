@@ -87,7 +87,7 @@ async function run() {
     return fail('inverted range should be empty');
   }
 
-  daemon.kill();
+  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
   console.log('[E2E Scan] SUCCESS: native prefix scan passed.');
   process.exit(0);

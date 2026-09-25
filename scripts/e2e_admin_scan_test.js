@@ -90,7 +90,7 @@ async function run() {
     return fail('over-cap max not rejected');
   }
 
-  daemon.kill();
+  daemon.kill('SIGKILL');
   try { takyondb.disconnect_shm(); } catch (e) {}
   console.log('[E2E Admin] SUCCESS: admin SCAN/RANGE passed.');
   process.exit(0);

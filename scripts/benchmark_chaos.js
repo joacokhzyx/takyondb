@@ -63,14 +63,14 @@ if (isMainThread) {
                     completed++;
                     if (completed === TOTAL_WORKERS) {
                         analyzeResults(latencies);
-                        daemon.kill();
+                        daemon.kill('SIGKILL');
                         process.exit(0);
                     }
                 }
             });
             worker.on('error', (err) => {
                 console.error(`Worker error:`, err);
-                daemon.kill();
+                daemon.kill('SIGKILL');
                 process.exit(1);
             });
         }

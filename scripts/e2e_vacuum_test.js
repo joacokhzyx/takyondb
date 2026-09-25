@@ -129,7 +129,7 @@ async function run() {
 
     // Stop vacuum and kill daemon
     try { takyondb.stop_vacuum(); } catch (e) {}
-    daemon.kill();
+    daemon.kill('SIGKILL');
 
     console.log(`[E2E Vacuum] SUCCESS: Memory Leak Test passed.`);
     process.exit(0);
