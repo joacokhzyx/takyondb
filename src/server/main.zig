@@ -13,6 +13,7 @@ const RingBuffer = core.ring_buffer.RingBuffer;
 const DeltaMessage = core.ring_buffer.DeltaMessage;
 const WalManager = core.wal.WalManager;
 const ArtIndex = core.art.ArtIndex;
+const freelist = core.freelist;
 
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
@@ -30,10 +31,11 @@ var global_wal: ?*WalManager = null;
 //   HEALTH -> "OK uptime_s=<n> arena=<bytes> ring=<depth>\n"
 //             (uptime_s = seconds since daemon start; arena = SHM arena size
 //             in bytes; ring = current RingBuffer depth)
-//   METRICS -> "METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u>\n"
+//   METRICS -> "METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x>\n"
 //             (ring_depth = current RingBuffer depth; wal_bytes =
 //             WalManager.bytes_written; wal_segments = WalManager.next_segment;
-//             uptime_s = seconds since daemon start)
+//             uptime_s = seconds since daemon start; fl_* = ART freelist
+//             counters: quarantined orphans, opt-in reuses, dropped overflows)
 //   CHECKPOINT -> push an is_arena==2 delta into the ring (same as the
 //             --checkpoint-sec timer); "QUEUED\n" on success, "FULL\n" if
 //             the ring is full.
@@ -137,8 +139,9 @@ fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
     } else if (std.mem.eql(u8, line, "METRICS")) {
         const now = std.time.milliTimestamp();
         const uptime_s: i64 = @divTrunc(@max(now - ctx.start_ms, 0), 1000);
-        var out: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s }) catch return;
+        const fl = freelist.stats();
+        var out: [384]u8 = undefined;
+        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d} fl_quarantined={d} fl_reused={d} fl_dropped={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s, fl.quarantined, fl.reused, fl.dropped }) catch return;
         stream.writeAll(msg) catch {};
     } else if (std.mem.eql(u8, line, "CHECKPOINT")) {
         const ckpt = DeltaMessage{ .offset = 0, .size = 0, .is_arena = 2, .data = [_]u8{0} ** 48 };
