@@ -7,13 +7,19 @@
 - Scan: `O(n)` sobre filas, con proyeccion temprana. `table.scan()` copia cada
   fila (`{...r}`), asi que el scan **si** asigna; la proyeccion reduce el
   trabajo posterior, no la copia.
-- Filtro: `matchesWhere` sobre objetos JS. Por fila y por predicado llama
-  `Object.entries(where)` y, para operadores `like`, compila un `new RegExp`
-  nuevo. **No** es una comparacion en `DataView` y **no** es sin alloc: esa
-  afirmacion estaba en esta pagina y era falsa. El camino SIMD
-  (`filterU32/filterF64` en `src/core/relational/column.zig`) existe y esta
-  expuesto por C-ABI y N-API, pero el filtro relacional de TS no lo invoca
-  todavia.
+- Filtro: `matchesWhere` sobre objetos JS, **no** una comparacion en
+  `DataView` y **no** sin alloc: esa afirmacion estaba en esta pagina y era
+  falsa. Ahora la clausula se compila **una vez** por consulta (cache
+  `WeakMap` sobre el propio objeto `where`) en vez de por fila: antes cada fila
+  llamaba `Object.entries(where)` y cada `like` compilaba un `new RegExp` por
+  fila *y* por predicado. Medido sobre 20k filas (3 corridas por estado, rango
+  completo): **3122-5207 us -> 735-754 us**, ~4.3x, con los rangos sin
+  solaparse. `in` con 8+ elementos pasa a un `Set` compilado una vez.
+  Colateralmente, `like` ahora escapa los metacaracteres de RegExp, asi que un
+  `.` en el patron es un punto literal y no un comodin.
+  El camino SIMD (`filterU32/filterF64` en
+  `src/core/relational/column.zig`) existe y esta expuesto por C-ABI y N-API,
+  pero el filtro relacional de TS **todavia no lo invoca**.
 - Join hash: build en `Map<val, pk[]>`, probe streaming. `left.scan()` y
   `right.scan()` copian todas las filas antes del probe.
 - Agregacion: single-pass en TS con `Math.min(...vals)` / `Math.max(...vals)`,
