@@ -38,6 +38,10 @@ src/sdk/**/*.js
 # NOTE: scripts/*.js are currently tracked for CI compat (legacy).
 # New scripts must be .ts only; generated .js must not be committed.
 
+# Local-only agent knowledge base (style guides, research dossiers).
+# These are working notes, never project documentation. Do not "fix" this.
+.agents/
+
 # OS-specific files
 .DS_Store
 Thumbs.db

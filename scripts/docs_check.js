@@ -28,7 +28,10 @@ const QUIET = process.argv.includes('--quiet');
 /** Markdown files to check. Vendored/generated trees are excluded. */
 function markdownFiles() {
     const out = [];
-    const skip = new Set(['node_modules', '.git', 'zig-out', 'dist', '.zig-cache']);
+    // .agents/ is the local-only knowledge base (.gitignore'd, never
+    // published). Its links point at working notes that intentionally do not
+    // exist yet, and it must never gate CI on a contributor's machine state.
+    const skip = new Set(['node_modules', '.git', 'zig-out', 'dist', '.zig-cache', '.agents']);
     (function walk(dir) {
         let entries;
         try {

@@ -8,6 +8,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Nothing yet. The work below shipped under [0.1.0](#010---2026-09-25); this
 section is where anything after it goes.
 
+### Fixed
+
+- **WAL recovery no longer discards every write after the first padded
+  sector.** `flushBuffer` zero-fills the unused tail of any sector it does
+  not fill, and the flusher calls it whenever the ring drains, so a real log
+  is a run of padded sectors. The replay parser read that zero padding as an
+  all-zero entry header, set a `stop_reading` flag, and then broke out of the
+  **sector** loop rather than just the inner entry scan. The result: recovery
+  kept the entries of the first sector and silently dropped the rest. Measured
+  on a log of 2000 entries written in 286 flushed batches, **7 of 2000 were
+  recovered**; a 5-batch run lost 797 of 1000 bytes after `SIGKILL`, with no
+  warning on stdout. Zero padding now ends the current batch only, and
+  `carryLenFrom` decides whether a sector tail is padding (drop it) or a
+  genuinely split entry (carry it to the next sector) by checking for the
+  all-zero header that the producers refuse to emit — `takyon_notify_arena`
+  and `takyon_push_delta` both reject `size == 0` for exactly this reason.
+  Carrying padding is not an option: prepending those zeros to the next
+  sector shifts its framing, the misaligned length read then trips
+  `MAX_ENTRY_LEN`, and everything behind it is lost too. Regression coverage
+  is `recovery.zig` "WAL replay survives MULTIPLE partial sectors" (3
+  batches), "…many flushed batches (2000 entries)", and the E2E suite
+  `wal-multisector`.
+- **The crash-recovery E2E suites were not testing recovery.**
+  `takyon_connect_shm` reference-counts and returns the *same* mapping while
+  the count is above zero; `takyon_disconnect_shm` only unmaps on the last
+  call. `e2e_crash_auto_test.js` connected twice and disconnected once, so the
+  mapping was never released and its "reboot" phase re-read this process's
+  own pre-crash shared memory. The suite passed for any daemon that started,
+  including one that recovered nothing, which is why the WAL defect above
+  survived a green CI. Both call sites now count connections explicitly and
+  drain the count, so the post-crash phase reads a genuinely fresh mapping.
+
+  The pre-existing crash suites also crafted their payload to fill exactly
+  one sector (`RESIDUAL_SIZE = 4086`, "+6B header = 4092"), so even once
+  unmapping was fixed they could not reach the multi-sector path. The new
+  `wal-multisector` suite writes 5 separately flushed batches and asserts the
+  WAL really is multi-sector before it trusts the result.
+
 ## [0.1.0] - 2026-09-25
 
 First versioned release. Pre-alpha: the engine, the SDK, the daemon and the

@@ -348,11 +348,15 @@ fn replayOneSegment(
         // The active stream only includes the 4092 bytes of payload
         const end_idx = 4096 + 4092;
         var cursor: usize = start_idx;
-        var stop_reading = false;
+        // Bytes at the end of this sector that begin an entry continuing
+        // into the next one. Padding is deliberately NOT carried: see
+        // carryLenFrom.
+        var carry_len: usize = 0;
 
         while (cursor < end_idx) {
             const available = end_idx - cursor;
             if (available < @sizeOf(WalEntryHeader)) {
+                carry_len = carryLenFrom(buf, cursor, end_idx);
                 break; // Need more bytes for header next read
             }
 
@@ -360,13 +364,20 @@ fn replayOneSegment(
             std.mem.copyForwards(u8, std.mem.asBytes(&header), buf[cursor .. cursor + @sizeOf(WalEntryHeader)]);
 
             if (header.length == 0) {
-                // End of active WAL (zero padding hit)
-                stop_reading = true;
+                // Zero padding: this batch ended at an entry boundary.
+                // The next sector is a NEW batch, not the end of the log,
+                // so stop scanning this sector only and keep reading.
+                // Aborting the whole segment here silently discarded every
+                // entry written after the first padded sector.
                 break;
             }
-            if (@as(u32, header.length) > MAX_ENTRY_LEN) break; // Corrupt length; stop.
+            if (@as(u32, header.length) > MAX_ENTRY_LEN) {
+                carry_len = carryLenFrom(buf, cursor, end_idx);
+                break; // Corrupt length; stop.
+            }
 
             if (available < @sizeOf(WalEntryHeader) + header.length) {
+                carry_len = carryLenFrom(buf, cursor, end_idx);
                 break; // Need more bytes for payload next read
             }
 
@@ -393,14 +404,39 @@ fn replayOneSegment(
             cursor += @sizeOf(WalEntryHeader) + header.length;
         }
 
-        if (stop_reading) break;
-
-        // Move leftovers to the end of the first 4KB page
-        leftover_len = end_idx - cursor;
+        // Carry a genuinely split entry to the front of the next sector so
+        // its header is re-read in the right place.
+        leftover_len = carry_len;
         if (leftover_len > 0) {
-            std.mem.copyForwards(u8, buf[4096 - leftover_len .. 4096], buf[cursor..end_idx]);
+            std.mem.copyForwards(u8, buf[4096 - leftover_len .. 4096], buf[end_idx - leftover_len .. end_idx]);
         }
     }
+}
+
+/// How many bytes at the end of a sector are the beginning of an entry
+/// that continues in the next sector, and so must be carried forward.
+///
+/// A sector is written one of two ways. A FULL sector has no padding and
+/// may end mid-entry, so its tail must be carried. A PADDED sector ends
+/// at an entry boundary and its zero tail must NOT be carried: those
+/// zeros would be prepended to the next sector and shift its entry
+/// framing, and the misaligned `length` read then trips the
+/// MAX_ENTRY_LEN check and throws away every entry behind it.
+///
+/// The two are told apart by content. flushBuffer zero-fills the padding,
+/// and an all-zero header (offset 0, length 0) is never emitted:
+/// takyon_notify_arena and takyon_push_delta both reject size == 0
+/// precisely so the parser can use it as a terminator. So an all-zero
+/// tail is padding.
+///
+/// When a real entry *is* split with an all-zero tail, dropping it costs
+/// at most that entry's carried bytes. Carrying instead would misalign
+/// the following sector, so this is the cheaper of the two failures.
+fn carryLenFrom(buf: []u8, cursor: usize, end_idx: usize) usize {
+    for (buf[cursor..end_idx]) |b| {
+        if (b != 0) return end_idx - cursor; // Real split entry: carry it.
+    }
+    return 0;
 }
 
 fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32) void {
@@ -461,6 +497,119 @@ test "WAL multi-sector entry round-trip (5000B payload)" {
     @memset(arena, 0);
     try recoverWal(allocator, path, arena);
     try std.testing.expectEqualSlices(u8, &payload, arena[payload_off .. payload_off + payload_len]);
+}
+
+/// Writes one WAL entry the way processDelta does: 6-byte header then
+/// payload, both through the byte-stream writer.
+fn writeEntry(wal: anytype, offset: u32, payload: []const u8) !void {
+    const header = WalEntryHeader{ .offset = offset, .length = @as(u16, @intCast(payload.len)) };
+    try wal.writeToBuffer(std.mem.asBytes(&header));
+    try wal.writeToBuffer(payload);
+}
+
+test "WAL replay survives MULTIPLE partial sectors" {
+    // Regression: every flushBuffer() that does not fill a sector writes
+    // zero padding after the last entry (wal.zig flushBuffer). The replay
+    // parser must treat that padding as the end of ONE batch, not as the
+    // end of the whole log. It used to abort the entire segment at the
+    // first padded sector, so only the entries of the first batch were
+    // ever recovered and the loss was silent.
+    //
+    // The single-batch case is covered by the 5000B round-trip test above;
+    // that test writes one entry, so the only padding is in the final
+    // sector and there is nothing after it to lose.
+    const WalManager = @import("wal.zig").WalManager;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/multi-partial.takyon", .{dirpath});
+
+    // Three batches, each flushed separately so each becomes its own
+    // padded (partial) sector. Payload byte is unique per batch+index so
+    // a wrong-extent read cannot accidentally match.
+    const batches = 3;
+    const per_batch = 4;
+    const arena_size: usize = 16384;
+
+    var wal = try WalManager.init(allocator, path);
+    for (0..batches) |b| {
+        for (0..per_batch) |i| {
+            const idx = b * per_batch + i;
+            const off: u32 = @intCast(1000 + idx * 8);
+            const byte = [_]u8{@intCast(0xA0 + idx)};
+            try writeEntry(&wal, off, &byte);
+        }
+        try wal.flushBuffer();
+    }
+    wal.shutdown();
+
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+    try recoverWal(allocator, path, arena);
+
+    for (0..batches) |b| {
+        for (0..per_batch) |i| {
+            const idx = b * per_batch + i;
+            const off: usize = 1000 + idx * 8;
+            try std.testing.expectEqual(
+                @as(u8, @intCast(0xA0 + idx)),
+                arena[off],
+            );
+        }
+    }
+}
+
+test "WAL replay survives many flushed batches (2000 entries)" {
+    // Same defect at scale: the chaos benchmark flushes continuously, so
+    // a real log is a long run of padded sectors. Assert the count, not a
+    // spot check, so a partial recovery cannot pass by luck.
+    const WalManager = @import("wal.zig").WalManager;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/many-batches.takyon", .{dirpath});
+
+    const total = 2000;
+    const per_batch = 7;
+    const arena_size: usize = 65536;
+
+    var wal = try WalManager.init(allocator, path);
+    var written: usize = 0;
+    while (written < total) {
+        const n = @min(per_batch, total - written);
+        for (0..n) |i| {
+            const idx = written + i;
+            const off: u32 = @intCast(1000 + idx * 4);
+            const byte = [_]u8{@intCast(idx % 251)};
+            try writeEntry(&wal, off, &byte);
+        }
+        written += n;
+        try wal.flushBuffer();
+    }
+    wal.shutdown();
+
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+    try recoverWal(allocator, path, arena);
+
+    // Count how many entries actually landed, in order to report the
+    // shortfall instead of failing on the first mismatch.
+    var recovered: usize = 0;
+    while (recovered < total) : (recovered += 1) {
+        const off: usize = 1000 + recovered * 4;
+        if (arena[off] != @as(u8, @intCast(recovered % 251))) break;
+    }
+    try std.testing.expectEqual(@as(usize, total), recovered);
 }
 
 test "WAL framing fuzz never fails fatally (256 random files)" {

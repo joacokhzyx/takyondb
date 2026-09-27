@@ -11,6 +11,7 @@ const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS || process.env.E2E_TIMEOUT 
 const SUITES = [
   { name: 'zerocopy', file: 'e2e_zerocopy_test.ts', ts: true },
   { name: 'crash', file: 'e2e_crash_auto_test.js', ts: false },
+  { name: 'wal-multisector', file: 'e2e_wal_multisector_test.js', ts: false },
   { name: 'catalog', file: 'e2e_catalog_reboot_test.js', ts: false, needsDist: true },
   { name: 'corruption', file: 'e2e_corruption_test.ts', ts: true },
   { name: 'vacuum', file: 'e2e_vacuum_test.js', ts: false },

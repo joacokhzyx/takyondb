@@ -33,10 +33,23 @@ function cleanShm() {
   }
 }
 
+// takyon_connect_shm refcounts (src/core/c_abi/exports.zig) and hands back
+// the SAME mapping while the count is above zero; takyon_disconnect_shm only
+// unmaps on the last call. An unbalanced count here means the "reboot" phase
+// re-reads this process's pre-crash mapping, so the suite passes without ever
+// exercising recovery. Keep the count explicit and drain it.
+let shmRefs = 0;
 function connect() {
   const mem = takyondb.initSharedMemory(ARENA_SIZE);
   if (!mem) fail('shared memory connect failed');
+  shmRefs++;
   return mem;
+}
+function disconnectAll() {
+  while (shmRefs > 0) {
+    takyondb.disconnect_shm();
+    shmRefs--;
+  }
 }
 
 async function run() {
@@ -82,7 +95,7 @@ async function run() {
 
   console.log('[E2E Crash] SIGKILLing daemon...');
   await stopDaemon(daemon);
-  try { takyondb.disconnect_shm(); } catch (e) {}
+  disconnectAll();
   cleanShm();
 
   console.log('[E2E Crash] Phase 2: reboot and verify...');
@@ -106,7 +119,7 @@ async function run() {
   }
 
   await stopDaemon(daemon);
-  try { takyondb.disconnect_shm(); } catch (e) {}
+  disconnectAll();
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch (e) {}
 
   if (errors > 0 || !residualOk) return fail(`${errors} keys missing, residual ok: ${residualOk}`);
