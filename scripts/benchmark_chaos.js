@@ -56,6 +56,8 @@ if (isMainThread) {
 
         let completed = 0;
         const latencies = [];
+        let writeAttempts = 0;
+        let dropped = 0;
 
         for (let i = 0; i < TOTAL_WORKERS; i++) {
             const worker = new Worker(__filename, {
@@ -65,11 +67,13 @@ if (isMainThread) {
             worker.on('message', (msg) => {
                 if (msg.type === 'done') {
                     latencies.push(...msg.latencies);
+                    writeAttempts += msg.writes_attempted || 0;
+                    dropped += msg.dropped || 0;
                     completed++;
                     if (completed === TOTAL_WORKERS) {
-                        analyzeResults(latencies);
+                        analyzeResults(latencies, writeAttempts, dropped);
                         daemon.proc.kill('SIGKILL');
-                        process.exit(0);
+                        process.exit(process.exitCode || 0);
                     }
                 }
             });
@@ -92,12 +96,30 @@ if (isMainThread) {
         process.exit(1);
     });
 
-    function analyzeResults(lats) {
+    function analyzeResults(lats, writeOps, droppedOps) {
         if (!Array.isArray(lats) || lats.length === 0) {
             console.error('[Chaos] FAILURE: no latency samples were collected');
             process.exitCode = 1;
             return;
         }
+
+        // A latency figure only means something if every operation it
+        // summarizes actually landed. The previous version of this harness
+        // ignored the return value of notifyArena/pushDelta, so 171,156 of
+        // 200,000 writes were discarded by a full ring while the report still
+        // claimed 200,000 operations — and the README quoted its p50. Fail the
+        // run instead of publishing a number derived from dropped work.
+        const dropRate = writeOps > 0 ? droppedOps / writeOps : 0;
+        if (droppedOps > 0) {
+            console.error(
+                `[Chaos] FAILURE: ${droppedOps}/${writeOps} writes were dropped after ` +
+                `exhausting the ring's back-pressure budget (${(dropRate * 100).toFixed(2)}%). ` +
+                `The percentiles below would describe only the writes that survived, so this run ` +
+                `is not publishable. Raise the arena size or lower the op count.`
+            );
+            process.exitCode = 1;
+        }
+
         lats.sort((a, b) => a - b);
         const p50 = lats[Math.floor(lats.length * 0.5)];
         const p95 = lats[Math.floor(lats.length * 0.95)];
@@ -124,6 +146,7 @@ if (isMainThread) {
         console.log(`          20% read / 40% insert / 40% update (seeded LCG per worker),`);
         console.log(`          vacuum running and a checkpoint every 500ms.`);
         console.log(`Total Operations: ${lats.length}`);
+        console.log(`Writes dropped:  ${droppedOps} / ${writeOps} write ops`);
         console.log(`p50 Latency: ${p50.toFixed(3)} ms`);
         console.log(`p95 Latency: ${p95.toFixed(3)} ms`);
         console.log(`p99 Latency: ${p99.toFixed(3)} ms`);
@@ -147,6 +170,8 @@ if (isMainThread) {
                 'allocation. Absolute values are machine and scheduler specific.',
             results: {
                 ops: lats.length,
+                writes_dropped: droppedOps,
+                writes_attempted: writeOps,
                 p50_ms: p50,
                 p95_ms: p95,
                 p99_ms: p99,
@@ -173,6 +198,18 @@ if (isMainThread) {
     }
 
     const latencies = new Float64Array(ops);
+    // Writes that exhausted the ring's back-pressure budget. Reported to the
+    // orchestrator, which refuses to publish a run that lost writes.
+    let dropped = 0;
+    // Write operations attempted (insert + update branches). Counted rather
+    // than derived from the op mix so the drop rate has an exact denominator.
+    let writeAttempts = 0;
+
+    // How long a single push may wait for the ring to drain before the op is
+    // counted as dropped. Sized to outlast a checkpoint: createSnapshot
+    // serializes the whole arena, and at 64 MiB that is tens of MB written
+    // while the flusher is not draining the ring.
+    const PUSH_BACKPRESSURE_TIMEOUT_MS = 3000;
     
     // Worker-scoped, reused for every op. These used to be constructed inside
     // the timed region (a TextEncoder plus an 8-byte ArrayBuffer + DataView +
@@ -203,16 +240,40 @@ if (isMainThread) {
         } else if (opType < 0.6) {
             // Insert
             takyondb.insert_index(key, recordOffset);
-            updateString(recordOffset, `Value_${workerId}_${i}`);
+            writeAttempts++;
+            if (!updateString(recordOffset, `Value_${workerId}_${i}`)) dropped++;
         } else {
             // Update
-            updateString(recordOffset, `Updated_${workerId}_${i}`);
+            writeAttempts++;
+            if (!updateString(recordOffset, `Updated_${workerId}_${i}`)) dropped++;
         }
         
         latencies[i] = performance.now() - start;
     }
     
-    parentPort.postMessage({ type: 'done', latencies: Array.from(latencies) });
+    parentPort.postMessage({
+        type: 'done',
+        latencies: Array.from(latencies),
+        writes_attempted: writeAttempts,
+        dropped,
+    });
+    
+    function pushWithBackpressure(push) {
+        // Deadline rather than attempt count: a real client blocks until the
+        // ring drains, and what it should report on failure is "I waited and
+        // it never came back", not "I gave up after N tries". The pause grows
+        // so a flusher that is mid-checkpoint (which writes the whole arena)
+        // gets a chance to finish without the client burning a core.
+        const deadline = performance.now() + PUSH_BACKPRESSURE_TIMEOUT_MS;
+        let pauseMs = 0;
+        for (;;) {
+            if (push() === 0) return true;
+            if (performance.now() >= deadline) return false;
+            const waiter = new Int32Array(new SharedArrayBuffer(4));
+            Atomics.wait(waiter, 0, 0, pauseMs);
+            if (pauseMs < 4) pauseMs += 1;
+        }
+    }
     
     function updateString(recordOffset, value) {
         const bytes = encoder.encode(value);
@@ -224,11 +285,13 @@ if (isMainThread) {
         const dest = new Uint8Array(memoryBuffer, allocatedOffset, strLen);
         dest.set(bytes);
         
-        takyondb.notifyArena(allocatedOffset, strLen);
+        if (!pushWithBackpressure(() => takyondb.notifyArena(allocatedOffset, strLen))) {
+            return false;
+        }
         
         // Reused scratch instead of a fresh ArrayBuffer + DataView per op.
         deltaPtrView.setUint32(0, allocatedOffset, true);
         deltaPtrView.setUint32(4, strLen, true);
-        takyondb.pushDelta(recordOffset + FIELD_OFFSET_USERNAME, deltaPtrBytes);
+        return pushWithBackpressure(() => takyondb.pushDelta(recordOffset + FIELD_OFFSET_USERNAME, deltaPtrBytes));
     }
 }

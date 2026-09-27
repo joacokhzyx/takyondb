@@ -10,6 +10,19 @@ section is where anything after it goes.
 
 ### Fixed
 
+- **The chaos benchmark was publishing numbers derived from dropped writes.**
+  `notifyArena` and `pushDelta` return -1 when the ring is full, which is
+  back-pressure, and the SDK treats it as a hard failure
+  (`src/sdk/client/proxy.ts` throws). The harness ignored both return values,
+  so **171,156 of 200,000 writes were silently discarded** and the report
+  still claimed 200,000 operations — and the README quoted that run's p50.
+  Writes now retry against a deadline, so the number describes a client that
+  actually committed its work, the drop count is reported with an exact
+  denominator, and a run that loses any write exits non-zero instead of
+  publishing. On the reference host the retry also absorbed the transient
+  stalls that a checkpoint causes (it serializes the whole arena while the
+  flusher is not draining), which moved p99 from 1.085 ms to 0.206 ms; the
+  p50 is unchanged at 0.002 ms.
 - **An idle daemon no longer holds 1.8 cores.** Both background loops used
   `Thread.yield` and `spinLoopHint` as their idle action, and neither blocks:
   the admin/checkpoint loop in `main.zig` and the WAL flusher in `wal.zig`
