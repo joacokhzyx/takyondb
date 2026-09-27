@@ -12,6 +12,7 @@ const SUITES = [
   { name: 'zerocopy', file: 'e2e_zerocopy_test.ts', ts: true },
   { name: 'crash', file: 'e2e_crash_auto_test.js', ts: false },
   { name: 'wal-multisector', file: 'e2e_wal_multisector_test.js', ts: false },
+  { name: 'idle-cpu', file: 'e2e_idle_cpu_test.js', ts: false },
   { name: 'catalog', file: 'e2e_catalog_reboot_test.js', ts: false, needsDist: true },
   { name: 'corruption', file: 'e2e_corruption_test.ts', ts: true },
   { name: 'vacuum', file: 'e2e_vacuum_test.js', ts: false },

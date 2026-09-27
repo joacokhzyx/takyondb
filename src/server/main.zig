@@ -18,6 +18,11 @@ const freelist = core.freelist;
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
 
+/// Idle slice for the admin/checkpoint loop. Nothing happens between the
+/// 10s metrics tick and the checkpoint deadline, so the loop sleeps. Kept
+/// short (100ms) so a signal is noticed and the daemon exits promptly.
+const ADMIN_IDLE_SLICE_NS: u64 = 100 * std.time.ns_per_ms;
+
 // ============================================================================
 // Admin TCP endpoint (listen + PING + HEALTH + METRICS + CHECKPOINT + SCAN + RANGE).
 //
@@ -466,7 +471,11 @@ pub fn main() !void {
                 std.debug.print("[TakyonDB-Daemon] Checkpoint skipped (ring full).\n", .{});
             }
         }
-        std.Thread.yield() catch {};
+        // Sleep instead of yielding: this loop has no work to do between
+        // the metrics and checkpoint deadlines, and `Thread.yield` returns
+        // immediately, so an idle daemon used to hold a full core. The slice
+        // is short so the shutdown flag is noticed promptly.
+        std.time.sleep(ADMIN_IDLE_SLICE_NS);
     }
 
     // 5. Graceful shutdown. The daemon owns the segment name: unlink it so

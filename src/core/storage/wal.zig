@@ -35,6 +35,12 @@ pub const SEGMENT_MAX: usize = 64 * 1024 * 1024;
 /// recovery replay, and snapshot cleanup. Documented O(n) worst case.
 pub const MAX_SEGMENTS: u32 = 100_000;
 
+/// Idle backoff bounds for the flusher thread. 50us keeps the added
+/// durability latency far below one fsync; 2ms is the worst case for both
+/// noticing new work and exiting on shutdown.
+pub const IDLE_MIN_SLEEP_NS: u64 = 50_000;
+pub const IDLE_MAX_SLEEP_NS: u64 = 2_000_000;
+
 /// WalManager handles persisting memory deltas asynchronously to disk,
 /// bypassing the OS Page Cache via Direct I/O where applicable.
 pub const WalManager = struct {
@@ -412,14 +418,21 @@ pub const WalManager = struct {
         // is_arena == 2 (checkpoint) is handled by the loop, not here.
     }
 
-    /// Background consumer loop with exponential backoff to avoid CPU
-    /// starvation while remaining lock-free.
+    /// Background consumer loop. Backs off with a bounded sleep while the
+    /// ring is empty instead of spinning: an idle daemon used to hold two
+    /// cores (this loop plus the admin loop) with zero clients, because
+    /// `spinLoopHint` and `Thread.yield` both return immediately. Yielding
+    /// is not waiting.
+    ///
+    /// The backoff doubles from IDLE_MIN to IDLE_MAX and resets on the first
+    /// delta, so a burst is still drained at full speed while a quiet daemon
+    /// costs nothing. IDLE_MAX is also the worst-case shutdown latency.
     fn flusherLoop(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8) void {
-        var backoff_counter: u32 = 0;
+        var backoff_ns: u64 = IDLE_MIN_SLEEP_NS;
 
         while (self.running.load(.acquire)) {
             if (ring_buffer.pop()) |delta| {
-                backoff_counter = 0;
+                backoff_ns = IDLE_MIN_SLEEP_NS;
 
                 if (delta.is_arena == 2) {
                     // Checkpoint: drain everything queued before snapshotting
@@ -427,26 +440,26 @@ pub const WalManager = struct {
                     while (ring_buffer.pop()) |pending| {
                         if (pending.is_arena == 2) continue;
                         self.processDelta(pending, arena_mem) catch |err| {
-                            std.debug.print("[WAL] Dropped delta during drain: {}\n", .{err});
+                            std.debug.print("[WAL] Dropped delta during drain: {s}\n", .{@errorName(err)});
                         };
                     }
                     self.flushBuffer() catch {};
                     snapshot.createSnapshot(arena_mem, self, ring_buffer) catch |err| {
-                        std.debug.print("[WAL] Error creating snapshot: {}\n", .{err});
+                        std.debug.print("[WAL] Error creating snapshot: {s}\n", .{@errorName(err)});
                     };
                 } else {
                     self.processDelta(delta, arena_mem) catch |err| {
-                        std.debug.print("[WAL] Dropped corrupt delta: {}\n", .{err});
+                        std.debug.print("[WAL] Dropped delta {s}\n", .{@errorName(err)});
                     };
                 }
             } else {
+                // Persist whatever is still buffered before idling, so the
+                // tail of a burst reaches disk without waiting for a fill.
                 self.flushBuffer() catch {};
 
-                backoff_counter += 1;
-                if (backoff_counter < 1000) {
-                    std.atomic.spinLoopHint();
-                } else {
-                    std.Thread.yield() catch {};
+                std.time.sleep(backoff_ns);
+                if (backoff_ns < IDLE_MAX_SLEEP_NS) {
+                    backoff_ns = @min(backoff_ns * 2, IDLE_MAX_SLEEP_NS);
                 }
             }
         }

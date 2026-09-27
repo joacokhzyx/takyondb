@@ -10,6 +10,19 @@ section is where anything after it goes.
 
 ### Fixed
 
+- **An idle daemon no longer holds 1.8 cores.** Both background loops used
+  `Thread.yield` and `spinLoopHint` as their idle action, and neither blocks:
+  the admin/checkpoint loop in `main.zig` and the WAL flusher in `wal.zig`
+  each spun flat out with nothing to do. Measured on a 2-vCPU host with zero
+  clients attached, the daemon consumed **1.81 cores**, so a database that was
+  doing nothing drew more power than a working set in page cache. The flusher
+  now sleeps on a bounded exponential backoff (50µs doubling to 2ms, reset on
+  the first delta), and the admin loop sleeps in 100ms slices between its 10s
+  metrics tick and the checkpoint deadline. Same measurement after the fix:
+  **0.006 cores**, a ~300x reduction, with the flusher's added durability
+  latency still well under one fsync. The new `idle-cpu` E2E suite reads the
+  daemon's own CPU accounting and fails above 0.1 cores, so a loop that
+  regresses to spinning is caught instead of quietly costing money.
 - **WAL recovery no longer discards every write after the first padded
   sector.** `flushBuffer` zero-fills the unused tail of any sector it does
   not fill, and the flusher calls it whenever the ring drains, so a real log
