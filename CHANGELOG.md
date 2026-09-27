@@ -25,6 +25,45 @@ section is where anything after it goes.
   whose return values the doc described backwards. Those are fixed in the
   JSDoc now and queued for the `docs/` pass.
 
+### Changed
+
+- **A snapshot now covers only the extents in use, not the whole arena.**
+  `createSnapshot` serialized the entire mapped region, so an idle 64 MiB
+  arena wrote **10,493,952 bytes** on every checkpoint — 15.1 GB/day of
+  rewrites for a database holding nothing, which is the single most
+  destructive behaviour in the project. The same run now writes **8,192
+  bytes**, a 1281x reduction, and recovery got faster as a side effect
+  because it no longer reads 21 MB to restore an empty database: median
+  boot over 5 runs went from 581 ms to 36.9 ms.
+
+  The four regions (global header, record bank, ART bank, string bank) are
+  packed into 4 KiB blocks carrying only their live extent, with the bump
+  word included at the head of each extent so the restored allocator
+  points into data that was actually written rather than at whatever the
+  shared segment happened to hold. The ring is deliberately not carried:
+  `finalize` zeroes it and the daemon re-initializes it as master.
+
+  Format v3, with a version word in the footer. v2 is refused **by version,
+  never reinterpreted**: in v2 the three words after the CRC are
+  `active_len / art_bump / str_bump` and in v3 they are extent lengths, so
+  reading one under the other's rules restores a plausible-looking arena
+  at the wrong offsets. A v2 file is rejected with a message that names the
+  version and the consequence.
+
+  **Upgrade note:** a v2 snapshot cannot be read by this build and cannot be
+  converted in place, because its payload *is* the 10 MB prefix image.
+  Recovery falls back to WAL-only replay, and since the previous run
+  truncated the WAL after its successful snapshot, that path can lose data
+  the old snapshot still held. Delete the stale `.snap` — or downgrade —
+  after upgrading. No compatibility reader is shipped, because reading v2
+  correctly means keeping the prefix-copy path alive permanently.
+
+  Bytes outside the restored extents are zeroed rather than left alone:
+  recovery runs against the surviving shared segment, so a stale record and
+  a real one are otherwise indistinguishable. If the snapshot is rejected
+  mid-restore, the extents already scattered are blanked, and the WAL replay
+  that follows rewrites every byte it owns.
+
 ### Fixed
 
 - **Index writes are now durable.** `takyon_insert_index` mutated the ART in

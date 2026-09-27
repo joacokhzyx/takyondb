@@ -21,6 +21,11 @@ const ArtIndex = @import("../index/art.zig").ArtIndex;
 const MAX_ENTRY_LEN = @import("wal.zig").MAX_ENTRY_LEN;
 /// Segment index cap shared with wal.zig rotation/cleanup.
 const MAX_SEGMENTS = @import("wal.zig").MAX_SEGMENTS;
+/// The snapshot writer owns the on-disk format, so the reader imports its
+/// constants rather than restating them: a second copy of the footer field
+/// offsets is exactly the kind of thing that silently rots. recovery.zig
+/// already depends on snapshot.zig transitively (wal.zig imports it).
+const snap = @import("snapshot.zig");
 
 // Coordinate with the layout-v2 agent: these WILL exist in layout.zig.
 // Fallbacks use identical values so this file compiles in parallel.
@@ -29,10 +34,23 @@ const VERSION_OFFSET: usize = if (@hasDecl(layout, "VERSION_OFFSET")) layout.VER
 const LAYOUT_VERSION: u32 = if (@hasDecl(layout, "LAYOUT_VERSION")) layout.LAYOUT_VERSION else 2;
 const FOOTER_MAGIC: u32 = if (@hasDecl(layout, "ARENA_MAGIC")) layout.ARENA_MAGIC else 0x54414B59;
 
+/// The extents a verified snapshot restored, in the writer's canonical
+/// order. `len == 0` means that region was empty at snapshot time and the
+/// snapshot carried nothing for it.
 pub const SnapshotMeta = struct {
-    active_len: u32,
-    art_bump: u32,
-    str_bump: u32,
+    extents: [snap.EXTENT_COUNT]snap.Extent,
+
+    pub fn record(self: SnapshotMeta) snap.Extent {
+        return self.extents[snap.EXT_REC];
+    }
+
+    pub fn art(self: SnapshotMeta) snap.Extent {
+        return self.extents[snap.EXT_ART];
+    }
+
+    pub fn strings(self: SnapshotMeta) snap.Extent {
+        return self.extents[snap.EXT_STR];
+    }
 };
 
 /// Logical index operations recovered from the WAL, held until the arena
@@ -184,18 +202,129 @@ fn blocksFor(byte_len: usize) usize {
     return (byte_len + 4095) / 4096;
 }
 
+fn isFooterV3Shape(buf: *const [4096]u8) bool {
+    for (buf[snap.FOOTER_V3_TAIL_OFF..]) |b| {
+        if (b != 0) return false;
+    }
+    return true;
+}
+
 fn isFooterV2Shape(buf: *const [4096]u8) bool {
-    for (buf[24..4096]) |b| {
+    for (buf[snap.FOOTER_V2_TAIL_OFF..]) |b| {
         if (b != 0) return false;
     }
     return true;
 }
 
 fn isLegacyV1Shape(buf: *const [4096]u8) bool {
-    for (buf[8..4096]) |b| {
+    for (buf[snap.FOOTER_V1_TAIL_OFF..]) |b| {
         if (b != 0) return false;
     }
     return true;
+}
+
+/// Rebuilds the writer's extent table from the footer's length words and
+/// checks every bound a length could break.
+///
+/// The starts are not stored: an extent always begins at its layout
+/// constant, so they are re-derived here and the lengths are validated
+/// against the region each one must stay inside. A footer is a file on
+/// disk, so nothing in it is trusted until it has been proved to be
+/// describable as extents of *this* arena.
+fn extentsFromFooter(buf: *const [4096]u8, arena_len: usize) ?[snap.EXTENT_COUNT]snap.Extent {
+    var extents: [snap.EXTENT_COUNT]snap.Extent = undefined;
+    for (0..snap.EXTENT_COUNT) |i| {
+        const len = std.mem.readInt(u32, buf[snap.FOOTER_FIRST_LEN_OFF + 4 * i ..][0..4], .little);
+        const start: usize = snap.EXTENT_STARTS[i];
+        if (start > arena_len) {
+            // This arena is too small to hold the region at all: nothing
+            // can be claimed for it.
+            extents[i] = .{ .start = @intCast(start), .len = 0 };
+            continue;
+        }
+        const end = start + @as(usize, len);
+        if (end > arena_len) return null;
+        // A length the writer could never have produced means the footer
+        // is not describing this format; refuse it instead of restoring a
+        // region it admits it does not cover in full.
+        if (len != 0 and len < snap.EXTENT_MIN_LENS[i]) return null;
+        extents[i] = .{ .start = @intCast(start), .len = len };
+    }
+    // Strictly ascending and disjoint: the packed payload walk, and the
+    // gap fill in zeroOutsideExtents, both depend on it.
+    for (extents[1..], 0..) |e, i| {
+        const earlier = extents[i];
+        if (e.start < earlier.start) return null;
+        if (e.len != 0 and earlier.len != 0 and e.start < earlier.end()) return null;
+    }
+    return extents;
+}
+
+/// Scatters one payload block back into the arena.
+///
+/// The mirror image of snapshot.zig's `renderPayloadBlock`, and the reason
+/// this format is self-describing: the extents are contiguous, ordered and
+/// disjoint, so one block of the packed payload maps to at most one
+/// contiguous run in each extent and the split is a pure function of the
+/// lengths.
+fn placePayloadBlock(arena_mem: []u8, extents: [snap.EXTENT_COUNT]snap.Extent, at: usize, block: *const [4096]u8) void {
+    const block_end = at + block.len;
+    var p0: usize = 0;
+    for (extents) |e| {
+        const p1 = p0 + e.len;
+        if (p1 > at and p0 < block_end and e.len != 0) {
+            const from = @max(at, p0);
+            const to = @min(block_end, p1);
+            const dst = @as(usize, e.start) + (from - p0);
+            const n = to - from;
+            if (dst + n <= arena_mem.len) {
+                @memcpy(arena_mem[dst..][0..n], block[from - at ..][0..n]);
+            }
+        }
+        p0 = p1;
+        if (p0 >= block_end) break;
+    }
+}
+
+/// Zeroes every byte a restored snapshot did not bring back.
+///
+/// This is the price of a partial snapshot and it is not optional. The
+/// arena being recovered into is normally the *surviving* shared segment,
+/// which still holds the previous incarnation's bytes; a snapshot that
+/// covers only its extents would otherwise leave every one of them
+/// readable, just unreachable through the allocator. Unreachable is not
+/// the same as absent: one stray offset read and a stale record looks
+/// exactly like data. Zeroing makes the outcome of a recovery independent
+/// of what the arena held beforehand, which is what lets the round-trip
+/// test assert byte equality against a freshly written source arena.
+///
+/// Cost is one pass over the unused space, once per boot, and it shrinks to
+/// nothing as the database fills up (the ranges are the tails of the three
+/// regions, not the regions themselves).
+fn zeroOutsideExtents(arena_mem: []u8, extents: [snap.EXTENT_COUNT]snap.Extent) void {
+    // Clamp to the arena before filling gaps: on an arena too small to hold
+    // a region at all, that region starts past the end and must collapse
+    // onto it, or everything after the last region that does fit would be
+    // skipped instead of zeroed.
+    var cursor: usize = 0;
+    for (extents) |e| {
+        const start = @min(@as(usize, e.start), arena_mem.len);
+        if (start > cursor) @memset(arena_mem[cursor..start], 0);
+        cursor = @max(cursor, @min(@as(usize, e.end()), arena_mem.len));
+    }
+    if (cursor < arena_mem.len) @memset(arena_mem[cursor..], 0);
+}
+
+/// Blanks the extents a refused snapshot had already scattered into the
+/// arena, so that rejecting a snapshot leaves a known-empty region rather
+/// than a mixture of old and new bytes. The zeroing zeroOutsideExtents did
+/// is deliberately not undone: bytes left over from the previous
+/// incarnation are not a better starting point than a region known to be
+/// empty, and the WAL replay that follows writes every byte it owns.
+fn undoRestore(arena_mem: []u8, extents: [snap.EXTENT_COUNT]snap.Extent) void {
+    for (extents) |e| {
+        if (e.len != 0 and e.end() <= arena_mem.len) @memset(arena_mem[e.start..e.end()], 0);
+    }
 }
 
 /// `art_index` is optional because it is only meaningful for an arena large
@@ -216,22 +345,25 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
 
     // Phase 1: snapshot with CRC verification (two passes).
     if (try loadSnapshot(allocator, path, arena_mem)) |meta| {
-        // Seed maxima from the snapshot footer + copied bump words so all
-        // three arenas survive even with no further WAL replay.
+        // Seed maxima from the restored bump words, so all three arenas
+        // survive even with no further WAL replay. Each extent ends at its
+        // region's bump by construction, so its end is a second, redundant
+        // witness: it is used when the extent could not carry the word
+        // itself (a truncated region, or a small arena with no bump word
+        // at all) and can only ever agree with the word otherwise.
         const arena_rec = readWord(arena_mem, layout.RECORD_BUMP_OFFSET, layout.RECORD_BUMP_INIT);
         const arena_art = readWord(arena_mem, layout.ART_BUMP_OFFSET, layout.ART_START);
         const arena_str = readWord(arena_mem, layout.STRING_BUMP_OFFSET, layout.STRING_DATA_START);
-        rec_max = @max(rec_max, arena_rec);
-        art_max = @max(meta.art_bump, arena_art);
+        rec_max = @max(rec_max, @max(arena_rec, meta.record().end()));
+        art_max = @max(arena_art, meta.art().end());
         art_max = @max(art_max, layout.ART_START);
-        str_max = @max(meta.str_bump, arena_str);
+        str_max = @max(arena_str, meta.strings().end());
         str_max = @max(str_max, layout.STRING_DATA_START);
         // Clamp seeds to arena bounds: a larger arena image truncated here
         // must not push bumps past the end.
         if (rec_max > arena_mem.len) rec_max = @as(u32, @intCast(arena_mem.len));
         if (art_max > arena_mem.len) art_max = @as(u32, @intCast(arena_mem.len));
         if (str_max > arena_mem.len) str_max = @as(u32, @intCast(arena_mem.len));
-        _ = meta.active_len;
     }
 
     // Phase 2: WAL delta replay.
@@ -256,10 +388,18 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     finalize(arena_mem, rec_max, art_max, str_max);
 }
 
-/// Loads and verifies the snapshot. Returns footer metadata, or null when
-/// no (valid) snapshot exists. A corrupt snapshot never poisons the arena:
-/// it is skipped with a warning and the WAL still replays.
+/// Loads and verifies the snapshot. Returns the extents it restored, or
+/// null when no (valid) snapshot exists. A corrupt snapshot never poisons
+/// the arena: it is skipped with a warning and the WAL still replays.
 /// Snap path is derived from the WAL `path` arg as `<wal>.snap`.
+///
+/// Two passes, both mandatory. Pass 1 scans every block to find the footer
+/// (which is last) and to count blocks, so the extents and the expected
+/// block count are known before a single byte is written to the arena.
+/// Pass 2 re-reads and scatters the payload while hashing it, and the CRC
+/// from the footer is checked before the result is trusted. Splitting it
+/// this way is what makes a torn snapshot detectable instead of
+/// half-applied.
 fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem: []u8) !?SnapshotMeta {
     var snap_buf: [4096]u8 = undefined;
     const snap_path = try std.fmt.bufPrintZ(&snap_buf, "{s}.snap", .{wal_path});
@@ -295,16 +435,35 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
         return null;
     }
 
-    // Footer v2 in the last block:
-    //   magic u32 [0..4], version u32 [4..8], crc u32 [8..12],
-    //   active_len u32 [12..16], art_bump u32 [16..20],
-    //   str_bump u32 [20..24], rest zeros.
-    // Only trusted when the file size matches the claimed length.
-    // Old v1 footers (crc[0..4] + active[4..8] + zeros) carry no magic/
-    // version and are rejected as corrupt: log + WAL-only recovery.
+    // Footer v3 in the last block:
+    //   magic u32 [0..4], format version u32 [4..8], crc u32 [8..12],
+    //   arena layout version u32 [12..16], flags u32 [16..20], then one u32
+    //   length per extent [20..36], rest zeros.
+    // Trusted only once magic, format version, layout version and the zero
+    // tail all agree AND every length is provably the length of an extent
+    // of THIS arena (extentsFromFooter).
     const footer_magic = std.mem.readInt(u32, last[MAGIC_OFFSET .. MAGIC_OFFSET + 4][0..4], .little);
     const footer_ver = std.mem.readInt(u32, last[VERSION_OFFSET .. VERSION_OFFSET + 4][0..4], .little);
-    if (footer_magic != FOOTER_MAGIC or footer_ver != LAYOUT_VERSION) {
+    if (footer_ver == snap.CONTIGUOUS_V2_VERSION and isFooterV2Shape(&last)) {
+        // Named explicitly, because this is the case that matters. A v2
+        // snapshot is one contiguous arena prefix and its [16..20) /
+        // [20..24) words are the ART and string BUMPS, not extent lengths.
+        // Reading them as lengths would restore a plausible-looking arena
+        // built from the wrong offsets, which is far worse than starting
+        // over from the WAL - and there is no way to convert a v2 file in
+        // place, because its payload is the 10 MB prefix image and this
+        // build no longer knows how to interpret one. So the honest
+        // outcome is a loud refusal plus WAL-only replay, which can only
+        // recover what the WAL still holds. The name is printed because
+        // the operator's next action (delete the file, or downgrade the
+        // binary) depends on which format is sitting there.
+        std.debug.print(
+            "[TakyonDB-Bootloader] Snapshot is format v2 (one contiguous arena prefix of {d} bytes, with art/str bumps in the length words); this build only reads sparse v{d}. Rejecting it rather than reinterpreting its words as extents: that would restore the wrong offsets. Falling back to WAL-only replay, which can only recover what the WAL still holds.\n",
+            .{ std.mem.readInt(u32, last[12..16], .little), snap.SNAPSHOT_VERSION },
+        );
+        return null;
+    }
+    if (footer_magic != FOOTER_MAGIC or footer_ver != snap.SNAPSHOT_VERSION) {
         if (isLegacyV1Shape(&last)) {
             std.debug.print("[TakyonDB-Bootloader] Snapshot is legacy v1 footer; rejecting as corrupt, WAL-only recovery.\n", .{});
         } else {
@@ -312,31 +471,47 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
         }
         return null;
     }
-    if (!isFooterV2Shape(&last)) {
-        std.debug.print("[TakyonDB-Bootloader] Snapshot has no v2 footer; ignoring.\n", .{});
+    if (!isFooterV3Shape(&last)) {
+        std.debug.print("[TakyonDB-Bootloader] Snapshot has no v3 footer; ignoring.\n", .{});
+        return null;
+    }
+    const footer_layout = std.mem.readInt(u32, last[12..16], .little);
+    if (footer_layout != LAYOUT_VERSION) {
+        std.debug.print(
+            "[TakyonDB-Bootloader] Snapshot was taken on arena layout v{d} but this build speaks v{d}; ignoring.\n",
+            .{ footer_layout, LAYOUT_VERSION },
+        );
         return null;
     }
     const claimed_crc = std.mem.readInt(u32, last[8..12], .little);
-    const claimed_active = std.mem.readInt(u32, last[12..16], .little);
-    const claimed_art = std.mem.readInt(u32, last[16..20], .little);
-    const claimed_str = std.mem.readInt(u32, last[20..24], .little);
-    if (claimed_active == 0 or claimed_active > arena_mem.len) {
-        std.debug.print("[TakyonDB-Bootloader] Snapshot footer out of range; ignoring.\n", .{});
+    const extents = extentsFromFooter(&last, arena_mem.len) orelse {
+        std.debug.print("[TakyonDB-Bootloader] Snapshot extents are not extents of this arena; ignoring.\n", .{});
         return null;
-    }
-    if (claimed_art > arena_mem.len or claimed_str > arena_mem.len) {
-        std.debug.print("[TakyonDB-Bootloader] Snapshot footer bumps out of range; ignoring.\n", .{});
-        return null;
-    }
-    if (blocks - 1 != blocksFor(claimed_active)) {
+    };
+    const payload: usize = blk: {
+        var n: usize = 0;
+        for (extents) |e| n += e.len;
+        break :blk n;
+    };
+    // The file must be exactly the payload plus the footer block: one block
+    // short is a torn tail, one block long is a stale or spliced footer,
+    // and neither may be reinterpreted.
+    if (blocks - 1 != blocksFor(payload)) {
         std.debug.print("[TakyonDB-Bootloader] Snapshot size mismatch; ignoring.\n", .{});
         return null;
     }
     const data_blocks = blocks - 1;
 
-    // Pass 2: copy data blocks while hashing, then verify the CRC.
+    // Pass 2: scatter the payload while hashing, then verify the CRC.
     const fd = openExisting(snap_path) orelse return null;
     defer closeFd(fd);
+
+    // Everything the extents do not cover is zeroed BEFORE the copy. The
+    // arena being recovered into is normally the surviving shared segment,
+    // still full of the previous incarnation's bytes, and a partial
+    // snapshot would otherwise leave every one of them readable; see
+    // zeroOutsideExtents for why unreachable is not good enough.
+    zeroOutsideExtents(arena_mem, extents);
 
     std.debug.print("[TakyonDB-Bootloader] Recovering from Snapshot...\n", .{});
     var hasher = Crc32.init();
@@ -344,24 +519,18 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
     while (i < data_blocks) : (i += 1) {
         if (!readBlock(fd, buf)) {
             std.debug.print("[TakyonDB-Bootloader] Snapshot shrank mid-read; ignoring.\n", .{});
+            undoRestore(arena_mem, extents);
             return null;
         }
-        const cursor = i * 4096;
-        if (cursor + 4096 <= arena_mem.len) {
-            @memcpy(arena_mem[cursor .. cursor + 4096], buf);
-        }
+        placePayloadBlock(arena_mem, extents, i * 4096, buf);
         hasher.update(buf);
     }
     if (hasher.final() != claimed_crc) {
         std.debug.print("[TakyonDB-Bootloader] Snapshot CRC mismatch; ignoring snapshot.\n", .{});
-        @memset(arena_mem[0..@min(@as(usize, claimed_active), arena_mem.len)], 0);
+        undoRestore(arena_mem, extents);
         return null;
     }
-    return SnapshotMeta{
-        .active_len = claimed_active,
-        .art_bump = claimed_art,
-        .str_bump = claimed_str,
-    };
+    return SnapshotMeta{ .extents = extents };
 }
 
 /// Formats `<base>.NNNNNN` (zero-padded 6 digits, sentinel-terminated)
