@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: types.test.ts
- * Description: Unit tests for relational physical types.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { isVariableType, relationalTypeSize } from './types';
 

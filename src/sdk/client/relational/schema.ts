@@ -1,27 +1,41 @@
-/**
- * ============================================================================
- * File: schema.ts
- * Description: Relational table schema compiled to zero-copy offsets.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
+/** Compiles a column list into the byte offsets a table row occupies. */
 
 import { ColumnDef, validateColumn } from './column';
 import { RelationalType, relationalTypeSize } from './types';
 
+/** A column with its assigned position in the row. */
 export interface CompiledColumn extends ColumnDef {
+  /** Byte offset from the start of the record, after the null bitmap. */
   readonly offset: number;
+  /** Byte width. */
   readonly size: number;
 }
 
-/** Validated, offset-compiled table schema (fixed part only). */
+/**
+ * A validated, offset-compiled table schema.
+ *
+ * The offsets are computed for the fixed-width part of a row only. Nothing
+ * in this module encodes a row, so the null bitmap it reserves is written
+ * by whatever caller serializes the record.
+ */
 export class RelationalSchema {
+  /** Columns in declaration order, which is also their offset order. */
   public readonly columns: readonly CompiledColumn[];
+  /** Row size in bytes, including the 4-byte null bitmap header. */
   public readonly totalSize: number;
+  /** Name of the single primary key column. */
   public readonly primaryKey: string;
+  /** Columns by name, for lookups that skip the array scan. */
   public readonly byName: ReadonlyMap<string, CompiledColumn>;
 
+  /**
+   * @param tableName - Table name; must match `[a-zA-Z_][a-zA-Z0-9_]*`.
+   * @param defs - Column definitions, 1 to 32 of them. The 32-column
+   *   ceiling is what the 4-byte null bitmap addresses.
+   * @throws {Error} If the name is not a valid identifier, the column count
+   *   is outside 1..32, a column is invalid or duplicated, or the number of
+   *   `primaryKey` columns is not exactly one.
+   */
   constructor(public readonly tableName: string, defs: ColumnDef[]) {
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName)) {
       throw new Error(`invalid table name '${tableName}'`);
@@ -31,7 +45,8 @@ export class RelationalSchema {
     }
     const seen = new Set<string>();
     let pkCount = 0;
-    let offset = 4; // 4B null bitmap header (up to 32 cols)
+    // 4B null bitmap header, one bit per column, caps the table at 32 cols.
+    let offset = 4;
     const compiled: CompiledColumn[] = [];
     for (const d of defs) {
       validateColumn(d);

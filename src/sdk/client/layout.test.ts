@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: layout.test.ts
- * Description: Unit tests for the shared memory layout mirror.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import * as layout from './layout';
 

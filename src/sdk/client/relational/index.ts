@@ -1,11 +1,4 @@
-/**
- * ============================================================================
- * File: index.ts
- * Description: Public barrel for the relational SDK.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
+/** Public barrel for the relational SDK. */
 
 export * from './types';
 export * from './column';

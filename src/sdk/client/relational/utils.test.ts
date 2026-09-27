@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: utils.test.ts
- * Description: Unit tests for ART key namespacing.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { catalogKey, pkKey, secondaryKey } from './utils';
 

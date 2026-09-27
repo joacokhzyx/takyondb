@@ -145,7 +145,7 @@ describe('aggregate', () => {
     });
 
     it('seeds min and max from the first value, not from zero', () => {
-        // A naive accumulator initialised at 0 reports 0 as the min of an
+        // A naive accumulator initialized at 0 reports 0 as the min of an
         // all-positive column.
         const positive: Row[] = [{ a: 4 }, { a: 9 }, { a: 2 }];
         expect(aggregate(positive, 'min', 'a')).toBe(2);

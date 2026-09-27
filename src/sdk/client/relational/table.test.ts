@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: table.test.ts
- * Description: Unit tests for relational table CRUD and constraints.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalTable } from './table';
 

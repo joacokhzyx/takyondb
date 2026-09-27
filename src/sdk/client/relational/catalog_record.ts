@@ -1,14 +1,14 @@
 /**
- * ============================================================================
- * File: catalog_record.ts
- * Description: Fixed `__catalog__` record codec mirroring Zig `persist.zig`.
- *   Layout LE: header 8B (magic u32 0x54434154 + version u16 1 + count u16)
- *   + table 65B (len u8 + name[64]) + per-column 67B (len u8 + name[64] +
- *   type u8 + flags u8). Keys are `__catalog__:<table>` (see `catalogRecordKey()`).
- *   Records ride ART + WAL + snapshots; recovery decodes catalog keys first.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
+ * A fixed-width catalog record codec mirroring Zig `persist.zig`, so a
+ * table definition can ride the ART, the WAL, and a snapshot with no
+ * sidecar file.
+ *
+ * The little-endian layout is a header of 8 bytes (magic u32, version u16,
+ * column count u16), then a 65-byte table field (length u8 plus 64 bytes
+ * of name), then 67 bytes per column (length u8, 64 bytes of name, type
+ * u8, flags u8). The field widths are fixed so a record can be read at an
+ * offset from the ART value alone; recovery decodes catalog keys before
+ * data keys for the same reason.
  */
 
 import { ColumnDef } from './column';
@@ -16,11 +16,20 @@ import { RelationalType } from './types';
 import { TakyonBindings } from '../proxy';
 import { STRING_BUMP_OFFSET, STRING_DATA_START } from '../layout';
 
+/** `"TACT"` little-endian, the first four bytes of a catalog record. */
 export const CATALOG_REC_MAGIC = 0x54434154;
+/** Catalog record format version. A record with another version is rejected. */
 export const CATALOG_REC_VERSION = 1;
+/** ART key namespace holding catalog descriptors. */
 export const CATALOG_PREFIX = '__catalog__:';
+/** Bytes of record header: magic, version, column count. */
 export const HEADER_LEN = 8;
+/** Bytes of the table-name field: length byte plus a 64-byte name. */
 export const TABLE_FIELD_LEN = 65;
+/**
+ * Bytes per column record: a length byte, a 64-byte name, a type byte,
+ * and a flags byte.
+ */
 export const COLUMN_REC_LEN = 67;
 
 const TYPE_TO_BYTE: Record<RelationalType, number> = {
@@ -55,17 +64,35 @@ const BYTE_TO_TYPE: RelationalType[] = [
   'timestamp_ms',
 ];
 
-/** Builds the ART key for a table's catalog record. */
+/**
+ * Builds the ART key for a table's catalog record.
+ *
+ * @param table - Table name, 1 to 64 characters.
+ * @returns `__catalog__:<table>`.
+ * @throws {Error} If the name is empty or longer than 64 characters, the
+ *   bound the record's fixed 64-byte name field imposes.
+ */
 export function catalogRecordKey(table: string): string {
   if (!table || table.length > 64) throw new Error('table name must be 1..64 chars');
   return `${CATALOG_PREFIX}${table}`;
 }
 
-/** Encoded length for `colCount` columns. */
+/**
+ * Encoded length for `colCount` columns.
+ *
+ * @param colCount - Number of columns, 1 to 32.
+ * @returns The exact byte length of the encoded record, so a decoder can
+ *   bounds-check before reading any field.
+ */
 export function catalogEncodedLen(colCount: number): number {
   return HEADER_LEN + TABLE_FIELD_LEN + colCount * COLUMN_REC_LEN;
 }
 
+/**
+ * Packs a column's three boolean flags into one byte. Bit 3 and above are
+ * reserved and must be zero; `decodeCatalogRecord` rejects a record that
+ * sets one, so a future flag cannot be silently misread as this version's.
+ */
 function flagsOf(c: ColumnDef): number {
   let f = 0;
   if (c.nullable) f |= 0x01;
@@ -74,7 +101,20 @@ function flagsOf(c: ColumnDef): number {
   return f;
 }
 
-/** Encodes a table descriptor into a fresh Uint8Array. */
+/**
+ * Encodes a table descriptor into a fresh Uint8Array.
+ *
+ * Names are truncated to fit only by being rejected: an over-long name
+ * throws rather than being cut, because a truncated name would decode as a
+ * different, valid column.
+ *
+ * @param table - Table name, 1 to 64 characters.
+ * @param columns - 1 to 32 column definitions.
+ * @returns A buffer of exactly `catalogEncodedLen(columns.length)` bytes.
+ * @throws {Error} If the table name is empty or over 64 characters, the
+ *   column count is outside 1..32, or a column name is empty or over 64
+ *   UTF-8 bytes.
+ */
 export function encodeCatalogRecord(table: string, columns: ColumnDef[]): Uint8Array {
   if (!table || table.length > 64) throw new Error('table name must be 1..64 chars');
   if (columns.length === 0 || columns.length > 32) throw new Error('column count must be 1..32');
@@ -99,20 +139,43 @@ export function encodeCatalogRecord(table: string, columns: ColumnDef[]): Uint8A
   return out;
 }
 
+/** One column as read back from a catalog record. */
 export interface DecodedCatalogColumn {
+  /** Column name, as stored. */
   readonly name: string;
+  /** Storage type. */
   readonly type: RelationalType;
+  /** Whether the column accepts null. */
   readonly nullable: boolean;
+  /** Whether the column is the primary key. */
   readonly primaryKey: boolean;
+  /** Whether the column is declared unique. */
   readonly unique: boolean;
 }
 
+/** A table descriptor as read back from a catalog record. */
 export interface DecodedCatalog {
+  /** Table name, as stored. */
   readonly table: string;
+  /** Columns in declaration order. */
   readonly columns: DecodedCatalogColumn[];
 }
 
-/** Decodes and validates a catalog payload (tamper-evident zero padding). */
+/**
+ * Decodes and validates a catalog payload (tamper-evident zero padding).
+ *
+ * The bytes between a name and the end of its fixed field must be zero.
+ * That costs nothing to check and catches a record written by a different
+ * version, which would otherwise decode as a shorter name in a longer
+ * field and describe a table that never existed.
+ *
+ * @param buf - The record, exactly `catalogEncodedLen(count)` bytes.
+ * @returns The table and its columns.
+ * @throws {Error} If the magic, version, or column count is wrong, the
+ *   buffer is too short for the count it declares, a name length is 0 or
+ *   over 64, name padding is non-zero, the type byte is not a known type,
+ *   or a reserved flag bit is set.
+ */
 export function decodeCatalogRecord(buf: Uint8Array): DecodedCatalog {
   if (buf.length < HEADER_LEN + TABLE_FIELD_LEN) throw new Error('catalog payload too short');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -147,8 +210,11 @@ export function decodeCatalogRecord(buf: Uint8Array): DecodedCatalog {
   return { table, columns };
 }
 
+/** Where a `CatalogRecordStore` places its payloads inside the arena. */
 export interface CatalogRecordArenaOpts {
+  /** Byte offset of the string bump word. Defaults to `STRING_BUMP_OFFSET`. */
   readonly bumpOffset?: number;
+  /** First usable payload byte. Defaults to `STRING_DATA_START`. */
   readonly dataStart?: number;
 }
 
@@ -163,6 +229,15 @@ export class CatalogRecordStore {
   private readonly bumpOffset: number;
   private readonly dataStart: number;
 
+  /**
+   * @param bindings - The native engine surface.
+   * @param memory - The mapped arena the payloads live in. Must be the
+   *   same mapping the bindings were built against, or `notifyArena` will
+   *   announce bytes the daemon never sees.
+   * @param opts - Arena geometry overrides; see `CatalogRecordArenaOpts`.
+   *   Present so a test can place records in a small buffer.
+   * @throws {Error} If the arena geometry does not fit inside `memory`.
+   */
   constructor(
     private readonly bindings: TakyonBindings,
     private readonly memory: ArrayBuffer,
@@ -175,9 +250,25 @@ export class CatalogRecordStore {
     }
   }
 
-  /** Encodes and publishes a table descriptor. Returns the payload offset. */
+  /**
+   * Encodes and publishes a table descriptor. Returns the payload offset.
+   *
+   * Re-saving a table overwrites its ART entry in place, so DDL is
+   * idempotent by key. The bytes of the previous descriptor are abandoned
+   * in the bump arena, not reclaimed.
+   *
+   * @param table - Table name, 1 to 64 characters.
+   * @param columns - 1 to 32 column definitions.
+   * @returns The arena offset the payload was written at.
+   * @throws {Error} If the encoding rejects the name or the columns, the
+   *   string arena is exhausted, `notifyArena` reports a full ring, or
+   *   `insert_index` returns nonzero.
+   */
   public save(table: string, columns: ColumnDef[]): number {
     const payload = encodeCatalogRecord(table, columns);
+    // Same seed-as-check trick as the string arena in `client/proxy.ts`: a
+    // zero bump would hand out offset 0, which is the ring header. A
+    // catalog record written there corrupts head, tail, and capacity.
     const bump = new Uint32Array(this.memory, this.bumpOffset, 1);
     Atomics.compareExchange(bump, 0, 0, this.dataStart);
     const at = Atomics.add(bump, 0, payload.length);
@@ -197,6 +288,19 @@ export class CatalogRecordStore {
   /**
    * Loads a table descriptor. Null when absent; throws on truncation,
    * corruption, or key/content mismatch.
+   *
+   * The key/content check is the one that earns its keep: two tables can be
+   * written under one key by a bug or a partial restore, and a descriptor
+   * that describes a different table would create the wrong one silently.
+   *
+   * @param table - Table name whose descriptor to load.
+   * @returns The decoded descriptor, or `null` when no such key is in the
+   *   index.
+   * @throws {RangeError} If the key is empty, over 256 bytes, or contains a
+   *   NUL.
+   * @throws {Error} If the stored offset is out of range, the record is
+   *   truncated, the magic or version is wrong, the payload is corrupt, or
+   *   the decoded table name is not the one asked for.
    */
   public load(table: string): DecodedCatalog | null {
     const off = this.bindings.search_index(catalogRecordKey(table));

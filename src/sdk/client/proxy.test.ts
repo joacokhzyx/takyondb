@@ -1,13 +1,3 @@
-/**
- * ============================================================================
- * File: proxy.test.ts
- * Description: Unit tests for TakyonClient/TakyonDB against a mocked
- *   N-API bridge backed by a plain ArrayBuffer.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { TakyonClient, TakyonBindings } from './proxy';
 import { TakyonSchema } from './schema';
@@ -158,7 +148,8 @@ describe('TakyonDB with mocked bridge', () => {
         expect(() => users.insert(tooLongChars, { age: 1 })).toThrow();
         expect(users.find(tooLongChars)).toBeNull();
 
-        // 200 chars but 400 UTF-8 bytes ('é' is 2 bytes) — over the byte limit.
+        // 200 chars but 400 UTF-8 bytes ('é' is 2 bytes), over the byte
+        // limit.
         const tooLongBytes = 'é'.repeat(200);
         expect(tooLongBytes.length).toBeLessThanOrEqual(256);
         expect(() => users.insert(tooLongBytes, { age: 1 })).toThrow();
@@ -190,7 +181,8 @@ describe('TakyonDB with mocked bridge', () => {
         const users = db.collection('users', schema);
 
         expect(users.delete('nope')).toBe(false);
-        // Namespaced isolation: deleting from one collection leaves the other intact.
+        // Namespaced isolation: deleting from one collection leaves the
+        // other intact.
         const orders = db.collection('orders', schema);
         users.insert('shared', { age: 1 });
         orders.insert('shared', { age: 2 });

@@ -1,23 +1,44 @@
 /**
- * ============================================================================
- * File: codec.ts
- * Description: Zero-copy row encode/decode over SharedArrayBuffer/DataView.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
+ * Row value types and the validator every write path calls before touching
+ * a table. No encoding lives here: the rows are plain objects.
  */
 
 import { RelationalSchema } from './schema';
 
+/** Anything a single cell may hold. */
 export type RowValue = boolean | number | string | Uint8Array | null | undefined;
+
+/** A row keyed by column name. Unknown keys are carried but not validated. */
 export type Row = Record<string, RowValue>;
 
-/** Null bitmap: 1 bit per column index (1 = NULL). Stored as u32 LE at offset 0. */
+/**
+ * Returns the null-bitmap mask for a column index.
+ *
+ * The bitmap is a u32 at record offset 0, so the mask wraps every 32
+ * columns. `RelationalSchema` caps a table at 32 columns, which is what
+ * keeps the wrap from ever being reached.
+ *
+ * @param index - Zero-based column position.
+ * @returns The single-bit mask, `1` meaning NULL.
+ */
 export function nullBit(index: number): number {
   return 1 << (index % 32);
 }
 
-/** Validates a row against schema (types, nullability, PK presence). */
+/**
+ * Validates a row against its schema.
+ *
+ * A column is skipped entirely when the row omits it, because a missing key
+ * and an explicit null are not distinguishable here and the defaults and
+ * nullable flags cover both. The primary key is the exception: it is
+ * checked for presence, so a row can never reach a table without one.
+ *
+ * @param schema - The target table's compiled schema.
+ * @param row - The row to check.
+ * @throws {Error} If a present value has the wrong JavaScript type for its
+ *   column, a non-nullable column is explicitly null, or the primary key is
+ *   missing, null, or the empty string.
+ */
 export function validateRow(schema: RelationalSchema, row: Row): void {
   for (let i = 0; i < schema.columns.length; i++) {
     const col = schema.columns[i];

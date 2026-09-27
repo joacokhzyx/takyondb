@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Nothing yet. The work below shipped under [0.1.0](#010---2026-09-25); this
 section is where anything after it goes.
 
+### Added
+
+- **The public TypeScript surface is documented.** Every exported symbol and
+  public class member in `src/sdk/` now carries JSDoc with `@param`,
+  `@returns` and `@throws` where they apply, so the contracts appear in editor
+  hovers and generated declarations rather than only in `docs/sdk.md`. The SDK
+  previously had exactly one `@param` and no `@returns` or `@throws` across
+  4,956 lines, and 49% of exports had no doc comment at all. The 26
+  boilerplate file banners are gone: 871 lines repo-wide that were 42% of all
+  comments in `src/` and repeated the filename the reader can already see,
+  replaced by a one-line statement of what each module is for.
+
+  Documenting the surface against the C-ABI rather than from memory turned up
+  ten places where `docs/sdk.md` and the code disagree, including two methods
+  whose return values the doc described backwards. Those are fixed in the
+  JSDoc now and queued for the `docs/` pass.
+
 ### Fixed
 
 - **Index writes are now durable.** `takyon_insert_index` mutated the ART in

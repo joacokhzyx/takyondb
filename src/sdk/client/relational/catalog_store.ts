@@ -1,14 +1,12 @@
 /**
- * ============================================================================
- * File: catalog_store.ts
- * Description: Durable catalog persistence (table definitions as versioned
- *   JSON). Rows live in the engine; the catalog file lets DDL survive
- *   restarts: save after migrations, restore (idempotent) on boot.
- *   Co-locate with the daemon --data-dir and back it up together with
- *   data.takyon + data.takyon.snap (see docs/relational/backup.md).
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
+ * Catalog persistence as a versioned JSON sidecar file, so table
+ * definitions survive a restart even when no engine is mapped.
+ *
+ * This is the file-based counterpart to `catalog_record.ts`, which stores
+ * the same definitions inside the engine and rides its WAL. Co-locate this
+ * file with the daemon's data directory and back it up together with
+ * `data.takyon` and `data.takyon.snap`; on its own it describes structure
+ * without rows.
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -17,11 +15,16 @@ import { ColumnDef } from './column';
 import { RelationalDatabase } from './database';
 import { bootCatalog } from './persist';
 
+/** First key of a catalog document, checked before anything is trusted. */
 export const CATALOG_MAGIC = 'takyon-catalog';
+/** Document format version. A file with another version is rejected. */
 export const CATALOG_VERSION = 1;
 
+/** One table's definition as stored in a catalog file. */
 export interface CatalogTableDef {
+  /** Table name. */
   readonly name: string;
+  /** Column definitions in declaration order. */
   readonly columns: ColumnDef[];
 }
 
@@ -34,6 +37,11 @@ interface StoredColumn {
   readonly defaultValue?: boolean | number | string | { readonly __bytes_hex: string };
 }
 
+/**
+ * Renders a `bytes` default as JSON. A `Uint8Array` has no JSON form, so
+ * it becomes a tagged object; without the tag a round trip would silently
+ * turn bytes into the string `"[object Uint8Array]"`.
+ */
 function encodeDefault(v: ColumnDef['defaultValue']): StoredColumn['defaultValue'] {
   if (v instanceof Uint8Array) {
     return { __bytes_hex: Buffer.from(v).toString('hex') };
@@ -41,6 +49,7 @@ function encodeDefault(v: ColumnDef['defaultValue']): StoredColumn['defaultValue
   return v;
 }
 
+/** Reverses `encodeDefault`, restoring a tagged `bytes` default. */
 function decodeDefault(v: StoredColumn['defaultValue']): ColumnDef['defaultValue'] {
   if (v !== null && typeof v === 'object' && '__bytes_hex' in v) {
     return new Uint8Array(Buffer.from(v.__bytes_hex, 'hex'));
@@ -48,7 +57,16 @@ function decodeDefault(v: StoredColumn['defaultValue']): ColumnDef['defaultValue
   return v;
 }
 
-/** Serializes every table definition of a database. */
+/**
+ * Serializes every table definition of a database.
+ *
+ * Only the schema is captured, never rows: the `false`-valued flags are
+ * dropped so a file written from a compact schema is byte-identical to one
+ * written from the same schema spelled with explicit falses.
+ *
+ * @param db - The catalog to read.
+ * @returns One definition per table, in `listTables` order.
+ */
 export function snapshotCatalog(db: RelationalDatabase): CatalogTableDef[] {
   return db.listTables().map((name) => {
     const schema = db.table(name).schema;
@@ -66,7 +84,19 @@ export function snapshotCatalog(db: RelationalDatabase): CatalogTableDef[] {
   });
 }
 
-/** Writes the catalog file (creating parent dirs). Overwrites atomically. */
+/**
+ * Writes the catalog file (creating parent dirs). Overwrites atomically.
+ *
+ * The write goes to `<filePath>.tmp` and is then renamed, so a crash mid
+ * write leaves the previous catalog intact rather than a truncated one.
+ * The rename is not fsync-ed: a power loss can still lose the directory
+ * entry.
+ *
+ * @param db - The catalog to serialize.
+ * @param filePath - Destination path. Parent directories are created.
+ * @throws {Error} If a directory cannot be created or the file cannot be
+ *   written or renamed.
+ */
 export function saveCatalog(db: RelationalDatabase, filePath: string): void {
   mkdirSync(dirname(filePath), { recursive: true });
   const doc = {
@@ -79,7 +109,19 @@ export function saveCatalog(db: RelationalDatabase, filePath: string): void {
   renameSync(tmp, filePath);
 }
 
-/** Reads and validates a catalog file (schema revalidated on restore). */
+/**
+ * Reads and validates a catalog file (schema revalidated on restore).
+ *
+ * Validation here covers the envelope only: magic, version, and shape. Each
+ * table's columns are revalidated by `RelationalSchema` when
+ * `restoreCatalog` recreates the table, so a hand-edited file with a bad
+ * column fails at restore rather than at load.
+ *
+ * @param filePath - The catalog file to read.
+ * @returns One definition per table, in file order.
+ * @throws {Error} If the file is unreadable, is not JSON, has the wrong
+ *   magic or version, has no table array, or holds a malformed table entry.
+ */
 export function loadCatalogDefs(filePath: string): CatalogTableDef[] {
   let raw: string;
   try {
@@ -117,7 +159,19 @@ export function loadCatalogDefs(filePath: string): CatalogTableDef[] {
   });
 }
 
-/** Restores missing tables from a catalog file (idempotent). */
+/**
+ * Restores missing tables from a catalog file (idempotent).
+ *
+ * Only absent tables are created. A table already in the database is left
+ * exactly as it is, so restoring over a migrated database does not undo the
+ * migration, and does not report a conflict.
+ *
+ * @param db - The catalog to populate.
+ * @param filePath - The catalog file to read.
+ * @throws {Error} Whatever `loadCatalogDefs` throws, plus anything
+ *   `RelationalSchema` throws for a stored definition that no longer
+ *   validates.
+ */
 export function restoreCatalog(db: RelationalDatabase, filePath: string): void {
   bootCatalog(
     db,

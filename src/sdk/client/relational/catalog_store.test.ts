@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: catalog_store.test.ts
- * Description: Unit tests for durable catalog save/restore round-trips.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

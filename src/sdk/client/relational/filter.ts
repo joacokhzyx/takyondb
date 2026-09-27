@@ -1,24 +1,38 @@
 /**
- * ============================================================================
- * File: filter.ts
- * Description: Predicate model and zero-alloc matching for scans.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
+ * The `where` predicate model, compiled once per clause object and then
+ * applied per row without re-parsing.
  */
 
+/** The comparison operators a `where` clause may name. */
 export type CmpOp = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'like';
 
+/**
+ * The operators available for one column, all AND-ed. Ordered comparisons
+ * (`gt`, `gte`, `lt`, `lte`) and `in` only ever match numbers; `like` only
+ * ever matches strings.
+ */
 export type Condition = {
   readonly [op in CmpOp]?: string | number | boolean | readonly (string | number | boolean)[];
 };
 
+/**
+ * A filter clause: column name to either a `Condition` or a bare value,
+ * which is shorthand for `{ eq: value }`. Multiple columns are AND-ed.
+ */
 export type Where = Record<string, Condition | string | number | boolean>;
 
-/** A predicate specialised for one `where` clause, ready to run per row. */
+/** A predicate specialized for one `where` clause, ready to run per row. */
 export type CompiledWhere = (row: Record<string, unknown>) => boolean;
 
-/** SQL LIKE with `%` as a multi-character wildcard and `_` as one character. */
+/**
+ * Compiles a SQL LIKE pattern to an anchored `RegExp`.
+ *
+ * Every literal character is escaped, so a `.` in the pattern matches a
+ * literal dot rather than becoming a wildcard. Only `%` and `_` are special.
+ *
+ * @param like - The pattern, rendered with `String` if not already text.
+ * @returns An anchored expression over the whole value.
+ */
 function likeToRegExp(like: string | number | boolean): RegExp {
   const raw = String(like);
   let out = '';
@@ -37,7 +51,16 @@ function likeToRegExp(like: string | number | boolean): RegExp {
   return new RegExp(`^${out}$`);
 }
 
-/** Per-column checks, in declaration order. AND semantics. */
+/**
+ * Turns a clause into a closure, one list of checks per column.
+ *
+ * A single-column clause gets its own closure shape so the hot scan path
+ * does not index into a two-level array per row.
+ *
+ * @param where - The clause. Snapshotted here, so the caller must not
+ *   mutate it afterwards.
+ * @returns A predicate that AND-s every column's checks.
+ */
 function compilePerColumn(where: Where): CompiledWhere {
   const columns: Array<[string, Array<(v: unknown) => boolean>]> = [];
 
@@ -56,7 +79,9 @@ function compilePerColumn(where: Where): CompiledWhere {
       const expected = c.ne;
       checks.push((v) => v !== expected);
     }
-    // Ordered comparisons only apply to numeric cells, as before.
+    // Ordered comparisons only apply to numeric cells, as before. A
+    // string or boolean cell fails the typeof test and is excluded rather
+    // than compared by coercion, which would order booleans as 0 and 1.
     if (c.gt !== undefined) {
       const t = c.gt as number;
       checks.push((v) => typeof v === 'number' && v > t);
@@ -76,7 +101,9 @@ function compilePerColumn(where: Where): CompiledWhere {
     if (c.in !== undefined) {
       const arr = c.in as readonly unknown[];
       // `Array.includes` is linear and this runs once per row, so build a Set
-      // once the membership list is long enough to pay for itself.
+      // once the membership list is long enough to pay for itself. The
+      // threshold is not pinned by a test, so treat it as a tunable: an
+      // `in` list longer than this stops being O(rows * list) per row.
       const set = arr.length >= 8 ? new Set<unknown>(arr) : null;
       checks.push((v) => (set ? set.has(v) : arr.includes(v)));
     }
@@ -115,11 +142,21 @@ function compilePerColumn(where: Where): CompiledWhere {
  * once instead of per row. WeakMap, so a clause is collected with it.
  *
  * The clause is snapshotted when compiled: treat a `Where` as immutable for
- * the duration of a query, which is what every caller here does.
+ * the duration of a query, which is what every caller here does. Mutating
+ * one after first use is not detected; the cached predicate keeps
+ * comparing against the values as they were.
  */
 const compiled = new WeakMap<Where, CompiledWhere>();
 
-/** Returns the compiled predicate for `where`, compiling it once per object. */
+/**
+ * Returns the compiled predicate for a clause, compiling it once per object.
+ *
+ * Identity is the cache key, not structural equality, so two equivalent
+ * clause literals compile separately.
+ *
+ * @param where - The clause. Must not be mutated after this call.
+ * @returns The predicate to apply per row.
+ */
 export function compiledWhere(where: Where): CompiledWhere {
   let fn = compiled.get(where);
   if (fn === undefined) {
@@ -135,6 +172,13 @@ export function compiledWhere(where: Where): CompiledWhere {
  * Previously this rebuilt the predicate for every row: `Object.entries(where)`
  * allocated an entries array per row, and a `like` predicate compiled a new
  * `RegExp` per row *per predicate*.
+ *
+ * A column absent from the row is tested against `undefined`, so an `eq`
+ * clause for it fails and a `ne` clause for it passes.
+ *
+ * @param row - The row to test.
+ * @param where - The clause, or omitted to match every row.
+ * @returns True when every column's checks pass.
  */
 export function matchesWhere(row: Record<string, unknown>, where?: Where): boolean {
   if (!where) return true;

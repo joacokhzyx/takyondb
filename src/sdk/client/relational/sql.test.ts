@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: sql.test.ts
- * Description: Unit tests for SELECT parser.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { parseSelect } from './sql';
 

@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: join.test.ts
- * Description: Unit tests for hash joins.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalDatabase } from './database';
 import { hashJoin } from './join';

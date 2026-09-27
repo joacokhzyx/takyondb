@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: constraints.test.ts
- * Description: Unit tests for UNIQUE checks.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalDatabase } from './database';
 import { assertUnique } from './constraints';

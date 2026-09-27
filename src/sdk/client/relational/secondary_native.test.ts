@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: secondary_native.test.ts
- * Description: Unit tests for durable ART-backed secondary indexes.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { TakyonBindings } from '../proxy';
 import { NativeSecondaryIndex, SECONDARY_SEP, padI64Hex16, padU32Hex } from './secondary_native';

@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: database.test.ts
- * Description: Unit tests for relational catalog DDL.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalDatabase } from './database';
 

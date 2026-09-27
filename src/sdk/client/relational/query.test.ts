@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: query.test.ts
- * Description: Unit tests for fluent queries with filter and projection.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalDatabase } from './database';
 import { QueryBuilder } from './query';

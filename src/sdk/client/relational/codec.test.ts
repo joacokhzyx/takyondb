@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: codec.test.ts
- * Description: Unit tests for row validation.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalSchema } from './schema';
 import { validateRow } from './codec';

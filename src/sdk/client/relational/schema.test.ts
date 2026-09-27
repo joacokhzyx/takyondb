@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: schema.test.ts
- * Description: Unit tests for relational schema compilation.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalSchema } from './schema';
 

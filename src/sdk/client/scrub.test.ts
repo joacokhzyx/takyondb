@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: scrub.test.ts
- * Description: Parity tests for the scrubber mirror (fallback path).
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { scrubFallback, scrubRecords, sealRecord, verifyRecord, verifyRecordFallback } from './scrub';
 

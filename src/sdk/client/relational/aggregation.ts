@@ -1,18 +1,13 @@
-/**
- * ============================================================================
- * File: aggregation.ts
- * Description: Single-pass aggregations over decoded rows.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
+/** Single-pass aggregation over decoded rows. */
 
 import { Row } from './codec';
 
+/** The aggregations `aggregate` can compute. */
 export type AggFn = 'count' | 'sum' | 'avg' | 'min' | 'max';
 
 /**
- * Computes an aggregation over rows for a numeric column (count ignores column).
+ * Computes an aggregation over rows for a numeric column. `count`
+ * ignores the column.
  *
  * Single pass, no intermediate array: the previous version built
  * `rows.map(...).filter(...)` (two arrays per call) and then called
@@ -20,6 +15,16 @@ export type AggFn = 'count' | 'sum' | 'avg' | 'min' | 'max';
  * stack. That is both an allocation and a real hazard: a wide enough column
  * overflows the argument limit and throws a RangeError instead of returning a
  * number. Iterating keeps the result defined for any row count.
+ *
+ * Non-numeric cells are skipped rather than coerced, so a `string` column
+ * silently yields 0 rather than NaN. An empty or all-non-numeric input
+ * returns 0 for every function.
+ *
+ * @param rows - The rows to aggregate.
+ * @param fn - Which aggregation to compute.
+ * @param column - Source column, required for everything except `count`.
+ * @returns The count, sum, mean, minimum, or maximum.
+ * @throws {Error} If `fn` needs a column and none is given.
  */
 export function aggregate(rows: Row[], fn: AggFn, column?: string): number {
   if (fn === 'count') return rows.length;

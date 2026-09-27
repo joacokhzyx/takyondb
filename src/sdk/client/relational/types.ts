@@ -1,13 +1,10 @@
 /**
- * ============================================================================
- * File: types.ts
- * Description: Extended relational column types reusing zero-copy layout.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
+ * The relational column type set and the JavaScript value each one maps to.
+ * Widths here must agree with `catalog_record.ts` `TYPE_TO_BYTE`, which is
+ * what the on-disk catalog stores.
  */
 
-/** Physical types supported by the relational layer (phase 1). */
+/** Column types the catalog codec and the columnar kernels agree on. */
 export type RelationalType =
   | 'bool'
   | 'int8'
@@ -23,7 +20,17 @@ export type RelationalType =
   | 'bytes'
   | 'timestamp_ms';
 
-/** Byte size for fixed types; variable types return 8 (fat pointer). */
+/**
+ * Returns the byte width a column of this type occupies in a record.
+ *
+ * Variable-length types occupy 8: a u32 offset plus a u32 length, with the
+ * bytes themselves in the string arena.
+ *
+ * @param t - The column type.
+ * @returns The field width in bytes.
+ * @throws {Error} If `t` is not a `RelationalType`, which can only happen
+ *   from an untyped JavaScript caller.
+ */
 export function relationalTypeSize(t: RelationalType): number {
   switch (t) {
     case 'bool':
@@ -49,12 +56,21 @@ export function relationalTypeSize(t: RelationalType): number {
   }
 }
 
-/** True for variable-length types stored via fat pointer in string arena. */
+/**
+ * Reports whether a type stores its payload outside the record.
+ *
+ * @param t - The column type.
+ * @returns True for `string` and `bytes`, false for every fixed-width type.
+ */
 export function isVariableType(t: RelationalType): boolean {
   return t === 'string' || t === 'bytes';
 }
 
-/** JS value type for a given relational type. */
+/**
+ * The JavaScript value a decoded cell of this type holds. Widening from the
+ * storage type is the caller's problem: an `int8` column yields a `number`
+ * that is not narrowed back to its declared range.
+ */
 export type RelationalValue<T extends RelationalType> = T extends 'bool'
   ? boolean
   : T extends 'string'

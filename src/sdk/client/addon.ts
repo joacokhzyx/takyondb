@@ -1,24 +1,7 @@
 /**
- * ============================================================================
- * File: addon.ts
- * Description: Locates and loads the compiled N-API addon.
- * Author/Maintainer: TakyonDB Team
- * License: MIT. See LICENSE for details.
- * ============================================================================
- *
- * Why this file exists
- * --------------------
- * `new TakyonDB(bindings)` requires a native addon, but the published npm
- * package used to ship only `dist/`. Nothing in the SDK knew where that
- * addon was supposed to come from, and every E2E script and benchmark
- * hardcoded the same repo-relative path (`../zig-out/bin/takyondb_bridge.node`),
- * which cannot exist inside `node_modules`. So `npm install takyondb` gave
- * you a package whose documented quickstart could not run.
- *
- * This module is the single place that knows how to find the addon. It is
- * deliberately lazy: requiring this file touches no filesystem and loads no
- * native code, so the unit tests (which pass a mock `TakyonBindings`) keep
- * working on machines with no compiled binary.
+ * Finds and loads the compiled N-API addon. This is the only module in the
+ * SDK that touches the filesystem, and it is loaded lazily so a caller
+ * passing its own bindings never pays for the search.
  *
  * A note on SharedArrayBuffer
  * ---------------------------
@@ -34,9 +17,13 @@ import * as path from 'node:path';
 
 import type { TakyonBindings } from './proxy';
 
-/** One prebuild per platform+arch. The addon is N-API, so it is not tied to a Node version. */
+/**
+ * One prebuild per platform and architecture. The addon is N-API, so it
+ * is not tied to a Node version.
+ */
 export type AddonPlatform = 'linux-x64' | 'linux-arm64' | 'darwin-x64' | 'darwin-arm64' | 'win32-x64';
 
+/** Platforms with a published prebuild, in the order they are reported. */
 export const SUPPORTED_PLATFORMS: readonly AddonPlatform[] = [
     'linux-x64',
     'linux-arm64',
@@ -45,10 +32,14 @@ export const SUPPORTED_PLATFORMS: readonly AddonPlatform[] = [
     'win32-x64',
 ];
 
+/** Overrides for the addon search. Every field is a test seam. */
 export interface LoadBindingsOptions {
     /** Exact path to the addon. Highest priority; skips the search. */
     addonPath?: string;
-    /** Environment to read `TAKYON_ADDON_PATH` from. Defaults to `process.env`. */
+    /**
+     * Environment to read `TAKYON_ADDON_PATH` from. Defaults to
+     * `process.env`.
+     */
     env?: Record<string, string | undefined>;
     /**
      * Package root to resolve the bundled `prebuilds/` against. Defaults to
@@ -65,12 +56,19 @@ export interface LoadBindingsOptions {
     platform?: string;
 }
 
+/** The outcome of resolving an addon path, with enough context to debug it. */
 export interface AddonResolution {
-    /** The path that was loaded, or the best candidate when resolution failed. */
+    /**
+     * The path that was loaded, or the best candidate when resolution
+     * failed.
+     */
     path: string;
     /** Which strategy produced it. */
     source: 'explicit' | 'env' | 'prebuilds' | 'node-gyp' | 'flat' | 'dev-zig-out';
-    /** Every path probed, in order. Useful when a user reports a load failure. */
+    /**
+     * Every path probed, in order. Useful when a user reports a load
+     * failure.
+     */
     probed: string[];
 }
 
@@ -120,7 +118,16 @@ function findPackageRoot(start: string): string {
     return start;
 }
 
-/** Every path we are willing to try, in priority order. */
+/**
+ * Every path we are willing to try, in priority order.
+ *
+ * This is a pure enumeration: nothing is checked for existence here, so
+ * `resolveAddon` can report the full probe list in its error message.
+ *
+ * @param options - Search overrides; see `LoadBindingsOptions`.
+ * @returns Candidate paths, most specific first. May contain paths that do
+ *   not exist.
+ */
 export function addonCandidates(options: LoadBindingsOptions = {}): string[] {
     const env = options.env ?? (typeof process !== 'undefined' ? process.env : {});
     const root = options.packageRoot ?? findPackageRoot(__dirname);
@@ -145,6 +152,11 @@ export function addonCandidates(options: LoadBindingsOptions = {}): string[] {
  * Report which search strategy a candidate path came from. Exported for
  * diagnostics: when a user reports that the wrong binary was picked up, this
  * says whether the env var or the prebuild won.
+ *
+ * @param candidate - One path from `addonCandidates`.
+ * @param options - The same options the candidate was produced with, so an
+ *   explicit path or env value is recognized as such.
+ * @returns The strategy that would claim this path.
  */
 export function classifyAddonSource(candidate: string, options: LoadBindingsOptions = {}): AddonResolution['source'] {
     const env = options.env ?? (typeof process !== 'undefined' ? process.env : {});
@@ -159,7 +171,16 @@ export function classifyAddonSource(candidate: string, options: LoadBindingsOpti
     return 'flat';
 }
 
-/** Resolve the addon path without loading it. Throws if nothing is found. */
+/**
+ * Resolve the addon path without loading it. Throws if nothing is found.
+ *
+ * @param options - Search overrides; see `LoadBindingsOptions`.
+ * @returns The first candidate that exists, the strategy that found it, and
+ *   every path probed.
+ * @throws {Error} If an explicitly requested path (via `addonPath` or
+ *   `TAKYON_ADDON_PATH`) does not exist, or if no candidate exists at all.
+ *   The error lists every path probed and the supported platforms.
+ */
 export function resolveAddon(options: LoadBindingsOptions = {}): AddonResolution {
     const platform = options.platform ?? currentPlatform();
     const supported = (SUPPORTED_PLATFORMS as readonly string[]).includes(platform);
@@ -215,7 +236,19 @@ export function resolveAddon(options: LoadBindingsOptions = {}): AddonResolution
     throw new Error(lines.join('\n'));
 }
 
-/** Shape check: a wrong file that loads but is not our addon should fail here, not later. */
+/**
+ * Shape check: a wrong file that loads but is not our addon should fail
+ * here, not later.
+ * Only the four methods every engine surface must have are checked; the
+ * optional pushdown and scan methods are not, so a stale addon reaches the
+ * feature that needs it and reports itself unsupported there.
+ *
+ * @param mod - Whatever the addon exported.
+ * @param path - The file it came from, for the error message.
+ * @returns `mod` narrowed to `TakyonBindings`.
+ * @throws {Error} If `mod` is not an object, or is missing any of
+ *   `initSharedMemory`, `insert_index`, `search_index`, or `pushDelta`.
+ */
 function assertLooksLikeBindings(mod: unknown, path: string): TakyonBindings {
     const required = ['initSharedMemory', 'insert_index', 'search_index', 'pushDelta'];
     if (mod === null || typeof mod !== 'object') {
@@ -238,6 +271,11 @@ function assertLooksLikeBindings(mod: unknown, path: string): TakyonBindings {
  * `prebuilds/<platform>-<arch>/` copy, a `node-gyp` style `build/Release`,
  * a flat copy, then the in-repo `zig-out/bin` build.
  *
+ * @param options - Search overrides; see `LoadBindingsOptions`.
+ * @returns The addon's `TakyonBindings` surface.
+ * @throws {Error} If no addon is found (see `resolveAddon`), if the file
+ *   cannot be loaded, or if it loads but does not export the four methods
+ *   every engine surface must have.
  * @example
  * ```ts
  * import { loadBindings, TakyonDB } from 'takyondb';

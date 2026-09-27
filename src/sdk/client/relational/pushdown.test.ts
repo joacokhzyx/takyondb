@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: pushdown.test.ts
- * Description: Parity tests for native pushdown kernels with TS fallback.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import {
   pushFilterF64,

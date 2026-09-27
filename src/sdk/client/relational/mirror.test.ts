@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: mirror.test.ts
- * Description: Unit tests for ART PK mirroring with a mocked bridge.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { TakyonBindings } from '../proxy';
 import { RelationalDatabase } from './database';

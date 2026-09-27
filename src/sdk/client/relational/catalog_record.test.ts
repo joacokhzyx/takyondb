@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: catalog_record.test.ts
- * Description: Round-trip and tamper tests for the fixed catalog codec.
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { TakyonBindings } from '../proxy';
 import {

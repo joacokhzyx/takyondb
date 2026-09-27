@@ -1,12 +1,3 @@
-/**
- * ============================================================================
- * File: integration.test.ts
- * Description: End-to-end relational flow (table + query + join + tx).
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-
 import { describe, expect, it } from 'vitest';
 import { RelationalDatabase } from './database';
 import { QueryBuilder } from './query';
