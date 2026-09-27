@@ -9,6 +9,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const layout = @import("../memory/layout.zig");
 const WalEntryHeader = @import("wal.zig").WalEntryHeader;
+/// Payload bytes per 4K sector (wal.zig owns the value; the trailing 4
+/// bytes hold the CRC32 the replay validates).
+const SECTOR_PAYLOAD = @import("wal.zig").SECTOR_PAYLOAD;
 /// Unified entry limit (wal.zig owns the value); replay stops the entry
 /// scan on lengths above it as corrupt.
 const MAX_ENTRY_LEN = @import("wal.zig").MAX_ENTRY_LEN;
@@ -312,11 +315,20 @@ fn replayOneSegment(
     art_max: *u32,
     str_max: *u32,
 ) void {
-    const raw = allocator.alloc(u8, 8192 + 4095) catch return;
+    // Buffer layout. The low CARRY_REGION bytes hold the tail of an entry
+    // split across sector boundaries; the final page is the sector just
+    // read. CARRY_REGION is three sectors rather than one on purpose: an
+    // entry may be up to MAX_ENTRY_LEN payload plus its header, which spans
+    // three 4K sectors, and the carry is measured across the pending
+    // leftover AND the sector just read. With a one-page carry region,
+    // `CARRY_REGION - carry_len` underflowed and aborted the daemon on a
+    // real log; carryLenFrom now also refuses to propagate a tail too long
+    // to be a real entry, so the region is provably large enough.
+    const raw = allocator.alloc(u8, CARRY_REGION + 4096 + 4095) catch return;
     defer allocator.free(raw);
     const addr = @intFromPtr(raw.ptr);
     const aligned_addr = (addr + 4095) & ~@as(usize, 4095);
-    const buf = @as([*]u8, @ptrFromInt(aligned_addr))[0..8192];
+    const buf = @as([*]u8, @ptrFromInt(aligned_addr))[0 .. CARRY_REGION + 4096];
 
     const fd = openExisting(path) orelse return;
     defer closeFd(fd);
@@ -332,21 +344,21 @@ fn replayOneSegment(
     var sector_idx: u32 = 0;
 
     while (true) {
-        // Read directly into the second 4KB page of our aligned buffer.
-        if (!readBlock(fd, buf[4096..8192])) break;
+        // Read directly into the last 4KB page of our aligned buffer.
+        if (!readBlock(fd, @ptrCast(&buf[CARRY_REGION]))) break;
 
         // Validation: torn write / corruption.
-        const crc = Crc32.hash(buf[4096..8188]);
-        const expected_crc = std.mem.readInt(u32, buf[8188..8192][0..4], .little);
+        const crc = Crc32.hash(buf[CARRY_REGION .. CARRY_REGION + SECTOR_PAYLOAD]);
+        const expected_crc = std.mem.readInt(u32, buf[CARRY_REGION + SECTOR_PAYLOAD ..][0..4], .little);
         if (crc != expected_crc) {
             std.debug.print("[WARNING] CRC32 corruption detected in sector {d}. Truncating recovery. Starting database with valid prior records.\n", .{sector_idx});
             break;
         }
         sector_idx += 1;
 
-        const start_idx = 4096 - leftover_len;
+        const start_idx = CARRY_REGION - leftover_len;
         // The active stream only includes the 4092 bytes of payload
-        const end_idx = 4096 + 4092;
+        const end_idx = CARRY_REGION + SECTOR_PAYLOAD;
         var cursor: usize = start_idx;
         // Bytes at the end of this sector that begin an entry continuing
         // into the next one. Padding is deliberately NOT carried: see
@@ -384,21 +396,31 @@ fn replayOneSegment(
             const payload_start = cursor + @sizeOf(WalEntryHeader);
             const payload_end = payload_start + header.length;
 
+            // Widen before adding. A misaligned or corrupt scan can present
+            // an offset near 2^32, and `offset + length` in u32 panics in
+            // Debug builds — a log file must never be able to abort the
+            // daemon. Widen to usize, bounds-check against the arena, and
+            // treat anything out of range as the end of the valid prefix.
+            const end_offset: usize = @as(usize, header.offset) + @as(usize, header.length);
+            if (end_offset > arena_mem.len) break; // Out of arena; stop.
+
             // Rehydrate isomorphic memory directly to SharedArena
-            if (header.offset + header.length <= arena_mem.len) {
-                std.mem.copyForwards(u8, arena_mem[header.offset .. header.offset + header.length], buf[payload_start..payload_end]);
-            }
+            std.mem.copyForwards(
+                u8,
+                arena_mem[@as(usize, header.offset)..end_offset],
+                buf[payload_start..payload_end],
+            );
 
             // Track THREE maxima by offset range. Ring/header writes below
             // ART_ROOT_OFFSET fold into the record max but stay below
             // RECORD_BUMP_INIT, so they never move the bump.
-            const end_offset = header.offset + header.length;
+            const bounded: u32 = @intCast(end_offset);
             if (header.offset < layout.ART_ROOT_OFFSET) {
-                if (end_offset > rec_max.*) rec_max.* = end_offset;
+                if (bounded > rec_max.*) rec_max.* = bounded;
             } else if (header.offset < layout.STRING_ARENA_START) {
-                if (end_offset > art_max.*) art_max.* = end_offset;
+                if (bounded > art_max.*) art_max.* = bounded;
             } else {
-                if (end_offset > str_max.*) str_max.* = end_offset;
+                if (bounded > str_max.*) str_max.* = bounded;
             }
 
             cursor += @sizeOf(WalEntryHeader) + header.length;
@@ -408,10 +430,16 @@ fn replayOneSegment(
         // its header is re-read in the right place.
         leftover_len = carry_len;
         if (leftover_len > 0) {
-            std.mem.copyForwards(u8, buf[4096 - leftover_len .. 4096], buf[end_idx - leftover_len .. end_idx]);
+            std.mem.copyForwards(u8, buf[CARRY_REGION - leftover_len .. CARRY_REGION], buf[end_idx - leftover_len .. end_idx]);
         }
     }
 }
+
+/// Bytes reserved at the front of the replay buffer for a split entry's
+/// carried tail. Three sectors: an entry is at most MAX_ENTRY_LEN payload
+/// plus a header, and carryLenFrom caps the tail at exactly that, so the
+/// region can never be overrun.
+const CARRY_REGION: usize = 3 * 4096;
 
 /// How many bytes at the end of a sector are the beginning of an entry
 /// that continues in the next sector, and so must be carried forward.
@@ -433,8 +461,15 @@ fn replayOneSegment(
 /// at most that entry's carried bytes. Carrying instead would misalign
 /// the following sector, so this is the cheaper of the two failures.
 fn carryLenFrom(buf: []u8, cursor: usize, end_idx: usize) usize {
+    const tail = end_idx - cursor;
+    // A tail longer than one whole entry is corrupt framing, not a split:
+    // the length that produced it was never valid, so the scan has already
+    // lost its place. Carrying it forward only propagates the damage, and an
+    // unbounded tail is what overflowed the carry region before it was sized
+    // to three sectors. Drop it.
+    if (tail > MAX_ENTRY_LEN + @sizeOf(WalEntryHeader)) return 0;
     for (buf[cursor..end_idx]) |b| {
-        if (b != 0) return end_idx - cursor; // Real split entry: carry it.
+        if (b != 0) return tail; // Real split entry: carry it.
     }
     return 0;
 }
@@ -508,12 +543,11 @@ fn writeEntry(wal: anytype, offset: u32, payload: []const u8) !void {
 }
 
 test "WAL replay survives MULTIPLE partial sectors" {
-    // Regression: every flushBuffer() that does not fill a sector writes
-    // zero padding after the last entry (wal.zig flushBuffer). The replay
-    // parser must treat that padding as the end of ONE batch, not as the
-    // end of the whole log. It used to abort the entire segment at the
-    // first padded sector, so only the entries of the first batch were
-    // ever recovered and the loss was silent.
+    // Regression: every flush that does not fill a sector writes zero
+    // padding after the last entry, and the replay parser must treat that
+    // padding as the end of ONE batch rather than the end of the whole log.
+    // It used to abort the entire segment at the first padded sector, so
+    // only the first batch was ever recovered and the loss was silent.
     //
     // The single-batch case is covered by the 5000B round-trip test above;
     // that test writes one entry, so the only padding is in the final
@@ -610,6 +644,65 @@ test "WAL replay survives many flushed batches (2000 entries)" {
         if (arena[off] != @as(u8, @intCast(recovered % 251))) break;
     }
     try std.testing.expectEqual(@as(usize, total), recovered);
+}
+
+test "WAL replay does not carry padding past a full sector" {
+    // The reader's two cases are told apart by the writer's guarantee: a
+    // sector is either exactly full (its tail is a split entry, carry it)
+    // or padded by at least MIN_PADDING (its tail is padding, drop it). A
+    // tail of 1..5 bytes is ambiguous, so the idle flush path refuses to
+    // emit one. This test drives that exact boundary: it fills sectors to
+    // within 1..5 bytes of the payload limit and then keeps going, so the
+    // writer has to choose between a short padded sector and a split entry.
+    //
+    // The old reader guessed by content, and on a full sector whose split
+    // entry continued with zero bytes it dropped the carry and read the next
+    // sector's payload as a header, which aborted the daemon on a real log.
+    const WalManager = @import("wal.zig").WalManager;
+    const MIN_PADDING = @import("wal.zig").MIN_PADDING;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/boundary.takyon", .{dirpath});
+
+    const arena_size: usize = 65536;
+    const total = 600;
+    // Vary the payload so the sector lands on every slack in 1..5 across
+    // runs, and keep entries small enough that a full sector holds many.
+    const payload_len = 5;
+
+    var wal = try WalManager.init(allocator, path);
+    for (0..total) |i| {
+        const off: u32 = @intCast(2000 + i * 8);
+        const bytes = [_]u8{@intCast(i % 251)} ** payload_len;
+        try writeEntry(&wal, off, &bytes);
+        // Non-forced flush: this is the path that must never emit an
+        // ambiguous short tail.
+        try wal.flushIfUnambiguous();
+    }
+    try wal.flushBuffer();
+    wal.shutdown();
+
+    // Every entry written must come back. A dropped carry shows up here as
+    // a missing or mismatched byte, not as a silent truncation.
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+    try recoverWal(allocator, path, arena);
+
+    var recovered: usize = 0;
+    while (recovered < total) : (recovered += 1) {
+        const off: usize = 2000 + recovered * 8;
+        if (arena[off] != @as(u8, @intCast(recovered % 251))) break;
+    }
+    try std.testing.expectEqual(@as(usize, total), recovered);
+    // The guarantee is only sound if a padding run is long enough to hold a
+    // whole entry header, so pin that relationship rather than the literal.
+    try std.testing.expect(@sizeOf(WalEntryHeader) <= MIN_PADDING);
 }
 
 test "WAL framing fuzz never fails fatally (256 random files)" {

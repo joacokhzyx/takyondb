@@ -12,7 +12,13 @@ const { startDaemon, stopDaemon, waitForFileStable } = require('./helpers/daemon
 const ARENA_SIZE = 16 * 1024 * 1024;
 const N = 5000;
 const RESIDUAL_OFFSET = 3000000;
-const RESIDUAL_SIZE = 4086; // +6B header = 4092: one full sector flush
+// 4084 payload + the 8-byte entry header = 4092, exactly one full sector:
+// no padding, no split. @sizeOf(WalEntryHeader) is 8, not 6 (a packed struct
+// takes the alignment of its widest field), so the old 4086 overflowed by 2
+// bytes and split the entry across two sectors — silently testing a
+// different path than the comment claimed. The multi-sector and padded
+// cases are covered by the wal-multisector suite.
+const RESIDUAL_SIZE = 4084;
 
 const { loadBindings } = require('./helpers/addon');
 const takyondb = loadBindings();

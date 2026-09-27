@@ -21,6 +21,16 @@ pub const WalEntryHeader = packed struct {
 pub const SECTOR_PAYLOAD: usize = 4092;
 pub const SECTOR_SIZE: usize = 4096;
 
+/// Minimum padding on a sector that was flushed before filling, in bytes.
+///
+/// Derived from the header rather than written as a literal: `@sizeOf` of
+/// the packed header is 8, not 6, because a packed struct takes the
+/// alignment of its widest field. A padding run has to be long enough to
+/// hold a whole header, or the replay parser cannot read it as an
+/// all-zero terminator and has to guess between "padding" and "the first
+/// bytes of a split entry" — and guessing wrong misaligns the next sector.
+pub const MIN_PADDING: usize = @sizeOf(WalEntryHeader);
+
 /// Largest single entry the log accepts (notifyArena payloads peak ~4KB).
 /// Unified with recovery.zig: the replay parser accepts lengths <= this
 /// value; larger lengths stop the entry scan as corrupt.
@@ -345,7 +355,32 @@ pub const WalManager = struct {
         }
     }
 
+    /// Writes the buffered sector to disk, padded with zeros.
+    ///
+    /// `force` exists so the writer can guarantee an invariant the replay
+    /// parser depends on: **a sector is either exactly full or padded by at
+    /// least MIN_PADDING bytes.** Never less, because the reader tells the
+    /// two cases apart by looking at the tail — a full sector's tail is
+    /// always the start of a split entry and must be carried into the next
+    /// sector, while a padded sector's tail is padding and must not be.
+    /// A tail of 1..5 bytes is indistinguishable from a split header, so it
+    /// is never produced on the idle path: those few bytes stay buffered
+    /// until more data arrives.
+    ///
+    /// A forced flush may still emit a 1..5 byte tail. That is safe because
+    /// it only happens at shutdown, on the final sector of the log, where
+    /// there is no following sector to misalign.
     pub fn flushBuffer(self: *WalManager) !void {
+        return self.flushBufferWith(true);
+    }
+
+    /// Idle/timer path. Skips the write when the remaining slack is too
+    /// small to be unambiguous; see the note above.
+    pub fn flushIfUnambiguous(self: *WalManager) !void {
+        return self.flushBufferWith(false);
+    }
+
+    fn flushBufferWith(self: *WalManager, force: bool) !void {
         // Guard: after shutdown closed the fd and freed the backing
         // allocation (phase==2), flushing would touch both. No-op instead.
         // Phase 1 (closing) still flushes: shutdown joins the flusher
@@ -353,8 +388,11 @@ pub const WalManager = struct {
         if (self.phase.load(.acquire) == 2) return;
         if (self.sector_pos == 0) return;
 
+        const slack = SECTOR_PAYLOAD - self.sector_pos;
+        if (!force and slack < MIN_PADDING) return;
+
         // Pad the rest of the payload buffer with zeros
-        @memset(self.sector_buffer[self.sector_pos..4092], 0);
+        @memset(self.sector_buffer[self.sector_pos..SECTOR_PAYLOAD], 0);
 
         // Calculate CRC32 and store at the end
         const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
@@ -363,8 +401,8 @@ pub const WalManager = struct {
             std.hash.crc.Crc32Ieee
         else
             std.hash.Crc32;
-        const crc = Crc32.hash(self.sector_buffer[0..4092]);
-        std.mem.writeInt(u32, self.sector_buffer[4092..4096][0..4], crc, .little);
+        const crc = Crc32.hash(self.sector_buffer[0..SECTOR_PAYLOAD]);
+        std.mem.writeInt(u32, self.sector_buffer[SECTOR_PAYLOAD..SECTOR_SIZE][0..4], crc, .little);
 
         try self.writeSector();
         // Durability: a WAL that is not synced is just a rumor.
@@ -455,7 +493,10 @@ pub const WalManager = struct {
             } else {
                 // Persist whatever is still buffered before idling, so the
                 // tail of a burst reaches disk without waiting for a fill.
-                self.flushBuffer() catch {};
+                // Not forced: a 1..5 byte tail here would be ambiguous to
+                // the replay parser, and at most 5 bytes wait for the next
+                // delta instead.
+                self.flushIfUnambiguous() catch {};
 
                 std.time.sleep(backoff_ns);
                 if (backoff_ns < IDLE_MAX_SLEEP_NS) {

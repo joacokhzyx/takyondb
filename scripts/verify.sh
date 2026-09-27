@@ -119,7 +119,12 @@ if [ "$RUN_E2E" -eq 1 ]; then
   run "zig build -Doptimize=ReleaseSafe" zig build -Doptimize=ReleaseSafe
 
   step "E2E suites"
-  run "run-e2e (10 suites)" npm --prefix scripts run test:e2e
+  # Count read from run-e2e.js instead of typed here. The hardcoded "10
+  # suites" was already stale at 13 and nobody noticed, which is the same
+  # hand-maintained-number problem the generated metrics table exists to
+  # kill; do not reintroduce it in a label.
+  E2E_COUNT=$(node -e "const s=require('fs').readFileSync('scripts/run-e2e.js','utf8');process.stdout.write(String((s.match(/const SUITES = \[[\s\S]*?\n\];/)||[''])[0].match(/name: '/g).length))")
+  run "run-e2e (${E2E_COUNT} suites)" npm --prefix scripts run test:e2e
 
   step "Examples: typecheck and run every file"
   # quickstart.ts imported '../src/...' instead of '../../src/...' and could

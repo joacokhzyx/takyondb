@@ -10,6 +10,40 @@ section is where anything after it goes.
 
 ### Fixed
 
+- **A malformed WAL could abort the daemon on start.** Two problems in the
+  replay path, both reachable from ordinary data once the parser stopped
+  truncating at the first padded sector.
+  - `header.offset + header.length` was evaluated in `u32`. A scan that lost
+    its place read a near-`2^32` offset out of payload bytes, and the
+    addition panicked, killing the daemon with `thread … panic: integer
+    overflow` before it could serve a single request. The sum is now widened
+    to `usize`, bounds-checked against the arena, and an out-of-range entry
+    ends the valid prefix instead of trapping.
+  - The carry region for an entry split across sectors was one 4K page, but a
+    maximum-size entry (8192 bytes) spans three sectors, so the carried tail
+    could exceed a page and `CARRY_REGION - leftover_len` underflowed. The
+    region is now three sectors and a tail longer than one whole entry is
+    treated as corrupt framing rather than propagated.
+
+  Reproduced against a real 6 MB / 1489-sector log left by the chaos
+  benchmark: the daemon panicked on every start. It now recovers the log
+  (record bump 1,448,576 and string bump 12,690,476, versus the 296,136 /
+  10,485,764 init values it stopped at before).
+- **The writer no longer emits sectors the reader cannot classify.** The
+  replay parser has to tell a *full* sector (tail is a split entry, carry it
+  forward) from a *padded* one (tail is padding, drop it), and content alone
+  cannot: on a full sector whose split entry continues with zero bytes,
+  guessing "padding" dropped the carry and the next sector was read as a
+  header. `flushBuffer` now takes a `force` flag, and the idle/timer path
+  uses `flushIfUnambiguous`, which refuses to write a sector whose slack is
+  shorter than one entry header. At most 7 bytes wait for the next delta
+  instead, and a forced flush may still write a short tail because it only
+  happens at shutdown, on the last sector, where there is nothing after it to
+  misalign. `MIN_PADDING` is derived from `@sizeOf(WalEntryHeader)` rather
+  than written as a literal, because that size is 8 and not 6 — a packed
+  struct takes the alignment of its widest field. The constant is load-bearing
+  for the whole scheme, and the hardcoded 6 would have reintroduced the
+  ambiguity the fix exists to remove.
 - **The chaos benchmark was publishing numbers derived from dropped writes.**
   `notifyArena` and `pushDelta` return -1 when the ring is full, which is
   back-pressure, and the SDK treats it as a hard failure
@@ -70,7 +104,19 @@ section is where anything after it goes.
   one sector (`RESIDUAL_SIZE = 4086`, "+6B header = 4092"), so even once
   unmapping was fixed they could not reach the multi-sector path. The new
   `wal-multisector` suite writes 5 separately flushed batches and asserts the
-  WAL really is multi-sector before it trusts the result.
+  WAL really is multi-sector before it trusts the result. That residual is
+  now 4084, which plus the 8-byte header is exactly one full sector, so the
+  suite tests the path its comment describes; the previous 4086 overflowed by
+  two bytes and quietly split the entry across two sectors instead.
+
+  `e2e_crash_recovery_test.ts` and `e2e_crash_recovery_test.js` are removed.
+  They were superseded by `e2e_crash_auto_test.js`, never registered in
+  `run-e2e.js`, carried the same unbalanced-refcount flaw, and had not been
+  run by anything.
+- **`scripts/verify.sh` no longer miscounts its own E2E suites.** The step
+  label hardcoded "10 suites" and had been wrong since the eleventh was
+  added. The count is now read from `run-e2e.js` at run time, so a label
+  cannot drift away from reality again.
 
 ### Known gaps
 
