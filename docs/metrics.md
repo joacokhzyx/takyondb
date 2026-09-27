@@ -24,7 +24,7 @@ measurements, and [coverage.md](coverage.md) for what is and is not covered.
 | TypeScript source files | 46 prod (3629 lines) |
 | Zig tests | 77 in 28 files |
 | TypeScript unit tests | 129 in 28 files |
-| E2E suites | 14 scripts |
+| E2E suites | 15 scripts |
 | Documentation pages | 63 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |

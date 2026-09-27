@@ -46,6 +46,31 @@ section is where anything after it goes.
   `wal-multisector` suite writes 5 separately flushed batches and asserts the
   WAL really is multi-sector before it trusts the result.
 
+### Known gaps
+
+These are open defects, not planned features. They are listed here because
+the documentation must not imply otherwise, and each has a test that fails
+today on purpose.
+
+- **Index writes are not durable.** `takyon_insert_index` mutates the ART in
+  shared memory and emits no WAL delta, so any key indexed after the last
+  checkpoint is lost on crash. Measured with the `index-persist` E2E suite:
+  300/300 keys indexed before the checkpoint recover, **0/200** indexed after
+  it do, and the WAL is 0 bytes after the checkpoint. Record *bytes* are
+  durable (they go through `notifyArena`); the key-to-offset mapping is not.
+
+  This is not a patch-sized fix. The ART is a bump allocator whose insert
+  writes both freshly allocated nodes and child slots into pre-existing ones,
+  so the write set is one contiguous range plus scattered 4-byte stores, and
+  replaying the arena deltas alone cannot rebuild the tree. The fix needs a
+  logical record kind in the WAL plus a recovery phase that re-applies index
+  operations, which is an on-disk format change.
+
+  Until then: treat a snapshot as the durability boundary for the index, and
+  do not rely on crash recovery for writes newer than the last checkpoint.
+  `run-e2e.js` runs the suite with an `xfail` marker, so the gap is reported
+  on every run and an unexpected pass forces the marker to be re-examined.
+
 ## [0.1.0] - 2026-09-25
 
 First versioned release. Pre-alpha: the engine, the SDK, the daemon and the

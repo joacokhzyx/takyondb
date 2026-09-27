@@ -20,6 +20,14 @@ const SUITES = [
   { name: 'unlink', file: 'e2e_graceful_unlink_test.js', ts: false },
   { name: 'admin-scan', file: 'e2e_admin_scan_test.js', ts: false },
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
+  // Documents a real, still-open gap: takyon_insert_index emits no WAL
+  // delta, so keys indexed after the last checkpoint are lost on crash. The
+  // suite asserts the correct behavior and therefore fails today. It is
+  // marked xfail so the run stays green while the failure stays VISIBLE: the
+  // moment someone makes index writes durable, this suite passes and the
+  // expected outcome has to be updated here. Do not "fix" it by weakening the
+  // assertion — that is how the WAL replay defect stayed hidden for so long.
+  { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false, xfail: 'index writes are not yet WAL-logged' },
 ];
 
 function cleanStaleShm() {
@@ -118,8 +126,29 @@ async function main() {
   for (const suite of SUITES) {
     console.log(`\n[run-e2e] --- suite '${suite.name}' (${suite.file}) ---`);
     const res = await runSuite(suite, TIMEOUT_MS);
-    console.log(`[run-e2e] suite '${res.name}': ${res.status} (code=${res.code}, ${res.durationMs}ms)`);
     results.push(res);
+
+    // xfail: a suite that pins a known-open defect. It is expected to fail,
+    // and failing is the correct outcome, so neither state breaks the run.
+    // Unexpected success is the signal that deserves attention: the defect
+    // is fixed (or the test rotted) and the marker must be re-examined.
+    if (suite.xfail) {
+      if (res.status === 'PASS') {
+        console.log(
+          `[run-e2e] suite '${res.name}': XPASS (expected to fail: ${suite.xfail}) — ` +
+          `revisit the xfail marker in run-e2e.js`
+        );
+        res.status = 'XPASS';
+      } else {
+        console.log(
+          `[run-e2e] suite '${res.name}': XFAIL as expected (${suite.xfail}) — ` +
+          `code=${res.code}`
+        );
+        res.status = 'XFAIL';
+      }
+    } else {
+      console.log(`[run-e2e] suite '${res.name}': ${res.status} (code=${res.code}, ${res.durationMs}ms)`);
+    }
 
     // A suite that fails an assertion used to leave its daemon running
     // (SIGKILL was only on the happy path). That daemon spins at ~25% CPU
@@ -140,19 +169,25 @@ async function main() {
   }
 
   console.log('\n[run-e2e] Summary:');
-  console.log('Suite       | Status  | Code       | Duration(ms)');
-  console.log('------------|---------|------------|-------------');
+  console.log('Suite          | Status  | Code       | Duration(ms)');
+  console.log('---------------|---------|------------|-------------');
   for (const r of results) {
     const codeStr = String(r.code === null || r.code === undefined ? '-' : r.code);
-    console.log(`${r.name.padEnd(11)} | ${r.status.padEnd(7)} | ${codeStr.padEnd(10)} | ${r.durationMs}`);
+    console.log(`${r.name.padEnd(14)} | ${r.status.padEnd(7)} | ${codeStr.padEnd(10)} | ${r.durationMs}`);
   }
 
-  const failed = results.filter((r) => r.status !== 'PASS');
+  // XPASS counts as a failure: it means a marker is stale and the suite that
+  // was supposed to be proving a defect no longer is.
+  const failed = results.filter((r) => r.status === 'FAIL' || r.status === 'TIMEOUT' || r.status === 'XPASS');
+  const xfailed = results.filter((r) => r.status === 'XFAIL');
+  if (xfailed.length > 0) {
+    console.log(`\n[run-e2e] NOTE: ${xfailed.length} suite(s) pinned a known-open defect: ${xfailed.map((r) => r.name).join(', ')}`);
+  }
   if (failed.length > 0) {
     console.error(`\n[run-e2e] FAILED: ${failed.length}/${results.length} suites failed (${failed.map((r) => r.name).join(', ')})`);
     process.exitCode = 1;
   } else {
-    console.log(`\n[run-e2e] All ${results.length} suites passed.`);
+    console.log(`\n[run-e2e] All ${results.length - xfailed.length} suites passed (${xfailed.length} xfailed).`);
   }
 }
 
