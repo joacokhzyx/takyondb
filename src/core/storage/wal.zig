@@ -10,11 +10,52 @@ const builtin = @import("builtin");
 const layout = @import("../memory/layout.zig");
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
+const DELTA_ARENA = @import("../ipc/ring_buffer.zig").DELTA_ARENA;
+const DELTA_INLINE = @import("../ipc/ring_buffer.zig").DELTA_INLINE;
+const DELTA_INDEX_OP = @import("../ipc/ring_buffer.zig").DELTA_INDEX_OP;
+const MAX_KEY_LEN = @import("../ipc/ring_buffer.zig").MAX_KEY_LEN;
 const snapshot = @import("snapshot.zig");
 
+/// What a WAL record means. Stored in the third header byte, which the
+/// pre-`kind` header left as zeroed struct padding, so every record written
+/// before this field existed reads back as `arena_write` and old logs keep
+/// replaying without a migration. Verified rather than assumed: the padding
+/// of `packed struct { offset: u32, length: u16 }` is reliably zero in Zig
+/// 0.14, which is what makes the reuse safe.
+pub const EntryKind = enum(u8) {
+    /// Raw copy: arena[offset .. offset + length] = payload. This is the
+    /// record data, not the index, and it is what makes record bytes durable.
+    arena_write = 0,
+
+    /// Logical index operation: re-apply `payload` (the key) -> offset on
+    /// replay. Written by takyon_insert_index, which mutates the ART in
+    /// shared memory and emits no arena bytes of its own, so without this
+    /// record every key indexed since the last checkpoint was lost on crash.
+    ///
+    /// Replay is safe to repeat: inserting a key that already maps to the
+    /// same offset overwrites in place, and the ART's allocator is a
+    /// monotonic bump, so applying the same logical log twice yields the
+    /// same index.
+    index_op = 1,
+};
+
+/// The highest recognised kind. A larger value means the log was written by
+/// a newer format than this build understands, so replay stops there rather
+/// than guessing: guessing would reinterpret bytes as a different record
+/// shape and could produce a plausible-looking but wrong arena.
+pub const MAX_ENTRY_KIND: u8 = @intFromEnum(EntryKind.index_op);
+
+/// Header for one WAL record. 8 bytes on disk.
+///
+/// For `arena_write` and `index_op` alike: `offset` is the arena offset
+/// being written, or the value an index key maps to; `length` is the
+/// payload length; the payload follows immediately. The `kind` byte is what
+/// tells recovery whether to copy those bytes or to re-insert a key.
 pub const WalEntryHeader = packed struct {
     offset: u32,
     length: u16,
+    kind: EntryKind,
+    _pad: u8 = 0,
 };
 
 /// Payload bytes per 4K sector; the trailing 4 bytes hold a CRC32.
@@ -425,7 +466,7 @@ pub const WalManager = struct {
             self.sector_pos += to_copy;
             offset += to_copy;
 
-            if (self.sector_pos == 4092) {
+            if (self.sector_pos == SECTOR_PAYLOAD) {
                 try self.flushBuffer();
             }
         }
@@ -435,25 +476,43 @@ pub const WalManager = struct {
     /// from a compromised or buggy producer) are dropped, never replayed
     /// into panics.
     pub fn processDelta(self: *WalManager, delta: DeltaMessage, arena_mem: []const u8) !void {
-        if (delta.is_arena == 1) {
+        if (delta.is_arena == DELTA_ARENA) {
             if (delta.size > MAX_ENTRY_LEN) return error.CorruptDelta;
             if (@as(usize, delta.offset) + delta.size > arena_mem.len) return error.CorruptDelta;
             const header = WalEntryHeader{
                 .offset = delta.offset,
                 .length = @as(u16, @intCast(delta.size)),
+                .kind = .arena_write,
             };
             try self.writeToBuffer(std.mem.asBytes(&header));
             try self.writeToBuffer(arena_mem[delta.offset .. delta.offset + delta.size]);
-        } else if (delta.is_arena == 0) {
+        } else if (delta.is_arena == DELTA_INLINE) {
             if (delta.size > 48) return error.CorruptDelta;
             const header = WalEntryHeader{
                 .offset = delta.offset,
                 .length = @as(u16, @intCast(delta.size)),
+                .kind = .arena_write,
             };
             try self.writeToBuffer(std.mem.asBytes(&header));
             try self.writeToBuffer(delta.data[0..delta.size]);
+        } else if (delta.is_arena == DELTA_INDEX_OP) {
+            // Logical index operation. The key travels through the string
+            // arena rather than the 48-byte inline payload so that any key
+            // up to MAX_KEY_LEN uses one encoding instead of two, and
+            // delta.offset names the value the key maps to. The key bytes are
+            // read back out of the arena at replay time; nothing is copied
+            // here because the client already put the key there.
+            if (delta.size == 0 or delta.size > MAX_KEY_LEN) return error.CorruptDelta;
+            if (@as(usize, delta.offset) + delta.size > arena_mem.len) return error.CorruptDelta;
+            const header = WalEntryHeader{
+                .offset = delta.offset,
+                .length = @as(u16, @intCast(delta.size)),
+                .kind = .index_op,
+            };
+            try self.writeToBuffer(std.mem.asBytes(&header));
+            try self.writeToBuffer(arena_mem[delta.offset .. delta.offset + delta.size]);
         }
-        // is_arena == 2 (checkpoint) is handled by the loop, not here.
+        // DELTA_CHECKPOINT is handled by the loop, not here.
     }
 
     /// Background consumer loop. Backs off with a bounded sleep while the

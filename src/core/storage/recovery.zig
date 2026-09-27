@@ -12,6 +12,10 @@ const WalEntryHeader = @import("wal.zig").WalEntryHeader;
 /// Payload bytes per 4K sector (wal.zig owns the value; the trailing 4
 /// bytes hold the CRC32 the replay validates).
 const SECTOR_PAYLOAD = @import("wal.zig").SECTOR_PAYLOAD;
+/// Record kind byte; records above MAX_ENTRY_KIND come from a newer format.
+const MAX_ENTRY_KIND = @import("wal.zig").MAX_ENTRY_KIND;
+const EntryKind = @import("wal.zig").EntryKind;
+const ArtIndex = @import("../index/art.zig").ArtIndex;
 /// Unified entry limit (wal.zig owns the value); replay stops the entry
 /// scan on lengths above it as corrupt.
 const MAX_ENTRY_LEN = @import("wal.zig").MAX_ENTRY_LEN;
@@ -30,6 +34,79 @@ pub const SnapshotMeta = struct {
     art_bump: u32,
     str_bump: u32,
 };
+
+/// Logical index operations recovered from the WAL, held until the arena
+/// replay is finished.
+///
+/// Two properties force the buffering. First, an `index_op` payload points
+/// into the sector buffer, which is overwritten on the next read, so the key
+/// has to be copied out. Second, and more important, the ops cannot be
+/// applied as they are read: replaying one allocates ART nodes from the ART
+/// bump, and `finalize` writes the bump word from the maxima we are still
+/// computing. Applying them at the end, before finalize folds in the arena's
+/// post-replay bump, is what keeps the two from fighting.
+const IndexOps = struct {
+    /// Keys, concatenated; `IndexOp.key_offset` indexes into this. The
+    /// allocator is assigned by the caller, since a zero-initialized
+    /// ArrayList has none and recovery runs before the GPA is reachable
+    /// from here.
+    keys: std.ArrayList(u8),
+    ops: std.ArrayList(IndexOp),
+
+    const IndexOp = struct {
+        key_offset: u32,
+        key_len: u16,
+        value_offset: u32,
+    };
+
+    fn deinit(self: *IndexOps) void {
+        self.keys.deinit();
+        self.ops.deinit();
+    }
+
+    /// Best-effort: a log we cannot buffer the keys from is a log whose
+    /// index we cannot rebuild, and recovery must not abort over it. The
+    /// arena bytes have already been restored, so a partial index is still
+    /// better than none, and the shortfall is reported by applyIndexOps.
+    fn add(self: *IndexOps, key: []const u8, value_offset: u32) void {
+        const at = self.keys.items.len;
+        self.keys.appendSlice(key) catch return;
+        self.ops.append(.{
+            .key_offset = @intCast(at),
+            .key_len = @intCast(key.len),
+            .value_offset = value_offset,
+        }) catch {
+            _ = self.keys.shrinkRetainingCapacity(at);
+        };
+    }
+};
+
+/// Re-applies recovered index operations to the ART.
+///
+/// Replaying a logical insert is idempotent: the ART overwrites an existing
+/// key's leaf rather than duplicating it, and with freelist reuse off (the
+/// default) the allocator is a monotonic bump, so applying the same log twice
+/// produces the same index. Keys that the snapshot already contained are
+/// re-inserted, which allocates a second leaf and orphans the first; that
+/// costs a little arena space after recovery and is preferred over trying to
+/// detect which keys a snapshot already had.
+fn applyIndexOps(art_index: *ArtIndex, index_ops: *IndexOps) u32 {
+    var applied: u32 = 0;
+    for (index_ops.ops.items) |op| {
+        const start = op.key_offset;
+        const end = start + op.key_len;
+        if (end > index_ops.keys.items.len) continue; // Truncated blob; skip.
+        art_index.insert(index_ops.keys.items[start..end], op.value_offset) catch |err| {
+            std.debug.print("[TakyonDB-Bootloader] Skipped index replay for a key that no longer fits: {s}\\n", .{@errorName(err)});
+            continue;
+        };
+        applied += 1;
+    }
+    if (index_ops.ops.items.len > 0) {
+        std.debug.print("[TakyonDB-Bootloader] Replayed {d}/{d} index operations from the WAL.\\n", .{ applied, index_ops.ops.items.len });
+    }
+    return applied;
+}
 
 fn readWord(arena_mem: []const u8, offset: usize, fallback: u32) u32 {
     if (offset + 4 > arena_mem.len) return fallback;
@@ -121,10 +198,21 @@ fn isLegacyV1Shape(buf: *const [4096]u8) bool {
     return true;
 }
 
-pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8) !void {
+/// `art_index` is optional because it is only meaningful for an arena large
+/// enough to contain the ART region at all. A small test arena (16 KB) has
+/// no room for nodes rooted at ART_ROOT_OFFSET, and `ArtIndex.init` would
+/// panic on the out-of-range bump word rather than return an error. Passing
+/// null skips the index replay, which is correct: such an arena cannot hold
+/// index operations.
+pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, art_index: ?*ArtIndex) !void {
     var rec_max: u32 = layout.RECORD_BUMP_INIT;
     var art_max: u32 = layout.ART_START;
     var str_max: u32 = layout.STRING_DATA_START;
+    var index_ops = IndexOps{
+        .keys = std.ArrayList(u8).init(allocator),
+        .ops = std.ArrayList(IndexOps.IndexOp).init(allocator),
+    };
+    defer index_ops.deinit();
 
     // Phase 1: snapshot with CRC verification (two passes).
     if (try loadSnapshot(allocator, path, arena_mem)) |meta| {
@@ -147,7 +235,23 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     }
 
     // Phase 2: WAL delta replay.
-    replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max);
+    replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max, &index_ops);
+
+    // Phase 3: re-apply logical index operations. Must run before finalize,
+    // which overwrites the ART bump from art_max; rebuilding the index moves
+    // that bump, so the post-replay value is folded back in below.
+    if (index_ops.ops.items.len > 0) {
+        if (art_index) |idx| {
+            _ = applyIndexOps(idx, &index_ops);
+            const arena_art = readWord(arena_mem, layout.ART_BUMP_OFFSET, layout.ART_START);
+            if (arena_art > art_max) art_max = arena_art;
+        } else {
+            std.debug.print(
+                "[TakyonDB-Bootloader] WAL holds {d} index operation(s) but this arena has no ART region; the index is not rebuilt.\n",
+                .{index_ops.ops.items.len},
+            );
+        }
+    }
 
     finalize(arena_mem, rec_max, art_max, str_max);
 }
@@ -289,15 +393,16 @@ fn replayWal(
     rec_max: *u32,
     art_max: *u32,
     str_max: *u32,
+    index_ops: *IndexOps,
 ) void {
-    replayOneSegment(allocator, path, arena_mem, rec_max, art_max, str_max);
+    replayOneSegment(allocator, path, arena_mem, rec_max, art_max, str_max, index_ops);
     var n: u32 = 0;
     while (n < MAX_SEGMENTS) : (n += 1) {
         var sbuf: [4096]u8 = undefined;
         const seg = formatSegmentPathZ(&sbuf, path[0..path.len], n) catch break;
         const probe = openExisting(seg) orelse break; // stop at first missing N
         closeFd(probe);
-        replayOneSegment(allocator, seg, arena_mem, rec_max, art_max, str_max);
+        replayOneSegment(allocator, seg, arena_mem, rec_max, art_max, str_max, index_ops);
     }
 }
 
@@ -314,6 +419,7 @@ fn replayOneSegment(
     rec_max: *u32,
     art_max: *u32,
     str_max: *u32,
+    index_ops: *IndexOps,
 ) void {
     // Buffer layout. The low CARRY_REGION bytes hold the tail of an entry
     // split across sector boundaries; the final page is the sector just
@@ -387,6 +493,16 @@ fn replayOneSegment(
                 carry_len = carryLenFrom(buf, cursor, end_idx);
                 break; // Corrupt length; stop.
             }
+            if (@as(u8, @intFromEnum(header.kind)) > MAX_ENTRY_KIND) {
+                // A kind this build does not know means the log was written
+                // by a newer format. Stop rather than guess: interpreting
+                // the record as the wrong shape would produce a
+                // plausible-looking but wrong arena, which is worse than
+                // recovering a prefix.
+                std.debug.print("[TakyonDB-Bootloader] WAL record kind {d} is newer than this build understands; stopping recovery.\n", .{@as(u8, @intFromEnum(header.kind))});
+                carry_len = carryLenFrom(buf, cursor, end_idx);
+                break;
+            }
 
             if (available < @sizeOf(WalEntryHeader) + header.length) {
                 carry_len = carryLenFrom(buf, cursor, end_idx);
@@ -395,6 +511,19 @@ fn replayOneSegment(
 
             const payload_start = cursor + @sizeOf(WalEntryHeader);
             const payload_end = payload_start + header.length;
+
+            if (header.kind == .index_op) {
+                // A logical index write, not a byte copy. The payload is the
+                // key and `offset` is the value it binds to, so there is
+                // nothing to restore into the arena here: the ART is rebuilt
+                // from these in applyIndexOps once the whole log is read.
+                // Deliberately not touching the maxima — `offset` is a value
+                // offset, not an arena extent, and folding it into art_max
+                // would push the ART bump to a value nothing allocated.
+                index_ops.add(buf[payload_start..payload_end], header.offset);
+                cursor += @sizeOf(WalEntryHeader) + header.length;
+                continue;
+            }
 
             // Widen before adding. A misaligned or corrupt scan can present
             // an offset near 2^32, and `offset + length` in u32 panics in
@@ -521,7 +650,7 @@ test "WAL multi-sector entry round-trip (5000B payload)" {
     for (&payload, 0..) |*b, i| b.* = @as(u8, @intCast((i * 31 + 7) % 251));
 
     var wal = try WalManager.init(allocator, path);
-    const header = WalHeader{ .offset = payload_off, .length = @as(u16, @intCast(payload_len)) };
+    const header = WalHeader{ .offset = payload_off, .length = @as(u16, @intCast(payload_len)), .kind = .arena_write };
     try wal.writeToBuffer(std.mem.asBytes(&header));
     try wal.writeToBuffer(&payload);
     try wal.flushBuffer();
@@ -530,14 +659,18 @@ test "WAL multi-sector entry round-trip (5000B payload)" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena);
+    try recoverWal(allocator, path, arena, null);
     try std.testing.expectEqualSlices(u8, &payload, arena[payload_off .. payload_off + payload_len]);
 }
 
 /// Writes one WAL entry the way processDelta does: 6-byte header then
 /// payload, both through the byte-stream writer.
 fn writeEntry(wal: anytype, offset: u32, payload: []const u8) !void {
-    const header = WalEntryHeader{ .offset = offset, .length = @as(u16, @intCast(payload.len)) };
+    try writeEntryOfKind(wal, offset, payload, .arena_write);
+}
+
+fn writeEntryOfKind(wal: anytype, offset: u32, payload: []const u8, kind: EntryKind) !void {
+    const header = WalEntryHeader{ .offset = offset, .length = @as(u16, @intCast(payload.len)), .kind = kind };
     try wal.writeToBuffer(std.mem.asBytes(&header));
     try wal.writeToBuffer(payload);
 }
@@ -584,7 +717,7 @@ test "WAL replay survives MULTIPLE partial sectors" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena);
+    try recoverWal(allocator, path, arena, null);
 
     for (0..batches) |b| {
         for (0..per_batch) |i| {
@@ -634,7 +767,7 @@ test "WAL replay survives many flushed batches (2000 entries)" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena);
+    try recoverWal(allocator, path, arena, null);
 
     // Count how many entries actually landed, in order to report the
     // shortfall instead of failing on the first mismatch.
@@ -692,7 +825,7 @@ test "WAL replay does not carry padding past a full sector" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena);
+    try recoverWal(allocator, path, arena, null);
 
     var recovered: usize = 0;
     while (recovered < total) : (recovered += 1) {
@@ -703,6 +836,59 @@ test "WAL replay does not carry padding past a full sector" {
     // The guarantee is only sound if a padding run is long enough to hold a
     // whole entry header, so pin that relationship rather than the literal.
     try std.testing.expect(@sizeOf(WalEntryHeader) <= MIN_PADDING);
+}
+
+test "WAL index_op records rebuild the ART on replay" {
+    // takyon_insert_index mutates the ART in shared memory and writes no
+    // arena bytes, so before format v2 every key indexed after the last
+    // snapshot was lost on crash. These records carry the key so recovery
+    // can re-apply the operation.
+    //
+    // The arena has to be full size here: ArtIndex.init resolves the bump
+    // word at ART_ROOT_OFFSET, so a 16 KB test arena cannot host the tree at
+    // all. That is why recoverWal takes an optional index.
+    const WalManager = @import("wal.zig").WalManager;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/indexop.takyon", .{dirpath});
+
+    const arena_size = layout.STRING_ARENA_START + (1 * 1024 * 1024);
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+
+    // Round 1: the "crashed" writer. Keys live at value_offset, payload is
+    // the key, exactly as processDelta encodes a DELTA_INDEX_OP.
+    const keys = [_][]const u8{ "alpha", "bravo", "charlie", "delta", "echo" };
+    const values = [_]u32{ 4096, 4160, 4224, 4288, 4352 };
+    var wal = try WalManager.init(allocator, path);
+    for (keys, 0..) |key, i| {
+        try writeEntryOfKind(&wal, values[i], key, .index_op);
+    }
+    try wal.flushBuffer();
+    wal.shutdown();
+
+    // Round 2: a fresh arena, as after SIGKILL.
+    @memset(arena, 0);
+    var art_index = ArtIndex.init(arena, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    try recoverWal(allocator, path, arena, &art_index);
+
+    for (keys, 0..) |key, i| {
+        const found = art_index.search(key) orelse {
+            std.debug.print("[test] key '{s}' missing after replay\n", .{key});
+            return error.TestExpectedEqual;
+        };
+        try std.testing.expectEqual(values[i], found);
+    }
+
+    // A key that was never logged must NOT be findable: this asserts the
+    // replay is driven by the log and not by leftover arena bytes.
+    try std.testing.expect(art_index.search("foxtrot") == null);
 }
 
 test "WAL framing fuzz never fails fatally (256 random files)" {
@@ -732,6 +918,6 @@ test "WAL framing fuzz never fails fatally (256 random files)" {
         // Arbitrary bytes must never fail fatally: the parser stops at the
         // first bad CRC/length and returns with whatever prefix was valid
         // (possibly an empty arena).
-        try recoverWal(allocator, path, arena);
+        try recoverWal(allocator, path, arena, null);
     }
 }

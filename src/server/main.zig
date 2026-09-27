@@ -418,8 +418,16 @@ pub fn main() !void {
     var arena = try initArenaCompat(shm_name, mem_size);
 
     // 2. Bootloader: Recover from disk
+    //
+    // The ART is opened BEFORE the replay, not after: recovery re-applies
+    // the WAL's logical index operations into it, so the index rebuild is
+    // part of restoring the database rather than something the daemon does
+    // lazily once it is already serving. `ArtIndex.init` only CAS-claims a
+    // zero bump word, so it is safe to run against an arena whose ART region
+    // the snapshot has already restored.
     const recoverWal = core.recovery.recoverWal;
-    try recoverWal(allocator, wal_path, arena.memory);
+    var art_index = ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    try recoverWal(allocator, wal_path, arena.memory, &art_index);
 
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
@@ -432,10 +440,9 @@ pub fn main() !void {
     try wal.spawnWalFlusher(&rb, arena.memory);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
 
-    // 4b. Read-only ART view for admin SCAN/RANGE (same canonical
-    // offsets as the C-ABI; lock-free best-effort reads, never mutated
-    // here). Init is idempotent: it only CAS-claims a zero bump word.
-    var art_index = ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    // 4b. The admin SCAN/RANGE commands read through the same art_index the
+    // recovery pass populated (canonical offsets as the C-ABI; lock-free
+    // best-effort reads, never mutated from the admin thread).
 
     // 4c. Start admin TCP endpoint thread (PING + HEALTH + METRICS + CHECKPOINT + SCAN + RANGE). Joined on shutdown.
     const admin_start_ms = std.time.milliTimestamp();

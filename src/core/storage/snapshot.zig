@@ -423,7 +423,8 @@ test "snapshot + recovery round-trip preserves records and index" {
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     @memset(mem2, 0);
-    try recovery.recoverWal(allocator, wal_path, mem2);
+    var art_index = art.ArtIndex.init(mem2, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    try recovery.recoverWal(allocator, wal_path, mem2, &art_index);
 
     // Record bytes survived verbatim.
     try std.testing.expectEqualSlices(u8, mem[layout.RECORD_START..exp_rec], mem2[layout.RECORD_START..exp_rec]);

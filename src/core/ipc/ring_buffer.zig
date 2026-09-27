@@ -11,7 +11,41 @@ const layout = @import("../memory/layout.zig");
 /// Cache line size to prevent false sharing in CPU caches (L1/L2).
 const CACHE_LINE = 64;
 
+/// `is_arena` tag values. This is the write-path protocol, and the value
+/// decides what the daemon does with the message, so it is spelled out here
+/// rather than left as three bare integers at each use site.
+pub const DELTA_INLINE: u8 = 0;
+pub const DELTA_ARENA: u8 = 1;
+pub const DELTA_CHECKPOINT: u8 = 2;
+/// Logical index operation: bind the key at `offset` (length `size`, in the
+/// string arena) to the value in `data[0..4]`.
+///
+/// The key travels through the arena rather than the 48-byte inline payload
+/// so one encoding serves every key length up to `MAX_KEY_LEN` instead of
+/// two. The cost is a copy of each key in the string arena; at the current
+/// arena caps that is a few kilobytes.
+pub const DELTA_INDEX_OP: u8 = 3;
+
+/// Longest key accepted by the index, in bytes. Mirrors the limit enforced
+/// by `takyon_insert_index` and by ArtIndex's own key validation, and is
+/// checked again on the WAL write path so an oversized key cannot be logged
+/// as a record the replay parser would reject.
+pub const MAX_KEY_LEN: u32 = 256;
+
 /// DeltaMessage represents a raw memory mutation to be applied.
+///
+/// Field meanings depend on `is_arena`:
+///   - `DELTA_INLINE` (0): `data[0..size]` is the payload to write at
+///     `offset`. `size` must be 1..=48.
+///   - `DELTA_ARENA` (1): `arena[offset .. offset+size]` is the payload.
+///     `size` must be 1..=MAX_ENTRY_LEN.
+///   - `DELTA_CHECKPOINT` (2): control message, all fields ignored. The
+///     daemon flushes, drains the ring, then snapshots.
+///   - `DELTA_INDEX_OP` (3): logical index write. `arena[offset .. offset+
+///     size]` is the key, `data[0..4]` is the u32 value it maps to.
+///
+/// `size == 0` is rejected by every producing path because the WAL uses a
+/// zero `length` as its end-of-batch terminator inside a padded sector.
 pub const DeltaMessage = struct {
     offset: u32,
     size: u32,

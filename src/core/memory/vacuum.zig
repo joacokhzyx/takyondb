@@ -478,7 +478,8 @@ test "vacuum WAL-logged relocation survives recovery" {
     const mem2 = try p_alloc.dupe(u8, pre);
     defer p_alloc.free(mem2);
     const recoverWal = @import("../storage/recovery.zig").recoverWal;
-    try recoverWal(t_alloc, owned_path, mem2);
+    var art_index = art.ArtIndex.init(mem2, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    try recoverWal(t_alloc, owned_path, mem2, &art_index);
 
     const r00 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_A ..][0..4], .little);
     const r01 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_B ..][0..4], .little);

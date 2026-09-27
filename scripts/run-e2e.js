@@ -21,14 +21,7 @@ const SUITES = [
   { name: 'unlink', file: 'e2e_graceful_unlink_test.js', ts: false },
   { name: 'admin-scan', file: 'e2e_admin_scan_test.js', ts: false },
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
-  // Documents a real, still-open gap: takyon_insert_index emits no WAL
-  // delta, so keys indexed after the last checkpoint are lost on crash. The
-  // suite asserts the correct behavior and therefore fails today. It is
-  // marked xfail so the run stays green while the failure stays VISIBLE: the
-  // moment someone makes index writes durable, this suite passes and the
-  // expected outcome has to be updated here. Do not "fix" it by weakening the
-  // assertion — that is how the WAL replay defect stayed hidden for so long.
-  { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false, xfail: 'index writes are not yet WAL-logged' },
+  { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false },
 ];
 
 function cleanStaleShm() {

@@ -10,6 +10,41 @@ section is where anything after it goes.
 
 ### Fixed
 
+- **Index writes are now durable.** `takyon_insert_index` mutated the ART in
+  shared memory and emitted nothing to the log, so a key indexed after the
+  last checkpoint was gone after a crash: the snapshot carries the ART as of
+  when it ran, and the arena holds no bytes that say which key points where.
+  Measured with the `index-persist` E2E suite before the change, 300/300 keys
+  indexed before the checkpoint recovered and **0/200** indexed after it did,
+  with a 0-byte WAL. Both are now 300/300 and 200/200.
+
+  The ART is a bump allocator whose insert writes both newly allocated nodes
+  and child slots into pre-existing ones, so the write set is one contiguous
+  range plus scattered 4-byte stores and replaying arena deltas cannot
+  rebuild the tree. The fix is a **logical** record instead: `WalEntryHeader`
+  gains a `kind` byte, `index_op` records carry the key and the value offset
+  as a payload, and `recoverWal` re-applies them into the ART after the arena
+  replay and before the bump words are written. Replay is idempotent, so
+  applying the same log twice yields the same index.
+
+  Two properties make this cheap rather than a format break. The `kind` byte
+  occupies what used to be zeroed struct padding, so every pre-existing log
+  reads back as `arena_write` and old files replay without migration; and an
+  unrecognised `kind` stops recovery instead of being reinterpreted, because
+  guessing the record shape would produce a plausible but wrong arena.
+
+  `takyon_insert_index` now allocates the key in the string arena and pushes
+  the delta *before* mutating the ART, so a full ring returns -1 with the
+  index untouched rather than leaving an entry no log describes. The string
+  allocator seeds its bump word on first use: a client that maps the segment
+  itself never runs the recovery that would have seeded it, and allocating
+  from a zero bump hands out offset 0 — the ring header — which corrupts head,
+  tail and capacity and surfaces much later as an inexplicable fault inside
+  the index.
+
+  `recoverWal` takes an optional `*ArtIndex`, because a 16 KB test arena has
+  no room for nodes rooted at `ART_ROOT_OFFSET` and `ArtIndex.init` panics on
+  the out-of-range bump word rather than returning an error.
 - **A malformed WAL could abort the daemon on start.** Two problems in the
   replay path, both reachable from ordinary data once the parser stopped
   truncating at the first padded sector.
@@ -120,28 +155,15 @@ section is where anything after it goes.
 
 ### Known gaps
 
-These are open defects, not planned features. They are listed here because
-the documentation must not imply otherwise, and each has a test that fails
-today on purpose.
-
-- **Index writes are not durable.** `takyon_insert_index` mutates the ART in
-  shared memory and emits no WAL delta, so any key indexed after the last
-  checkpoint is lost on crash. Measured with the `index-persist` E2E suite:
-  300/300 keys indexed before the checkpoint recover, **0/200** indexed after
-  it do, and the WAL is 0 bytes after the checkpoint. Record *bytes* are
-  durable (they go through `notifyArena`); the key-to-offset mapping is not.
-
-  This is not a patch-sized fix. The ART is a bump allocator whose insert
-  writes both freshly allocated nodes and child slots into pre-existing ones,
-  so the write set is one contiguous range plus scattered 4-byte stores, and
-  replaying the arena deltas alone cannot rebuild the tree. The fix needs a
-  logical record kind in the WAL plus a recovery phase that re-applies index
-  operations, which is an on-disk format change.
-
-  Until then: treat a snapshot as the durability boundary for the index, and
-  do not rely on crash recovery for writes newer than the last checkpoint.
-  `run-e2e.js` runs the suite with an `xfail` marker, so the gap is reported
-  on every run and an unexpected pass forces the marker to be re-examined.
+- **The index is durable only with a daemon attached.** With `takyondb`
+  running, every index write is now WAL-logged and replayed into the ART, so
+  a key indexed after the last checkpoint survives a crash. In the autonomous
+  path — where the client creates the shared segment itself and no daemon owns
+  the data directory — there is no log writer at all, so nothing this process
+  sends can become durable, and the ART is lost on restart exactly as before.
+  That is not a silent downgrade: in that mode record *bytes* are equally
+  volatile, because no WAL is being written either. The distinction is now
+  explicit in `takyon_insert_index` rather than implied by silence.
 
 ## [0.1.0] - 2026-09-25
 

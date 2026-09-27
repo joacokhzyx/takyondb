@@ -11,6 +11,8 @@ const SharedArena = @import("../memory/shm.zig").SharedArena;
 const layout = @import("../memory/layout.zig");
 const RingBuffer = @import("../ipc/ring_buffer.zig").RingBuffer;
 const DeltaMessage = @import("../ipc/ring_buffer.zig").DeltaMessage;
+const DELTA_INDEX_OP = @import("../ipc/ring_buffer.zig").DELTA_INDEX_OP;
+const MAX_KEY_LEN = @import("../ipc/ring_buffer.zig").MAX_KEY_LEN;
 const art = @import("../index/art.zig");
 const column = @import("../relational/column.zig");
 const rfilter = @import("../relational/filter.zig");
@@ -33,6 +35,10 @@ var art_index: art.ArtIndex = undefined;
 // corrupt index nodes). The N-API finalizer is therefore a no-op.
 var engine_mutex = std.Thread.Mutex{};
 var engine_refs: usize = 0;
+
+/// Whether a daemon (rather than this process) created the shared segment
+/// and is therefore writing the WAL. Reset on the last disconnect.
+var daemon_attached: bool = false;
 
 /// Initializes the TakyonDB engine context.
 pub export fn takyon_init() callconv(.c) i32 {
@@ -112,10 +118,20 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
         engine_refs = 0;
         return null;
     }
+    // A daemon owns the data directory and is the only thing that writes
+    // the WAL, so it is the only mode in which anything this process sends
+    // can become durable. In the autonomous path the client created the
+    // segment itself: no log is being written, a crash loses every byte
+    // including record data, and the ring has no consumer, so queueing index
+    // operations would fill a queue nobody drains and then start rejecting
+    // writes for no benefit. See takyon_insert_index.
+    daemon_attached = !created;
+
     ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, created) catch {
         var owned = arena;
         owned.close();
         arena_ready = false;
+        daemon_attached = false;
         engine_refs = 0;
         return null;
     };
@@ -151,13 +167,88 @@ pub export fn takyon_disconnect_shm() callconv(.c) void {
     arena.handle = null;
     arena_ready = false;
     ring_ready = false;
+    daemon_attached = false;
 }
 
+/// Bump-allocates `src.len` bytes in the string arena and copies `src` in.
+/// Returns the offset, or null when the arena is exhausted.
+///
+/// Mirrors the JS-side allocator in `src/sdk/client/proxy.ts`: a u32 word at
+/// STRING_BUMP_OFFSET, CAS-advanced, results 8-byte aligned. The same
+/// claim-then-write order as `ArtIndex.allocNode` is deliberate — a reader
+/// that observes the space before the bytes land is the same window that
+/// allocator already has, and checking bounds before claiming would be a race.
+///
+/// The lazy zero-check is not optional. A client that maps the segment
+/// itself (the no-daemon path in `takyon_connect_shm`) never runs the
+/// recovery that would have seeded the bump, and allocating from a zero bump
+/// hands out offset 0 — the ring header — which corrupts head, tail and
+/// capacity and surfaces much later as an inexplicable fault in the index.
+fn allocString(arena_mem: []u8, src: []const u8) ?u32 {
+    const aligned_len = (src.len + 7) & ~@as(usize, 7);
+    if (aligned_len == 0 or aligned_len > arena_mem.len) return null;
+    const bump_ptr: *u32 = @ptrCast(@alignCast(arena_mem.ptr + layout.STRING_BUMP_OFFSET));
+    // Seed the bump on first use. @cmpxchgStrong doubles as the check, so
+    // this costs one uncontended compare on the hot path.
+    _ = @cmpxchgStrong(u32, bump_ptr, 0, layout.STRING_DATA_START, .monotonic, .monotonic);
+    var cur = @atomicLoad(u32, bump_ptr, .monotonic);
+    while (true) {
+        const end = @as(usize, cur) + aligned_len;
+        if (end > arena_mem.len) return null;
+        if (@cmpxchgStrong(u32, bump_ptr, cur, @intCast(end), .monotonic, .monotonic)) |actual| {
+            cur = actual;
+        } else {
+            std.mem.copyForwards(u8, arena_mem[cur..][0..src.len], src);
+            return cur;
+        }
+    }
+}
+
+/// Binds `key` to `value_offset` in the ART, and — when a daemon owns the
+/// data directory — makes the binding durable.
+///
+/// The ART lives in shared memory and nothing else records the mapping, so
+/// without a log record a key indexed after the last checkpoint is simply
+/// gone after a crash: the snapshot has the ART as of when it ran, and the
+/// arena holds no bytes describing which key points where. The fix is a
+/// logical WAL record (`WalEntryHeader.EntryKind.index_op`) that recovery
+/// re-applies into the ART.
+///
+/// Durability is only meaningful with a daemon. When this process created
+/// the segment itself there is no WAL writer, no consumer for the ring, and
+/// no durability for any kind of write, so the operation goes straight into
+/// the ART and the same guarantee applies as before: lost on restart. That
+/// is not a silent downgrade, it is the truth about that mode.
+///
+/// In daemon mode the delta is pushed BEFORE the ART is mutated, so a full
+/// ring returns -1 with the index untouched rather than leaving an entry no
+/// log describes. The reverse order is the one that loses data silently.
+///
+/// Returns 0 on success, -1 on error (!arena_ready, !ring_ready, bad
+/// key_len, value_offset out of range, ring full, or string arena exhausted).
 pub export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
-    if (!arena_ready) return -1;
-    if (key_len == 0 or key_len > 256) return -1;
+    if (!arena_ready or !ring_ready) return -1;
+    if (key_len == 0 or key_len > MAX_KEY_LEN) return -1;
     if (value_offset >= arena.memory.len) return -1;
     const key = key_ptr[0..key_len];
+
+    if (daemon_attached) {
+        // Cheap admission check before allocating, so a full ring under
+        // contention does not burn string-arena space on every rejected
+        // insert. Advisory only: the push below is the real test.
+        if (ring_buffer.depth() >= ring_buffer.capacity) return -1;
+
+        const key_arena_offset = allocString(arena.memory, key) orelse return -1;
+        var delta = DeltaMessage{
+            .offset = key_arena_offset,
+            .size = key_len,
+            .is_arena = DELTA_INDEX_OP,
+            .data = undefined,
+        };
+        std.mem.writeInt(u32, delta.data[0..4], value_offset, .little);
+        if (!ring_buffer.push(delta)) return -1;
+    }
+
     art_index.insert(key, value_offset) catch return -1;
     return 0;
 }
