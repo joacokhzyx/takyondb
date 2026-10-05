@@ -84,7 +84,11 @@ jobs:
       run: zig build -Doptimize=ReleaseSafe
 
     - name: Run E2E Zero-Copy Test
-      run: node scripts/e2e_zerocopy_test.js
+      # The .ts, not a committed copy of its compiled output. Same
+      # invocation as scripts/run-e2e.js uses for a TypeScript suite.
+      run: |
+        cd scripts
+        NODE_PATH=../src/sdk/ts/node_modules node -r ts-node/register/transpile-only e2e_zerocopy_test.ts
 
     - name: Run energy-reporting E2E
       # The sampler is new code on the idle path, and this suite is the only

@@ -35,8 +35,11 @@ src/sdk/ts/LICENSE
 # Compiled JS next to TS sources (generate via tsc, do not commit)
 src/sdk/**/*.js
 !src/sdk/eslint.config.js
-# NOTE: scripts/*.js are currently tracked for CI compat (legacy).
-# New scripts must be .ts only; generated .js must not be committed.
+# NOTE: most scripts/*.js are tracked for CI compat (legacy), but a .js
+# emitted next to its own .ts is build output and must not be committed.
+# e2e_zerocopy_test.js was exactly that: the compiled form of the .ts, run
+# by CI while the runner ran the .ts, so the two could drift apart silently.
+scripts/e2e_zerocopy_test.js
 
 # Local-only agent knowledge base (style guides, research dossiers).
 # These are working notes, never project documentation. Do not "fix" this.

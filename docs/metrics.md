@@ -29,7 +29,7 @@ for what is and is not gated.
 | TypeScript source files | 45 prod (5284 lines) |
 | Zig tests | 86 in 29 files |
 | TypeScript unit tests | 129 in 28 files |
-| E2E suites | 15 scripts |
+| E2E suites | 13 scripts |
 | Documentation pages | 32 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
