@@ -22,6 +22,7 @@ const SUITES = [
   { name: 'admin-scan', file: 'e2e_admin_scan_test.js', ts: false },
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
   { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false },
+  { name: 'energy', file: 'e2e_energy_test.js', ts: false },
 ];
 
 function cleanStaleShm() {

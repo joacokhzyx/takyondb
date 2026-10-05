@@ -86,6 +86,20 @@ jobs:
     - name: Run E2E Zero-Copy Test
       run: node scripts/e2e_zerocopy_test.js
 
+    - name: Run energy-reporting E2E
+      # The sampler is new code on the idle path, and this suite is the only
+      # thing that proves it stays quiet without a sensor and actually
+      # accumulates with one. It builds its own powercap fixture, so it runs
+      # on runners that have no RAPL counter at all.
+      run: node scripts/e2e_energy_test.js
+
+    - name: Run idle-cost E2E
+      # Was in scripts/run-e2e.js and therefore only ever ran locally: the
+      # gate on the daemon's idle CPU was never executed by CI, which is
+      # where a regression in an idle loop would have landed.
+      if: runner.os == 'Linux'
+      run: node scripts/e2e_idle_cpu_test.js
+
     - name: Clean stale SHM between suites
       # Suites leave differently-sized segments behind (no shm_unlink
       # ownership yet): 16MB POSIX SHM on Linux, 16MB file on macOS

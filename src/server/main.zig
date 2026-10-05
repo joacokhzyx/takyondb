@@ -14,6 +14,7 @@ const DeltaMessage = core.ring_buffer.DeltaMessage;
 const WalManager = core.wal.WalManager;
 const ArtIndex = core.art.ArtIndex;
 const freelist = core.freelist;
+const energy = core.energy;
 
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
@@ -36,11 +37,20 @@ const ADMIN_IDLE_SLICE_NS: u64 = 100 * std.time.ns_per_ms;
 //   HEALTH -> "OK uptime_s=<n> arena=<bytes> ring=<depth>\n"
 //             (uptime_s = seconds since daemon start; arena = SHM arena size
 //             in bytes; ring = current RingBuffer depth)
-//   METRICS -> "METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x>\n"
+//   METRICS -> "METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n>
+//             uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x>
+//             energy_source=<s> energy_uj=<j> energy_samples=<k>
+//             energy_read_errors=<e>\n"
 //             (ring_depth = current RingBuffer depth; wal_bytes =
 //             WalManager.bytes_written; wal_segments = WalManager.next_segment;
 //             uptime_s = seconds since daemon start; fl_* = ART freelist
-//             counters: quarantined orphans, opt-in reuses, dropped overflows)
+//             counters: quarantined orphans, opt-in reuses, dropped overflows;
+//             energy_source = `none` unless a platform counter was readable,
+//             in which case a rapl-package or rapl-subunit domain;
+//             energy_uj = microjoules accumulated since start, which is 0
+//             whenever energy_source is `none`. The energy figures are gross
+//             package energy, not this process's share: attribution belongs
+//             to the harness, which knows what else ran.)
 //   CHECKPOINT -> push an is_arena==2 delta into the ring (same as the
 //             --checkpoint-sec timer); "QUEUED\n" on success, "FULL\n" if
 //             the ring is full.
@@ -65,6 +75,7 @@ const AdminCtx = struct {
     rb: *RingBuffer,
     wal: *WalManager,
     art: *ArtIndex,
+    sampler: *energy.Sampler,
 };
 
 /// Writes a scan result line: "OK <n> <o1>,...". Shared by SCAN/RANGE.
@@ -145,8 +156,9 @@ fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
         const now = std.time.milliTimestamp();
         const uptime_s: i64 = @divTrunc(@max(now - ctx.start_ms, 0), 1000);
         const fl = freelist.stats();
-        var out: [384]u8 = undefined;
-        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d} fl_quarantined={d} fl_reused={d} fl_dropped={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s, fl.quarantined, fl.reused, fl.dropped }) catch return;
+        const e = ctx.sampler.report();
+        var out: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d} fl_quarantined={d} fl_reused={d} fl_dropped={d} energy_source={s} energy_uj={d} energy_samples={d} energy_read_errors={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s, fl.quarantined, fl.reused, fl.dropped, e.source.name(), e.microjoules, e.samples, e.read_errors }) catch return;
         stream.writeAll(msg) catch {};
     } else if (std.mem.eql(u8, line, "CHECKPOINT")) {
         const ckpt = DeltaMessage{ .offset = 0, .size = 0, .is_arena = 2, .data = [_]u8{0} ** 48 };
@@ -250,6 +262,9 @@ fn printHelp() void {
         \\  --data-dir <dir>       Directory for the WAL and snapshots (default: ".")
         \\  --checkpoint-sec <n>   Seconds between automatic checkpoints (default: 60)
         \\  --port <n>             Admin TCP port on 127.0.0.1 (default: 7723)
+        \\  --no-energy            Do not sample the platform energy counter
+        \\  --energy-root <dir>    Read the energy counter from this tree instead
+        \\                        of /sys/class/powercap (for testing)
         \\  --version, -V          Print the version and exit
         \\  --help, -h             Print this help and exit
         \\
@@ -320,6 +335,8 @@ pub fn main() !void {
     var data_dir: []const u8 = ".";
     var checkpoint_sec: usize = 60;
     var admin_port: u16 = 7723;
+    var sample_energy: bool = true;
+    var energy_root: []const u8 = energy.POWERCAP_ROOT;
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.skip(); // skip executable name
@@ -378,6 +395,21 @@ pub fn main() !void {
                 std.debug.print("[TakyonDB-Daemon] ERROR: --port requires a numeric argument\n", .{});
                 std.process.exit(1);
             };
+        } else if (std.mem.eql(u8, arg, "--no-energy")) {
+            sample_energy = false;
+        } else if (std.mem.eql(u8, arg, "--energy-root")) {
+            if (args.next()) |dir| {
+                energy_root = dir;
+            } else {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --energy-root requires a directory argument\n", .{});
+                std.process.exit(1);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--energy-root=")) {
+            energy_root = arg["--energy-root=".len..];
+            if (energy_root.len == 0) {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --energy-root requires a non-empty directory argument\n", .{});
+                std.process.exit(1);
+            }
         } else if (is_first and arg.len > 0 and arg[0] != '-') {
             if (std.fmt.parseInt(usize, arg, 10)) |parsed_size| {
                 mem_size = parsed_size;
@@ -446,6 +478,26 @@ pub fn main() !void {
 
     // 4c. Start admin TCP endpoint thread (PING + HEALTH + METRICS + CHECKPOINT + SCAN + RANGE). Joined on shutdown.
     const admin_start_ms = std.time.milliTimestamp();
+
+    // 4d. Energy sampler. Probed before the admin context so METRICS can
+    // report the source on its first line. With no readable counter this
+    // owns no thread and every accessor reads zero: the daemon reports
+    // `energy_source=none` rather than converting CPU time into joules,
+    // because the conversion depends on hardware the daemon cannot see.
+    // Probing is unconditional so the startup line can distinguish "this
+    // host has no counter" from "the operator turned it off".
+    var sampler = try energy.Sampler.probe(allocator, energy.DEFAULT_INTERVAL_NS, energy_root);
+    if (sample_energy) {
+        try sampler.spawn();
+        if (sampler.source() == .none) {
+            std.debug.print("[TakyonDB-Daemon] Energy counter: none readable; joules are never synthesized.\n", .{});
+        } else {
+            std.debug.print("[TakyonDB-Daemon] Energy counter: {s}.\n", .{sampler.source().name()});
+        }
+    } else {
+        std.debug.print("[TakyonDB-Daemon] Energy counter: sampling disabled (--no-energy); {s}.\n", .{sampler.source().name()});
+    }
+
     var admin_ctx = AdminCtx{
         .port = admin_port,
         .start_ms = admin_start_ms,
@@ -453,6 +505,7 @@ pub fn main() !void {
         .rb = &rb,
         .wal = &wal,
         .art = &art_index,
+        .sampler = &sampler,
     };
     const admin_thread = try std.Thread.spawn(.{}, adminThreadFn, .{&admin_ctx});
 
@@ -491,6 +544,10 @@ pub fn main() !void {
     // this path by design, leaving the segment for snapshot+WAL recovery.
     std.debug.print("[TakyonDB-Daemon] Shutting down admin endpoint...\n", .{});
     admin_thread.join();
+    // Joined before the WAL drain so the sampler cannot outlive the process
+    // by more than one sleep interval. `stop` is idempotent and safe with
+    // no sensor, so this needs no branch on whether it ever started.
+    sampler.stop();
     std.debug.print("[TakyonDB-Daemon] Shutting down WAL Flusher and flushing residual deltas...\n", .{});
     wal.shutdown();
     SharedArena.unlink(shm_name);

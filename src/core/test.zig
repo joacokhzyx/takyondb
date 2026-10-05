@@ -1,6 +1,6 @@
 // ============================================================================
 // File: test.zig
-// Description: Cintralized test aggregator for all TakyonDB core modules.
+// Description: Centralized test aggregator for all TakyonDB core modules.
 // Author/Maintainer: TakyonDB Team
 // License: MIT. See LICENSE for details.
 // ============================================================================
@@ -9,6 +9,7 @@ comptime {
     _ = @import("memory/shm.zig");
     _ = @import("memory/layout.zig");
     _ = @import("version.zig");
+    _ = @import("energy.zig");
     _ = @import("memory/vacuum.zig");
     _ = @import("memory/record_crc.zig");
     _ = @import("memory/scrub.zig");

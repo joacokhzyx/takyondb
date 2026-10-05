@@ -68,8 +68,19 @@ async function run() {
     if ((await cmd(port, 'BOGUS')) !== 'ERR unknown command') return fail('unknown command');
 
     const metrics = await cmd(port, 'METRICS');
-    if (!/^METRICS ring_depth=\d+ wal_bytes=\d+ wal_segments=\d+ uptime_s=\d+ fl_quarantined=\d+ fl_reused=\d+ fl_dropped=\d+$/.test(metrics)) {
+    if (!/^METRICS ring_depth=\d+ wal_bytes=\d+ wal_segments=\d+ uptime_s=\d+ fl_quarantined=\d+ fl_reused=\d+ fl_dropped=\d+ energy_source=(none|rapl-package|rapl-subunit) energy_uj=\d+ energy_samples=\d+ energy_read_errors=\d+$/.test(metrics)) {
       return fail(`METRICS shape: ${metrics.slice(0, 80)}`);
+    }
+    // The energy figures are only publishable when they came from a sensor.
+    // A daemon that reported a joule count with `energy_source=none` would be
+    // synthesizing energy from something, and the whole measurement contract
+    // depends on that being impossible rather than merely discouraged.
+    const energySource = /energy_source=(\S+)/.exec(metrics)[1];
+    if (energySource === 'none') {
+      const uj = /energy_uj=(\d+)/.exec(metrics)[1];
+      const samples = /energy_samples=(\d+)/.exec(metrics)[1];
+      if (uj !== '0') return fail(`energy_uj=${uj} with no sensor: joules were synthesized`);
+      if (samples !== '0') return fail(`energy_samples=${samples} with no sensor: something is sampling`);
     }
 
     const full = await cmd(port, 'SCAN adm: 64');
