@@ -34,6 +34,7 @@ runs it.
 |---|---|
 | [architecture/index.md](architecture/index.md) | Index of the architecture deep dives |
 | [architecture/README.md](architecture/README.md) | Arena layout, ring buffer, ART, WAL, vacuum |
+| [infrastructure.md](infrastructure.md) | The four layers, and the design behind each roadmap gate |
 | [architecture/catalog.md](architecture/catalog.md) | Table catalog and DDL persistence |
 | [architecture/relational-overview.md](architecture/relational-overview.md) | How the relational layer maps onto the KV engine |
 | [architecture/relational-core.md](architecture/relational-core.md) | The Zig relational core |

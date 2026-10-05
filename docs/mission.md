@@ -43,7 +43,7 @@ Not "databases". Specific tools, each paid for on a specific axis.
 
 | Today a server runs | What it costs | Axis we would win on | Measured today? |
 |---|---|---|---|
-| A cache daemon beside the app | A second process, its own resident memory, bytes written to satisfy a durability mode most caches never need | resident memory per server, idle CPU, bytes written per cache write | No. There is no cache tier yet; it is a gate in [../ROADMAP.md](../ROADMAP.md). |
+| A cache daemon beside the app | A second process, its own resident memory, bytes written to satisfy a durability mode most caches never need | resident memory per server, idle CPU, bytes written per cache write | No. There is no cache tier yet; it is designed in [infrastructure.md](infrastructure.md). |
 | An embedded SQL database inside the app process | CPU per query, page writes per transaction | CPU per query, bytes written per mutation | Partly. See the harnesses table in [performance-truth.md](performance-truth.md). |
 | A separate database server | A process, a port, a network hop per query, a pool | CPU per query, RAM per instance | Not measured on the same host and workload. |
 
@@ -65,7 +65,7 @@ Takyon's answer is one engine with four layers on top of it:
 | Layer | What it is | Status |
 |---|---|---|
 | Engine | Arena, radix index, WAL, snapshots | Shipped. `docs/architecture/README.md` |
-| Substrate | Region layout, capacities and policies decided at startup instead of at compile time | Designed, not built. Gate in [../ROADMAP.md](../ROADMAP.md) |
+| Substrate | Region layout, capacities and policies decided at startup instead of at compile time | Designed, not built. See [infrastructure.md](infrastructure.md) |
 | Models | Key-value, document, relational, cache — views over the same arena, selected per namespace | Key-value and a TypeScript relational engine ship; document and cache are designed |
 | Cache | TTL, eviction and a volatile write policy inside the same process | Designed, not built |
 
