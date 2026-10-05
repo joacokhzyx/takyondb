@@ -19,10 +19,24 @@ arena. The mission, what it would replace, and what it cannot do yet are
 written down in [docs/mission.md](docs/mission.md). The design behind it
 is in [docs/infrastructure.md](docs/infrastructure.md).
 
+## Status
+
+Pre-alpha, and it says so everywhere rather than only here. `0.1.0` has
+never been published as a release and there are no git tags, because a tag
+is a stronger promise than a paragraph in a README.
+
+| | |
+|---|---|
+| Version | `0.1.0`, pre-alpha, unreleased |
+| Languages | TypeScript SDK. Zig and C ABI underneath |
+| Platforms | Windows, Linux, macOS, in CI on all three |
+| Durability | One node. No replication, no multi-tenancy |
+| Releases | None. This has never shipped |
+
 ## What exists today
 
-Experimental and pre-alpha. A Zig storage daemon, a C++ N-API bridge, and
-a TypeScript SDK over one shared arena.
+A Zig storage daemon, a C++ N-API bridge, and a TypeScript SDK over one
+shared arena.
 
 * **Key-value collections** with a compiled schema, addressed through an
   adaptive radix tree in shared memory.
@@ -35,6 +49,9 @@ a TypeScript SDK over one shared arena.
   and recovery from both.
 * **An idle daemon that sleeps.** `scripts/e2e_idle_cpu_test.js` fails
   the build if it stops.
+* **Energy accounting.** The daemon reports the platform's energy counter
+  when it can read one, and reports that it cannot when it cannot. It
+  never converts CPU time into joules.
 
 What it does not do yet is listed, with the file that documents each gap,
 in [docs/mission.md](docs/mission.md#what-we-do-not-claim-yet). There is
@@ -42,6 +59,32 @@ no cache tier, no eviction, no explicit durability call, and region sizes
 are still compile-time constants.
 
 ---
+
+## When not to use this
+
+This is the section most projects skip, and it is the one that decides
+whether anybody trusts the rest.
+
+* **If you need a released, supported database, this is not it.** There is
+  no release, no tag, one maintainer, and a documented list of gaps
+  larger than the feature list.
+* **If you need replication, failover or multi-tenancy, there is none.**
+  One segment is one database for one operator, and both replication and
+  clustering are excluded until the single-node engine is honest about its
+  own durability and cost.
+* **If you need a drop-in Redis replacement, this is not it.** There is no
+  wire protocol and no server to point an existing client at. The cache
+  tier that would remove Redis from a server's architecture is designed
+  and unbuilt.
+* **If your data must survive losing the machine, today, this is not it.**
+  Durability is real but single-node, and there is no `commit()` yet — a
+  write returns once it is queued, not once it is on disk.
+* **If you need a relational database with your rows on disk, use
+  SQLite.** The relational layer's rows are in the process's heap today.
+  The catalog is durable; the data is not.
+* **If you are not willing to read a limits page**, it is the right length
+  for this stage. [docs/next-steps.md](docs/next-steps.md) is short on
+  purpose.
 
 ## Quickstart
 
@@ -180,8 +223,9 @@ one includes, and what it does not, is in
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Commits follow
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before writing code: most of it is
+about what this project will not accept, which is the part that saves you
+the time. Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/) with a DCO
 sign-off (`git commit -s`).
 
@@ -192,11 +236,22 @@ bash scripts/verify.sh --fast    # everything except the E2E suites
 bash scripts/verify.sh           # the same gates CI runs
 ```
 
+## Credits
+
+Written and maintained by [Joaco](https://github.com/joacokhzyx), with
+thanks to the Zig, Node.js, vitest and ESLint projects this stands on.
+
 ## License
 
 TakyonDB is licensed under the [MIT License](LICENSE).
 
 <div align="center">
+  <a href="https://github.com/joacokhzyx/takyondb/actions/workflows/ci.yml">
+    <img src="https://github.com/joacokhzyx/takyondb/actions/workflows/ci.yml/badge.svg" alt="CI" />
+  </a>
+  <a href="https://github.com/joacokhzyx/takyondb/actions/workflows/relational.yml">
+    <img src="https://github.com/joacokhzyx/takyondb/actions/workflows/relational.yml/badge.svg" alt="Takyon Relational Suite" />
+  </a>
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Windows, Linux, macOS" />
   <img src="https://img.shields.io/badge/Zig-0.14.1-orange.svg" alt="Zig 0.14.1" />
