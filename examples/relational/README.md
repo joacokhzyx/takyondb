@@ -1,7 +1,7 @@
 # Relational examples
 
 Ten runnable programs. All of them are typechecked **and executed** by
-`node scripts/examples_check.js`, which runs in the `Relational Checks`
+`node scripts/examples_check.js`, which runs in the `Takyon Relational Suite`
 workflow, so an example cannot silently rot.
 
 Run them all:

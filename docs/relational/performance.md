@@ -60,6 +60,6 @@ node scripts/bench_scan.js 10000  # point vs prefix scan vs rango
 Workload: `20k` filas, semillas LCG por tabla (`users: 42`, `orders: 7`),
 `p50/p95/p99` via `performance.now()`, mas `best_p50_ms` como minimo entre
 repeticiones. Reporta hardware completo (plataforma, arch, modelo de CPU,
-nucleos, memoria, version de Node). Corre como gate en `Relational Checks`
+nucleos, memoria, version de Node). Corre como gate en `Takyon Relational Suite`
 (solo completamiento y aserciones de filas: los tiempos son informativos
 porque el hardware compartido de CI no es una referencia estable).

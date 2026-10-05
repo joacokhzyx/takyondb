@@ -1,4 +1,4 @@
-name: Relational Checks
+name: Takyon Relational Suite
 
 on:
   push:

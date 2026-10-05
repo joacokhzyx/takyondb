@@ -1,4 +1,4 @@
-name: TakyonDB CI
+name: Takyon CI
 
 on:
   push:
