@@ -1054,15 +1054,18 @@ test "a v2 contiguous-prefix snapshot is rejected, not reinterpreted" {
 
     // Not one byte of the rejected payload exists in the arena, and not
     // one byte of the poison is left either: recovery returned before
-    // touching a single extent. The only writes the arena did see are the
-    // three bump words and the ring, which finalize performs on every
-    // recovery whether or not a snapshot was found.
+    // applying a single extent. The writes the arena did see are the three
+    // bump words, the ring, and -- with no snapshot to restore -- the index
+    // region, all of which every recovery performs whether or not one was
+    // found. The ART nodes come back zeroed rather than poisoned because the
+    // index is rebuilt from the log, and a node left over from the rejected
+    // payload would still be reachable from the old root.
     try test_helpers.expectAbsent(mem2, 0xEE);
     try test_helpers.expectAbsent(mem2, layout.ARENA_MAGIC & 0xFF);
     try test_helpers.expectAll(mem2[0..layout.RING_OFFSET], 0xCD);
     try test_helpers.expectAll(mem2[layout.RING_OFFSET..layout.RECORD_BUMP_OFFSET], 0);
     try test_helpers.expectAll(mem2[layout.RECORD_BUMP_OFFSET + 4 .. layout.ART_ROOT_OFFSET], 0xCD);
-    try test_helpers.expectAll(mem2[layout.ART_BUMP_OFFSET + 4 .. layout.STRING_ARENA_START], 0xCD);
+    try test_helpers.expectAll(mem2[layout.ART_BUMP_OFFSET + 4 .. layout.STRING_ARENA_START], 0);
     try test_helpers.expectAll(mem2[layout.STRING_BUMP_OFFSET + 4 ..], 0xCD);
     try std.testing.expectEqual(@as(u32, layout.RECORD_BUMP_INIT), readBump(mem2, layout.RECORD_BUMP_OFFSET, 0));
     try std.testing.expectEqual(@as(u32, layout.ART_START), readBump(mem2, layout.ART_BUMP_OFFSET, 0));

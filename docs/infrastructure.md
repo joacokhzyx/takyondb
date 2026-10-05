@@ -147,20 +147,39 @@ to say "this one must be on disk", and the ring is bounded, so a write
 that arrives when the ring is full fails — after the bytes have already
 been written into the arena by the client.
 
-### The decision
+### The decision, as built
 
-* `commit()` pushes a barrier and, optionally, waits for the flusher to
-  acknowledge it. A caller that needs durability asks for it per
-  transaction instead of per write.
-* A push that finds the ring full waits, with a bound, and raises a
-  typed back-pressure error rather than a generic `Error` from a proxy
-  trap.
-* `ring_full_total`, `ring_full_wait_ns` and `deltas_dropped` appear in
-  `METRICS`. An operator must be able to see saturation without writing
-  a harness.
-* A write is never reported as failed once its bytes are in the arena.
-  Either the caller is told before the mutation is applied, or the
-  mutation is queued and the caller is told it was accepted.
+* **`commit()` is a read barrier, not a log record.** It reads the ring's
+  published producer position and waits for the flusher to publish
+  durability at least that far. A barrier *delta* would have needed a new
+  entry kind in the write-path protocol, and a log reader that does not
+  recognise that kind stops replaying at it -- losing the tail of every
+  log written by a newer daemon. A read barrier needs no format change.
+* **The durable position lives in the ring header** (`durable_tail`,
+  alongside `ring_saturated_total`, `ring_saturated_wait_ns` and
+  `deltas_dropped`). In the ring region because that is what recovery
+  zeroes: a stale marker left over from a previous incarnation would
+  satisfy every barrier before a single byte was written. The header
+  grows to seven cache lines, one per field, because the producer, the
+  consumer and the flusher all write it and a shared line would be false
+  sharing on the hottest counters in the system.
+* **The flusher publishes the ring's *consumer* position, not its
+  producer position.** Everything below `head` is in a synced sector at
+  the moment of the call; `tail` also counts deltas a client pushed while
+  that sector was being written, which are in no sector at all. This one
+  line is the difference between `commit()` being a claim and being a
+  sleep.
+* **A push into a full ring waits** (250 ms, backing off from 50 us) and
+  then raises `BackpressureError`, a distinct type meaning "in mapped
+  memory, not in the log". The 250 ms is a number, not a policy; see
+  [next-steps.md](next-steps.md).
+* **`commit()` refuses clearly when nothing is logging** (native code
+  `-3`, "no daemon is logging this data directory"). Claiming success
+  there would be the worst available outcome: the caller would believe
+  writes that nothing on the host is writing are durable.
+* A checkpoint delta is queued without waiting. It carries no arena
+  mutation, so there is nothing the caller has already done for a refusal
+  to contradict.
 
 ### The experiment that closes it
 
@@ -170,6 +189,16 @@ an assertion after restart that the recovered arena matches the log.
 Payload sizes chosen so that sector boundaries land in every possible
 position. It runs at least a hundred trials, because the bug class
 this replaces only appeared on some runs.
+
+That test is `scripts/e2e_crash_property_test.js`. It is written and it
+fails: a committed record can come back with a corrupted string length
+after a crash with no checkpoint. Four recovery bugs it already caught
+are fixed (a key's string address logged where the format wanted its
+record address; an index surviving a crash with entries whose records
+were gone; an index operation naming a record the log never received;
+the producer-position publication described above). The remaining one is
+tracked in [next-steps.md](next-steps.md), and the harness marks the
+suite `xfail` so it cannot be forgotten.
 
 ---
 

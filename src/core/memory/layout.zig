@@ -61,10 +61,13 @@ pub const LAYOUT_VERSION: u32 = 3;
 /// arena rather than failing.
 pub const LAYOUT_VERSION_NO_TABLE: u32 = 2;
 
-/// RingBuffer header footprint: 3x cache lines (192B) due to align(64) on
-/// each of head/tail/capacity. Must stay in sync with RingBuffer.Header
-/// (checked by comptime assert in ring_buffer.zig).
-pub const RING_HEADER_BYTES: usize = 192;
+/// RingBuffer header footprint: 7x cache lines (448B). One line each for
+/// head, tail, capacity, the durable position and three saturation counters,
+/// because producers and the flusher write this struct concurrently and a
+/// shared line would be false sharing on the hottest counters in the system.
+/// Must stay in sync with RingBuffer.Header (checked by a comptime assert in
+/// ring_buffer.zig).
+pub const RING_HEADER_BYTES: usize = 448;
 
 /// RingBuffer lives right after the global header. The header itself is
 /// `RingBuffer.Header` (3x cache lines); slots follow immediately.
@@ -120,11 +123,14 @@ test "layout sanity" {
     try std.testing.expect(ART_ROOT_OFFSET > RECORD_START);
     try std.testing.expect(STRING_ARENA_START > ART_ROOT_OFFSET);
     try std.testing.expect(MIN_ARENA_SIZE >= STRING_ARENA_START);
-    try std.testing.expect(ringBytes(16) == 192 + 16 * 64 + 16 * 8);
+    try std.testing.expect(ringBytes(16) == RING_HEADER_BYTES + 16 * 64 + 16 * 8);
     try std.testing.expect(MAGIC_OFFSET == 0);
     try std.testing.expect(VERSION_OFFSET == 4);
-    try std.testing.expect(RECORD_BUMP_OFFSET == 296128);
-    try std.testing.expect(RECORD_START == 296136);
+    // Derived from the ring header, so they move when the header grows.
+    // Pinned so a drift is a build failure rather than a silent change to
+    // where records begin.
+    try std.testing.expect(RECORD_BUMP_OFFSET == 296384);
+    try std.testing.expect(RECORD_START == 296392);
     try std.testing.expect(@as(usize, RECORD_BUMP_INIT) == RECORD_START);
     try std.testing.expect(RECORD_START + 8 < ART_ROOT_OFFSET);
 }

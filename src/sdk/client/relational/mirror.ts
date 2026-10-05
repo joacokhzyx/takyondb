@@ -9,7 +9,7 @@
  * pointing at an offset nobody allocated is a silent corrupt read.
  */
 
-import { TakyonBindings } from '../proxy';
+import { TakyonBindings, BackpressureError } from '../proxy';
 import { RelationalTable } from './table';
 import { encodePk, pkKey } from './utils';
 
@@ -40,13 +40,24 @@ export class ArtMirror {
    * @throws {Error} If `recordOffset` is not a non-negative integer.
    * @throws {RangeError} If the key is empty, over 256 bytes, or contains a
    *   NUL.
-   * @throws {Error} If `insert_index` returns nonzero.
+   * @throws {BackpressureError} If the ring stayed full for the whole wait
+   *   (`-2`): the binding is in shared memory but not in the log.
+   * @throws {Error} If `insert_index` returns nonzero for another reason.
    */
   public mirrorPk(table: string, pkValue: unknown, recordOffset: number): void {
     if (!Number.isInteger(recordOffset) || recordOffset < 0) {
       throw new Error(`record offset must be a non-negative integer, got ${recordOffset}`);
     }
     const rc = this.bindings.insert_index(pkKey(table, encodePk(pkValue)), recordOffset);
+    if (rc === -2) {
+        // The binding did not reach the log. Typed rather than generic so a
+        // caller can tell "slow down and retry" from "this key is invalid",
+        // which a single Error class cannot express.
+        throw new BackpressureError(
+            `mirrorPk('${table}', ${String(pkValue)}): the log ring stayed full, so this index ` +
+                'binding is in shared memory but not in the log.'
+        );
+    }
     if (rc !== 0) throw new Error(`insert_index failed for PK '${String(pkValue)}'`);
   }
 

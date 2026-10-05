@@ -66,17 +66,24 @@ work: regions are configurable, but the arena is still fixed at startup.
 because a cache that cannot be told what to keep is a cache that writes
 everything to disk.
 
-**Deliverable:** a `commit()` an application can call; a push that waits
-when the ring is full and raises a typed back-pressure error instead of
-throwing from a proxy trap; saturation counters in `METRICS`; and the
-invariant that a mutation is never reported as failed after its bytes
-are in the arena.
+**Delivered.** `commit()` on the client, over `takyon_commit` and the N-API
+bridge. A push into a full ring waits and then raises
+`BackpressureError`, which says "in mapped memory, not in the log" and is
+distinct from every other failure. `ring_saturated`,
+`ring_saturated_wait_ms`, `deltas_dropped` and `durable_tail` are in
+`METRICS` and in `client.ringStats()`. The `durability` E2E commits 4000
+records, `SIGKILL`s the daemon with no checkpoint, and recovers all 4000.
 
-**Exit criterion:** a randomized crash-consistency property test. A
-deterministic generator, a mutation log kept outside the process,
-`kill -9` at uniformly random points, and an assertion after restart
-that the recovered arena matches the log, over payload sizes chosen so
-sector boundaries land in every position, a hundred trials minimum.
+**Not closed.** The exit criterion is a randomized crash-consistency
+property test, and `scripts/e2e_crash_property_test.js` is that test: a
+seeded generator, the mutation log held outside the process, `SIGKILL` at
+advancing points, a hundred trials, payload sizes chosen to put entries
+across every sector position. It fails, and the harness pins it as
+`xfail`. What it finds is a committed record recovering with a corrupted
+string length, which is the last of four bugs it has already caught in
+recovery and the log. See the first entry in
+[docs/next-steps.md](docs/next-steps.md) for the mechanism as far as it is
+understood.
 
 **Rough size:** three days, and the test is most of it.
 

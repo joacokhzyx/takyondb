@@ -25,12 +25,24 @@ integer or the mapping returns null. Exposes `getBuffer()`,
 * `stopVacuum(): boolean` — `false` when `bindings.stop_vacuum` is absent;
   otherwise `true` iff it returns `0` (native `takyon_stop_vacuum` is void;
   the bridge always returns `0`).
+* `commit(timeoutMs = 5000): void` — returns once every write issued
+  before the call is in a synced sector. Throws `BackpressureError` when
+  the wait expires (`-2`), a plain `Error` when nothing is logging the data
+  directory (`-3`, which is what running without a daemon looks like), and
+  a plain `Error` naming the addon when the native export is absent. The
+  guarantee covers this call's own writes: `put` already has the value in
+  mapped memory, because Takyon writes in place.
+* `ringStats(): RingPressureStats` — `saturated_total`,
+  `saturated_wait_ns`, `dropped_total`, `durable_tail`, all zeros on an
+  addon that predates them. Cumulative for the life of the ring, so a rate
+  is derivable from it.
 * `createProxy(schema, baseOffset)` — bounds-checked `DataView` proxy.
   Scalar writes go straight into the buffer and `pushDelta` the bytes;
   string writes bump-allocate in the string arena, `notifyArena`, then
   `pushDelta` the 8-byte fat pointer. Throws on out-of-range offsets,
   oversized fields (`> MAX_DELTA_INLINE` = 48), string-arena OOM, corrupt
-  string pointers, and failed `pushDelta`/`notifyArena` (ring full).
+  string pointers, and failed `pushDelta`/`notifyArena` — the last as
+  `BackpressureError` when the ring was full, plain `Error` otherwise.
 
 ## TakyonDB / Collection
 
@@ -46,6 +58,11 @@ are isolated from each other.
 * `collection.insert(key, data)` — validates the key, allocates a record,
   calls `insert_index` (throws on nonzero), then assigns fields through a
   proxy. Partial `data` is allowed; `undefined` values are skipped.
+  A full ring throws `BackpressureError` from the insert, from the field
+  assignment, or from both, and the record offset is already allocated when
+  it does: the bytes are in mapped memory and the log does not have them.
+  That is what the error means, and it is why it is not a generic `Error`:
+  the caller's next move is to slow down, not to assume nothing happened.
 * `collection.find(key)` — returns a live proxy or `null` when
   `search_index` returns `< 0` (not found / invalid).
 
@@ -70,8 +87,16 @@ interface TakyonBindings {
 
 ## Error-code semantics
 
-Native `0` = success; nonzero = failure (JS wrappers throw or return
-`false`/`null` as above). `-1` per method (`src/core/c_abi/exports.zig`):
+Native `0` = success. Two nonzero codes carry meaning a caller has to
+branch on, and `BackpressureError` is what they become in JS:
+
+| Code | Meaning |
+| --- | --- |
+| `-2` | The log ring stayed full for the whole wait. The bytes are in mapped memory and not in the log. |
+| `-3` | `commit()` only: nothing is logging this data directory, so nothing can make these writes durable. |
+
+Anything else nonzero is `-1`, per method
+(`src/core/c_abi/exports.zig`):
 
 | Method | `-1` means |
 | --- | --- |
@@ -79,9 +104,9 @@ Native `0` = success; nonzero = failure (JS wrappers throw or return
 | `search_index` | arena not ready, bad key length, **not found**, or hit offset aliasing `0x7FFFFFFF` (reserved) |
 | `scan_prefix` | bridge throws `RangeError` for bad prefix/`max_results` (1..4096) and `Error` when the engine is not ready; returns `Uint32Array` (possibly empty) otherwise |
 | `scan_range` | like `scan_prefix` over keys with suffix in [`lo`, `hi`] (empty = unbounded); inverted bounds return empty, never an error |
-| `pushDelta` (`takyon_write_delta`) | ring/arena not ready, `size` 0 or > 48, `offset + size` out of arena, or ring full |
-| `notifyArena` | ring/arena not ready, `size == 0`, `offset + size` out of arena, or ring full |
-| `trigger_checkpoint` | ring not ready or ring full (checkpoint is a ring sentinel, `is_arena == 2`) |
+| `pushDelta` (`takyon_write_delta`) | ring/arena not ready, `size` 0 or > 48, `offset + size` out of arena, or the ring stayed full (`-2`) |
+| `notifyArena` | ring/arena not ready, `size == 0`, `offset + size` out of arena, or the ring stayed full (`-2`) |
+| `trigger_checkpoint` | ring not ready or ring full (checkpoint is a ring sentinel, `is_arena == 2`; queued without waiting, since it carries no arena mutation) |
 | `start_vacuum` | arena not ready, bad `string_field_offset`, or vacuum already running / OOM |
 
 Other codes: `initSharedMemory` returns `null` (not `-1`) on mapping failure

@@ -24,6 +24,20 @@ const SUITES = [
   { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false },
   { name: 'energy', file: 'e2e_energy_test.js', ts: false },
   { name: 'regions', file: 'e2e_regions_test.js', ts: false },
+  { name: 'durability', file: 'e2e_durability_test.js', ts: false, needsDist: true },
+  {
+    name: 'crash-property',
+    file: 'e2e_crash_property_test.js',
+    ts: false,
+    needsDist: true,
+    // Randomized crash-consistency, the Gate 2 exit criterion. It fails on a
+    // real, open defect: after a SIGKILL with no checkpoint, a *committed*
+    // record can come back with a corrupted string length, because the arena
+    // still holds bytes from the previous incarnation wherever the log has
+    // none. See docs/next-steps.md. Delete this marker when the suite passes;
+    // run-e2e reports an XPASS if it starts passing.
+    xfail: 'a committed record can recover with a corrupted payload length',
+  },
 ];
 
 function cleanStaleShm() {

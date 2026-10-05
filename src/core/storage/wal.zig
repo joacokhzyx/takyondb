@@ -118,6 +118,10 @@ pub const WalManager = struct {
     /// rotation deletes segments and resets this to 0, keeping segments
     /// dense-from-0 so recovery's stop-at-first-missing rule stays exact.
     next_segment: u32,
+    /// The ring this manager drains, set by `spawnWalFlusher`. Used to
+    /// publish how far the log is durably written, which is what a caller's
+    /// `commit()` waits for. Null in tests that never spawn a flusher.
+    ring_buffer: ?*RingBuffer = null,
     /// Lifecycle phase: 0=open, 1=closing, 2=closed. shutdown() CAS 0->1
     /// (second call no-ops); flushBuffer no-ops once phase==2 so post-
     /// close flushes cannot touch a closed fd or freed buffer.
@@ -329,6 +333,7 @@ pub const WalManager = struct {
 
     /// Spawns the background Flusher thread for lock-free RingBuffer consumption.
     pub fn spawnWalFlusher(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8, regions: layout.Regions) !void {
+        self.ring_buffer = ring_buffer;
         self.flusher_thread = try std.Thread.spawn(.{}, flusherLoop, .{ self, ring_buffer, arena_mem, regions });
     }
 
@@ -450,6 +455,11 @@ pub const WalManager = struct {
         self.syncFile();
         self.sector_pos = 0;
         self.bytes_written += SECTOR_SIZE;
+        // Everything the ring had published when this sector was written is
+        // now on disk. Publishing here rather than per delta is deliberate:
+        // per-delta would claim durability for bytes still sitting in the
+        // sector buffer, which is the exact lie `commit()` must not tell.
+        if (self.ring_buffer) |rb| rb.publishDurable();
         // Segmented rotation: the completed sector pushed us past the
         // cap, so archive this segment and open a fresh live file.
         if (self.bytes_written >= SEGMENT_MAX) {
@@ -504,8 +514,20 @@ pub const WalManager = struct {
             // here because the client already put the key there.
             if (delta.size == 0 or delta.size > MAX_KEY_LEN) return error.CorruptDelta;
             if (@as(usize, delta.offset) + delta.size > arena_mem.len) return error.CorruptDelta;
+            // `offset` in an index_op header is the *value* the key binds
+            // to, which is what applyIndexOps needs to rebuild the tree and
+            // what its comment says it is not. It arrives in the first four
+            // bytes of the inline payload: the key's own arena offset is
+            // only needed here, to find the bytes, and replay reads the key
+            // out of the log payload, not out of the arena.
+            //
+            // Writing delta.offset here instead would log the string arena
+            // address of the key, and every recovered key would then resolve
+            // to a string in memory rather than to a record -- reads that
+            // return a plausible offset and then fail somewhere unrelated,
+            // which is the worst shape a recovery bug can have.
             const header = WalEntryHeader{
-                .offset = delta.offset,
+                .offset = std.mem.readInt(u32, delta.data[0..4], .little),
                 .length = @as(u16, @intCast(delta.size)),
                 .kind = .index_op,
             };
@@ -538,6 +560,7 @@ pub const WalManager = struct {
                         if (pending.is_arena == 2) continue;
                         self.processDelta(pending, arena_mem) catch |err| {
                             std.debug.print("[WAL] Dropped delta during drain: {s}\n", .{@errorName(err)});
+                            ring_buffer.recordDrop();
                         };
                     }
                     self.flushBuffer() catch {};
@@ -547,6 +570,7 @@ pub const WalManager = struct {
                 } else {
                     self.processDelta(delta, arena_mem) catch |err| {
                         std.debug.print("[WAL] Dropped delta {s}\n", .{@errorName(err)});
+                        ring_buffer.recordDrop();
                     };
                 }
             } else {

@@ -7,6 +7,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`commit()`: a write barrier an application can ask for.**
+  `client.commit(timeoutMs)` returns once every write issued before the
+  call is in a synced sector. It is a read barrier -- it reads the ring's
+  published producer position and waits for the flusher to publish
+  durability at least that far -- rather than a new log record, because a
+  barrier delta would need a new entry kind and a reader that does not
+  know that kind stops replaying at it, losing the tail of every log
+  written by a newer daemon.
+
+  It refuses clearly rather than optimistically: `-3` when no daemon is
+  logging the data directory, which is what running without one looks
+  like, and `BackpressureError` when the wait expires. Claiming success
+  in the first case would be the worst outcome available -- the caller
+  would believe writes that nothing is writing are durable.
+
+- **Typed back-pressure.** A push into a full ring waits (250 ms,
+  backing off from 50 us) and then raises `BackpressureError`, a distinct
+  type meaning "in mapped memory, not in the log". Before this, a full
+  ring made a proxy trap throw a generic `Error` *after* the caller had
+  already written the value through the mapping, so the honest response
+  to the error and the one the code invited -- retry, versus assume
+  nothing happened -- disagreed about the state of the data.
+
+- **Ring pressure in `METRICS`**: `ring_saturated`,
+  `ring_saturated_wait_ms`, `deltas_dropped` and `durable_tail`, all
+  cumulative for the life of the ring and also readable from
+  `client.ringStats()`. An operator can now see a daemon that is refusing
+  writes without writing a harness.
+
+- **`scripts/e2e_crash_property_test.js`**: the randomized
+  crash-consistency property test from the Gate 2 exit criterion. A seeded
+  generator, the mutation log held outside the process, `SIGKILL` at
+  advancing points, a hundred trials, payload sizes chosen so that WAL
+  entries land across every sector position. It is registered `xfail`
+  because it currently fails on a real defect, tracked in
+  `docs/next-steps.md`; `run-e2e` reports an XPASS if it starts passing.
+
+### Fixed
+
+Four recovery bugs, all of the same shape and all found by that property
+test rather than by reasoning:
+
+- **A WAL index operation recorded the wrong offset.** The header's
+  `offset` field is the value a key binds to; `processDelta` was writing
+  the key's own string-arena address there instead, so every key replayed
+  from the log resolved to a string in memory rather than to a record.
+  Recovery then restored an index that pointed at the wrong thing, and the
+  failure surfaced much later as an unrelated bounds error.
+- **The index survived a crash holding entries whose records were gone.**
+  The ART lives in the arena, so it came back with every key the dead
+  process had indexed. The record bump is re-derived from the log alone
+  and lands below those entries, so the next allocation reused offsets
+  they pointed at and a surviving key resolved to another row's values.
+  With no snapshot to restore, recovery now discards the tree and rebuilds
+  it from the log's index operations.
+- **An index operation naming a record the log never received was
+  applied anyway.** Deltas are independent ring entries, so the index
+  operation can be durable while the value deltas behind it were still
+  queued at the crash. Those entries are now dropped, with a count in the
+  boot log.
+- **The flusher published the producer position as durable.** It
+  published the ring's `tail`, which also counts deltas a client pushed
+  while the sector was being written -- deltas in no sector, on no disk.
+  A `commit()` waiting on that claim returned, and a kill at that instant
+  lost exactly the writes it promised. It publishes the consumer position
+  now, which is what a synced sector actually covers.
+
+### Changed
+
+- **The ring header grows from 192 to 448 bytes** (three cache lines to
+  seven) to hold `durable_tail` and three saturation counters, one line
+  each: the producer, the consumer and the flusher all write that struct,
+  and a shared line would be false sharing on the hottest counters in the
+  system. This moves `RECORD_BUMP_OFFSET`, which is derived from the ring
+  size; `layout.zig` pins the new value so a drift is a build failure.
+  A segment from a build with the old ring header is not compatible.
+- The N-API export table counts itself instead of carrying a literal.
+  Two exports added for this gate had pushed `disconnect_shm` and
+  `stop_vacuum` past the count, and N-API defines the first N and reports
+  success, so the engine could not be detached from a process that had
+  upgraded.
+
+### Still open
+
+A committed record can recover with a corrupted string length after a
+`SIGKILL` with no checkpoint: the arena is a persistent segment and keeps
+bytes the log never described. Same class as the four above; not yet
+root-caused. See the first entry in `docs/next-steps.md`. Gate 2 is
+delivered but not closed.
+
 - **Arena layout version 3: the region sizes are configuration.**
   `record_bytes`, `art_bytes` and `ring_capacity` live in `takyon.json`
   and in the segment header, and every consumer reads them: the engine,

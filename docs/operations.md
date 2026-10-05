@@ -106,7 +106,7 @@ Line-based ASCII: one line in, one line out, then close. Covered by
 | --- | --- |
 | `PING` | `PONG` |
 | `HEALTH` | `OK uptime_s=<n> arena=<bytes> ring=<depth>` |
-| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x> energy_source=<s> energy_uj=<j> energy_samples=<k> energy_read_errors=<e>` (`fl_*` = ART freelist: quarantined orphans, opt-in reuses, dropped overflows. `energy_*` = the platform energy counter; see [Energy counters](#energy-counters)) |
+| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x> ring_saturated=<s> ring_saturated_wait_ms=<w> deltas_dropped=<dd> durable_tail=<t> energy_source=<e> energy_uj=<j> energy_samples=<k> energy_read_errors=<r>` (`fl_*` = ART freelist: quarantined orphans, opt-in reuses, dropped overflows. `ring_saturated*` = pushes that had to wait for a full ring and the time they spent; `deltas_dropped` = deltas the flusher discarded, which should be 0; `durable_tail` = producer position the log is synced through, so the gap to `ring_depth` is unflushed work. `energy_*` = the platform energy counter; see [Energy counters](#energy-counters)) |
 | `CHECKPOINT` | `QUEUED` (or `FULL` when the ring is full) |
 | `SCAN <prefix> [max]` | `OK <n> <o1>,<o2>,...` (offsets with prefix; default 64, cap 128) |
 | `RANGE <prefix> <lo> <hi> [max]` | same, suffix in [`lo`, `hi`]; `-` = unbounded |

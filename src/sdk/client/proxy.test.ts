@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TakyonClient, TakyonBindings } from './proxy';
+import { BackpressureError, TakyonClient, TakyonBindings } from './proxy';
 import { TakyonSchema } from './schema';
 import { TakyonDB } from '../takyon';
 import {
@@ -37,10 +37,131 @@ function mockBindings(size: number, store: Map<string, number>): TakyonBindings 
         start_vacuum: () => 0,
         stop_vacuum: () => 0,
         disconnect_shm: () => 0,
+        commit: () => 0,
+        ringStats: () => ({
+            saturated_total: 0,
+            saturated_wait_ns: 0,
+            dropped_total: 0,
+            durable_tail: 0,
+        }),
     };
 }
 
 const UserDef = { username: 'string', age: 'uint32', score: 'float64' } as const;
+
+/** A bridge whose commit/ringStats behaviour the test dictates. */
+function bindingsWith(overrides: Partial<TakyonBindings>, store = new Map<string, number>()): TakyonBindings {
+    return { ...mockBindings(16 * 1024 * 1024, store), ...overrides };
+}
+
+describe('durability contract', () => {
+    it('commit() forwards its timeout and passes through the native code', () => {
+        const seen: number[] = [];
+        const db = new TakyonDB(bindingsWith({ commit: (ms: number) => (seen.push(ms), 0) }), 16 * 1024 * 1024);
+        db.client.commit(1234);
+        expect(seen).toEqual([1234]);
+        // A second call with no argument uses the documented default rather
+        // than whatever the previous caller passed.
+        db.client.commit();
+        expect(seen).toEqual([1234, 5000]);
+    });
+
+    it('commit() reports an expired wait as BackpressureError, not as a failure', () => {
+        const db = new TakyonDB(bindingsWith({ commit: () => -2 }), 16 * 1024 * 1024);
+        let thrown: unknown;
+        try {
+            db.client.commit(10);
+        } catch (e) {
+            thrown = e;
+        }
+        expect(thrown).toBeInstanceOf(BackpressureError);
+        // The distinguishing property: the bytes are in memory, the log does
+        // not have them. A caller branches on this to decide whether
+        // retrying is safe.
+        expect((thrown as BackpressureError).durable).toBe(false);
+        expect((thrown as BackpressureError).detail.code).toBe(-2);
+    });
+
+    it('commit() says durability is impossible when nothing is logging', () => {
+        const db = new TakyonDB(bindingsWith({ commit: () => -3 }), 16 * 1024 * 1024);
+        // Deliberately NOT a BackpressureError: nothing is full, nothing is
+        // slow, and a caller that applies back-pressure here would wait
+        // forever for a flusher that does not exist.
+        expect(() => db.client.commit()).toThrow(/durab/i);
+        expect(() => db.client.commit()).not.toThrow(BackpressureError);
+    });
+
+    it('commit() fails loudly on an addon that predates it', () => {
+        const legacy = mockBindings(16 * 1024 * 1024, new Map<string, number>());
+        delete (legacy as { commit?: unknown }).commit;
+        const db = new TakyonDB(legacy, 16 * 1024 * 1024);
+        // Silence here would be the worst outcome available: a caller would
+        // believe writes were durable because a call it made returned.
+        expect(() => db.client.commit()).toThrow(/newer TakyonDB addon/);
+        // The same addon still works for everything that does not need it.
+        expect(db.client.ringStats().durable_tail).toBe(0);
+    });
+
+    it('a refused index write surfaces as BackpressureError through insert()', () => {
+        // The typed error has to survive the whole path, not just the bridge:
+        // `Collection.insert` is what an application calls, and a generic
+        // Error there is what made "retry" and "the write never happened"
+        // look like the same option.
+        const db = new TakyonDB(bindingsWith({ insert_index: () => -2 }), 16 * 1024 * 1024);
+        const users = db.collection('users', new TakyonSchema({ ...UserDef }));
+        expect(() => users.insert('user_1', { age: 30 })).toThrow(BackpressureError);
+
+        // A refusal for any other reason stays a plain Error, so a caller
+        // cannot mistake an invalid key for something worth retrying.
+        const bad = new TakyonDB(bindingsWith({ insert_index: () => -1 }), 16 * 1024 * 1024);
+        const other = bad.collection('users', new TakyonSchema({ ...UserDef }));
+        expect(() => other.insert('user_1', { age: 30 })).not.toThrow(BackpressureError);
+    });
+
+    it('a refused field write surfaces as BackpressureError, not as a generic push failure', () => {
+        // Flipped after the insert, because the insert's own field write
+        // would be refused first and the test would prove nothing about a
+        // later assignment.
+        let refuse = false;
+        const db = new TakyonDB(bindingsWith({ pushDelta: () => (refuse ? -2 : 0) }), 16 * 1024 * 1024);
+        const users = db.collection('users', new TakyonSchema({ ...UserDef }));
+        const alice = users.insert('user_1', { age: 30 });
+        refuse = true;
+        expect(() => {
+            alice.score = 1.5;
+        }).toThrow(BackpressureError);
+        // The in-place write happened before the refusal: Takyon writes to
+        // the mapping first, so the value is readable even though the log
+        // refused to record it. That is precisely the state the error
+        // describes.
+        expect(alice.score).toBe(1.5);
+    });
+
+    it('ringStats() reads the counters and defaults absent ones to zero', () => {
+        const db = new TakyonDB(
+            bindingsWith({
+                ringStats: () => ({ saturated_total: 7, saturated_wait_ns: 12_000, dropped_total: 1, durable_tail: 900 }),
+            }),
+            16 * 1024 * 1024
+        );
+        expect(db.client.ringStats()).toEqual({
+            saturated_total: 7,
+            saturated_wait_ns: 12_000,
+            dropped_total: 1,
+            durable_tail: 900,
+        });
+
+        const partial = mockBindings(16 * 1024 * 1024, new Map<string, number>());
+        delete (partial as { ringStats?: unknown }).ringStats;
+        const db2 = new TakyonDB(partial, 16 * 1024 * 1024);
+        expect(db2.client.ringStats()).toEqual({
+            saturated_total: 0,
+            saturated_wait_ns: 0,
+            dropped_total: 0,
+            durable_tail: 0,
+        });
+    });
+});
 
 describe('TakyonDB with mocked bridge', () => {
     it('inserts, finds and round-trips scalar fields', () => {

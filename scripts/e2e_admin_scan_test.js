@@ -68,8 +68,27 @@ async function run() {
     if ((await cmd(port, 'BOGUS')) !== 'ERR unknown command') return fail('unknown command');
 
     const metrics = await cmd(port, 'METRICS');
-    if (!/^METRICS ring_depth=\d+ wal_bytes=\d+ wal_segments=\d+ uptime_s=\d+ fl_quarantined=\d+ fl_reused=\d+ fl_dropped=\d+ energy_source=(none|rapl-package|rapl-subunit) energy_uj=\d+ energy_samples=\d+ energy_read_errors=\d+$/.test(metrics)) {
-      return fail(`METRICS shape: ${metrics.slice(0, 80)}`);
+    // The ring-pressure fields are pinned too, not just tolerated: a metrics
+    // line that quietly loses its counters is how an operator ends up
+    // believing a daemon that is refusing writes is healthy. The order is
+    // asserted as well, because a consumer that parses positionally should
+    // notice when the line changes underneath it.
+    // Built from parts with new RegExp rather than `+` on the literals:
+    // JavaScript concatenates two regex literals into the string "/a//b/",
+    // so adding them yields a string and the assertion below fails with a
+    // TypeError instead of testing anything.
+    const metricsShape = new RegExp(
+        '^METRICS ring_depth=\\d+ wal_bytes=\\d+ wal_segments=\\d+ uptime_s=\\d+ ' +
+            'fl_quarantined=\\d+ fl_reused=\\d+ fl_dropped=\\d+ ring_saturated=\\d+ ' +
+            'ring_saturated_wait_ms=\\d+ deltas_dropped=\\d+ durable_tail=\\d+ ' +
+            'energy_source=(none|rapl-package|rapl-subunit) energy_uj=\\d+ ' +
+            'energy_samples=\\d+ energy_read_errors=\\d+$'
+    );
+    if (!metricsShape.test(metrics)) {
+        return fail(`METRICS shape: ${metrics.slice(0, 140)}`);
+    }
+    if (!/ring_saturated=0 /.test(metrics) || !/deltas_dropped=0 /.test(metrics)) {
+        return fail(`a fresh daemon reported pressure: ${metrics.slice(0, 160)}`);
     }
     // The energy figures are only publishable when they came from a sensor.
     // A daemon that reported a joule count with `energy_source=none` would be

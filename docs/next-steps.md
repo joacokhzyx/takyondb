@@ -9,13 +9,33 @@ If a limit here is fixed, delete the entry and record it in the changelog.
 
 ## The limits that shape what the engine can be
 
-### No durability call
+### A committed record can still come back wrong after a crash
 
-A write returns once the change is in the ring. The `fsync` happens later
-on the flusher thread, and there is no `commit()` an application can call
-to ask for it. The crash-recovery E2E covers the snapshot-plus-residual
-path; the window between the return and the `fsync` is not a stated bound
-anywhere. Gate 2.
+`commit()` exists, waits for the flusher, and returns only once every
+delta pushed before the call is in a synced sector. The `durability` E2E
+proves that on a clean path: 4000 committed records, `SIGKILL`, no
+checkpoint, all of them recovered. The randomized suite
+(`scripts/e2e_crash_property_test.js`, pinned `xfail` in
+`scripts/run-e2e.js`) fails on the real system, and what it finds is this:
+
+> after a `SIGKILL` with no checkpoint, a record that was committed can
+> recover with a corrupted string length -- the first bytes of its payload
+> are right and the length field is one byte off.
+
+The mechanism is understood in outline and not yet in detail. The arena is
+a persistent segment: it keeps whatever the dead process had in it,
+including writes that never reached the log, and the bump words are
+re-derived from the log alone, so space the log does not cover is handed
+out again. Four bugs of exactly that shape were found and fixed on the way
+(the WAL recorded a key's *string* address where the format wanted its
+record address; the index survived a crash holding entries whose records
+were gone; an index operation naming a record the log never received was
+applied anyway; the flusher published the producer position as durable and
+so claimed `fsync` coverage for deltas still in the ring). What remains is
+the same class of problem in the string region: a length word restored
+from bytes the log never described. Until that is closed, treat
+`commit()` as covering the sector prefix it can prove and nothing wider.
+Gate 2, still open.
 
 ### No reclaim, so no eviction
 
@@ -26,13 +46,19 @@ strings unless something starts the vacuum thread, and the daemon never
 does — it is reachable through the C ABI only. That is also why there is
 no TTL and no memory ceiling policy yet. Gate 3.
 
-### A full ring fails after the bytes are already written
+### The ring still cannot be resized after the segment exists
 
-The ring holds a fixed capacity that the daemon creates with no flag to
-change it. A push into a full ring returns a failure, the SDK throws, and
-by then the client has already written the value into the arena. There is
-no wait, no retry, no typed error and no saturation counter in `METRICS`,
-so an operator cannot see it without writing a harness. Gate 2.
+A push into a full ring now waits (250 ms by default, backing off), then
+raises `BackpressureError`, a type distinct from every other failure
+because it means "in mapped memory, not in the log". Saturation, wait time
+and dropped-delta counts are in `METRICS` and in `client.ringStats()`.
+
+What is still fixed: the ring capacity is decided when the segment is
+created, from `regions.ring_capacity` in `takyon.json`. A daemon that
+cannot drain the ring fast enough will refuse writes, and the only lever
+is a restart with a bigger ring. The 250 ms wait is a number, not a
+policy: it is not derived from a measured flush latency, and on a slow
+filesystem a legitimate burst can still be refused. Gate 2.
 
 ## What the substrate does not do yet
 

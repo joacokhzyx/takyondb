@@ -219,6 +219,112 @@ pub export fn takyon_disconnect_shm() callconv(.c) void {
     engine_regions = null;
 }
 
+/// Return codes that mean something specific enough for a caller to act on.
+/// A generic -1 forces every caller to guess, and the guess is usually
+/// "retry", which is right for one cause and wrong for the others.
+pub const RC_OK: i32 = 0;
+pub const RC_ERROR: i32 = -1;
+/// The ring stayed full for the whole wait. The mutation the caller already
+/// made in mapped memory is NOT durable.
+pub const RC_BACKPRESSURE: i32 = -2;
+/// `commit()` was asked for and nothing can provide it: no daemon owns the
+/// data directory, so nothing is being written to a log.
+pub const RC_NO_DURABILITY: i32 = -3;
+
+/// How long a push waits for a full ring before refusing. Long enough that a
+/// burst which the flusher catches up with in milliseconds simply succeeds,
+/// short enough that a genuinely stuck consumer surfaces as an error rather
+/// than an application that hangs. The SDK exposes it; this is the default.
+const PUSH_BACKPRESSURE_NS: u64 = 250 * std.time.ns_per_ms;
+/// First sleep between push attempts, doubling up to the last. Sleeping
+/// rather than spinning: a thread burning a core to wait for another one to
+/// drain costs the thing being waited for.
+const PUSH_BACKOFF_MIN_NS: u64 = 50 * std.time.ns_per_us;
+const PUSH_BACKOFF_MAX_NS: u64 = 2 * std.time.ns_per_ms;
+
+/// Pushes a delta, waiting for a full ring to drain.
+///
+/// The old contract was `push` returning false and the caller throwing,
+/// which is how a value the caller had *already written into mapped memory*
+/// ended up reported as a failed write. The bytes are in the arena before
+/// the push is attempted -- that is what zero-copy means -- so the only
+/// honest options are to wait or to say clearly that the wait failed.
+///
+/// `RC_BACKPRESSURE` means the mutation is in memory and not in the log.
+/// That distinction is the whole point of the return code and the reason the
+/// SDK maps it to its own error type.
+fn pushWithBackPressure(delta: DeltaMessage) i32 {
+    if (ring_buffer.push(delta)) return RC_OK;
+
+    var timer = std.time.Timer.start() catch {
+        // No monotonic clock available: fall back to a bounded attempt
+        // count rather than refusing the write, since the bytes are already
+        // in the arena and a bare refusal is the failure mode this replaces.
+        var tries: usize = 0;
+        while (tries < 1000) : (tries += 1) {
+            std.time.sleep(100 * std.time.ns_per_us);
+            if (ring_buffer.push(delta)) return RC_OK;
+        }
+        return RC_BACKPRESSURE;
+    };
+    var backoff = PUSH_BACKOFF_MIN_NS;
+    while (timer.read() < PUSH_BACKPRESSURE_NS) {
+        std.time.sleep(backoff);
+        if (ring_buffer.push(delta)) {
+            ring_buffer.recordSaturation(timer.read());
+            return RC_OK;
+        }
+        backoff = @min(backoff * 2, PUSH_BACKOFF_MAX_NS);
+    }
+    ring_buffer.recordSaturation(timer.read());
+    return RC_BACKPRESSURE;
+}
+
+/// Waits until everything pushed before the call is on disk.
+///
+/// Implemented as a read barrier, not as a log record: the caller reads the
+/// ring's published position and waits for the flusher to publish durability
+/// at least that far. A barrier delta would have needed a new tag in the
+/// write-path protocol, and a log reader that does not know that tag stops
+/// replaying at it -- losing the tail of every log written by a newer
+/// daemon. The read barrier needs no format change at all.
+pub export fn takyon_commit(timeout_ms: u32) callconv(.c) i32 {
+    if (!ring_ready or !arena_ready) return RC_ERROR;
+    // Nothing is being logged, so nothing can become durable. Saying so is
+    // the difference between a caller that knows and one that believes.
+    if (!daemon_attached) return RC_NO_DURABILITY;
+
+    const target = ring_buffer.publishPos();
+    var timer = std.time.Timer.start() catch {
+        // Without a monotonic clock the barrier cannot be bounded, and an
+        // unbounded wait is worse than a refusal: the caller keeps its
+        // option to retry.
+        return RC_ERROR;
+    };
+    const limit: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
+    while (ring_buffer.durableTail() < target) {
+        if (timer.read() >= limit) return RC_BACKPRESSURE;
+        std.time.sleep(200 * std.time.ns_per_us);
+    }
+    return RC_OK;
+}
+
+/// Saturation and durability counters, for the admin `METRICS` line. An
+/// operator who cannot see these cannot tell a healthy daemon from one
+/// silently refusing writes.
+pub export fn takyon_ring_stats() callconv(.c) void {
+    if (!ring_ready) return;
+    const st = ring_buffer.stats();
+    ring_stats_out[0] = st.saturated_total;
+    ring_stats_out[1] = st.saturated_wait_ns;
+    ring_stats_out[2] = st.dropped_total;
+    ring_stats_out[3] = st.durable_tail;
+}
+
+/// Caller-provided buffer for `takyon_ring_stats`. A pointer out-param keeps
+/// the C ABI allocation-free, which is the rule every export here follows.
+var ring_stats_out: [4]u64 align(64) = .{ 0, 0, 0, 0 };
+
 /// Bump-allocates `src.len` bytes in the string arena and copies `src` in.
 /// Returns the offset, or null when the arena is exhausted.
 ///
@@ -276,7 +382,9 @@ fn allocString(arena_mem: []u8, src: []const u8) ?u32 {
 /// log describes. The reverse order is the one that loses data silently.
 ///
 /// Returns 0 on success, -1 on error (!arena_ready, !ring_ready, bad
-/// key_len, value_offset out of range, ring full, or string arena exhausted).
+/// key_len, value_offset out of range, or string arena exhausted), and
+/// -2 when the ring stayed full: the key is not bound and nothing is lost,
+/// but the caller has to slow down before trying again.
 pub export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offset: u32) callconv(.c) i32 {
     if (!arena_ready or !ring_ready) return -1;
     if (key_len == 0 or key_len > MAX_KEY_LEN) return -1;
@@ -287,7 +395,13 @@ pub export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offs
         // Cheap admission check before allocating, so a full ring under
         // contention does not burn string-arena space on every rejected
         // insert. Advisory only: the push below is the real test.
-        if (ring_buffer.depth() >= ring_buffer.capacity) return -1;
+        //
+        // It reports back-pressure rather than a generic error even though
+        // it does not wait. Waiting here would burn the full timeout on a
+        // ring that is grossly over capacity -- exactly the case where the
+        // caller needs to hear about it soonest -- and the type a caller
+        // branches on should not depend on which internal check noticed.
+        if (ring_buffer.depth() >= ring_buffer.capacity) return RC_BACKPRESSURE;
 
         const key_arena_offset = allocString(arena.memory, key) orelse return -1;
         var delta = DeltaMessage{
@@ -297,7 +411,12 @@ pub export fn takyon_insert_index(key_ptr: [*]const u8, key_len: u32, value_offs
             .data = undefined,
         };
         std.mem.writeInt(u32, delta.data[0..4], value_offset, .little);
-        if (!ring_buffer.push(delta)) return -1;
+        // Pushed BEFORE the index is mutated, so a back-pressure refusal
+        // leaves no entry that no log record describes. Waiting here is
+        // safe for the same reason: the caller learns the outcome before the
+        // arena has anything new in it.
+        const rc = pushWithBackPressure(delta);
+        if (rc != RC_OK) return rc;
     }
 
     art_index.insert(key, value_offset) catch return -1;
@@ -396,13 +515,9 @@ pub export fn takyon_write_delta(offset: u32, size: u32, data_ptr: [*]const u8) 
     // Copy the mutated bytes from the N-API buffer into the delta payload
     std.mem.copyForwards(u8, delta.data[0..size], data_ptr[0..size]);
 
-    // Push the mutation into the RingBuffer
-    const pushed = ring_buffer.push(delta);
-
-    if (pushed) {
-        return 0; // Success
-    }
-    return -1; // Buffer full
+    // The caller already wrote these bytes through the mapping; refusing to
+    // queue them is what turned a successful write into a thrown error.
+    return pushWithBackPressure(delta);
 }
 
 pub export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
@@ -418,12 +533,7 @@ pub export fn takyon_notify_arena(offset: u32, size: u32) callconv(.c) i32 {
         .data = undefined,
     };
 
-    const pushed = ring_buffer.push(delta);
-
-    if (pushed) {
-        return 0; // Success
-    }
-    return -1; // Buffer full
+    return pushWithBackPressure(delta);
 }
 
 pub export fn takyon_trigger_checkpoint() callconv(.c) i32 {
@@ -435,10 +545,20 @@ pub export fn takyon_trigger_checkpoint() callconv(.c) i32 {
         .data = undefined,
     };
 
-    if (ring_buffer.push(delta)) {
-        return 0; // Success
-    }
-    return -1; // Buffer full
+    // No wait here, deliberately: a checkpoint carries no arena mutation, so
+    // there is nothing the caller has already done that a refusal would
+    // contradict. Queueing it and letting the flusher drain the ring first
+    // is exactly what the checkpoint delta means.
+    if (ring_buffer.push(delta)) return RC_OK;
+    return RC_BACKPRESSURE;
+}
+
+pub export fn takyon_ring_stats_get(index: u32, out_ptr: *u64) callconv(.c) i32 {
+    if (index >= ring_stats_out.len) return RC_ERROR;
+    if (!ring_ready) return RC_ERROR;
+    takyon_ring_stats();
+    out_ptr.* = ring_stats_out[index];
+    return RC_OK;
 }
 
 /// E2E Verification function: Pops the RingBuffer and returns the processed value as i32

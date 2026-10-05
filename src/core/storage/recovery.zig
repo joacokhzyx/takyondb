@@ -113,12 +113,27 @@ const IndexOps = struct {
 /// re-inserted, which allocates a second leaf and orphans the first; that
 /// costs a little arena space after recovery and is preferred over trying to
 /// detect which keys a snapshot already had.
-fn applyIndexOps(art_index: *ArtIndex, index_ops: *IndexOps) u32 {
+fn applyIndexOps(art_index: *ArtIndex, index_ops: *IndexOps, regions: layout.Regions, rec_max: u32) u32 {
     var applied: u32 = 0;
+    var skipped: u32 = 0;
     for (index_ops.ops.items) |op| {
         const start = op.key_offset;
         const end = start + op.key_len;
         if (end > index_ops.keys.items.len) continue; // Truncated blob; skip.
+        // An index operation whose record never reached the log is dropped.
+        //
+        // Deltas are independent ring entries, so the index operation -- the
+        // first one pushed for a record -- can be in the log while the value
+        // deltas behind it were still queued when the process died. Keeping
+        // the entry would leave a key resolving to an offset the record bump
+        // does not cover, and the next allocation would land on it: the key
+        // would then read somebody else's record. rec_max is the highest
+        // record byte the log actually contains, so `value_offset < rec_max`
+        // is the test for "the log describes these bytes".
+        if (op.value_offset < regions.record_start or op.value_offset >= rec_max) {
+            skipped += 1;
+            continue;
+        }
         art_index.insert(index_ops.keys.items[start..end], op.value_offset) catch |err| {
             std.debug.print("[TakyonDB-Bootloader] Skipped index replay for a key that no longer fits: {s}\\n", .{@errorName(err)});
             continue;
@@ -126,7 +141,14 @@ fn applyIndexOps(art_index: *ArtIndex, index_ops: *IndexOps) u32 {
         applied += 1;
     }
     if (index_ops.ops.items.len > 0) {
-        std.debug.print("[TakyonDB-Bootloader] Replayed {d}/{d} index operations from the WAL.\\n", .{ applied, index_ops.ops.items.len });
+        std.debug.print(
+            "[TakyonDB-Bootloader] Replayed {d}/{d} index operations from the WAL{s}.\\n",
+            .{
+                applied,
+                index_ops.ops.items.len,
+                if (skipped > 0) "; the rest named records the log never received" else "",
+            },
+        );
     }
     return applied;
 }
@@ -362,7 +384,9 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     defer index_ops.deinit();
 
     // Phase 1: snapshot with CRC verification (two passes).
+    var restored_snapshot = false;
     if (try loadSnapshot(allocator, path, arena_mem, regions)) |meta| {
+        restored_snapshot = true;
         // Seed maxima from the restored bump words, so all three arenas
         // survive even with no further WAL replay. Each extent ends at its
         // region's bump by construction, so its end is a second, redundant
@@ -384,6 +408,20 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         if (str_max > arena_mem.len) str_max = @as(u32, @intCast(arena_mem.len));
     }
 
+    // Phase 1b: with no snapshot, the index is rebuilt from nothing.
+    //
+    // The ART lives in the arena, so it survived the crash holding every key
+    // the previous incarnation had indexed -- including the ones whose index
+    // operation never reached the log. The record bump below is derived from
+    // the log alone and lands below those entries, so the next allocation
+    // reuses offsets they still point at and a surviving key resolves to
+    // somebody else's record: a read returns another row's values rather
+    // than failing, which is the worst shape a recovery bug can take.
+    //
+    // Discarding the tree first removes the class. A snapshot is the
+    // exception because its payload *is* the index, restored above.
+    if (!restored_snapshot) resetIndex(arena_mem, regions);
+
     // Phase 2: WAL delta replay.
     replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max, &index_ops, regions);
 
@@ -392,7 +430,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     // that bump, so the post-replay value is folded back in below.
     if (index_ops.ops.items.len > 0) {
         if (art_index) |idx| {
-            _ = applyIndexOps(idx, &index_ops);
+            _ = applyIndexOps(idx, &index_ops, regions, rec_max);
             const arena_art = readWord(arena_mem, regions.artBumpOffset(), artStartOf(regions));
             if (arena_art > art_max) art_max = arena_art;
         } else {
@@ -404,6 +442,33 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     }
 
     finalize(arena_mem, rec_max, art_max, str_max, regions);
+}
+
+/// Empties the index region and re-seeds its bump word.
+///
+/// Called only when no snapshot was restored, so the tree is rebuilt purely
+/// from the log's index operations. The region is zeroed rather than just
+/// the root word so a node the next allocation lands on cannot inherit a
+/// subtree, and a zero root is exactly the empty-tree state a rebuild starts
+/// from.
+///
+/// The bump word is written back afterwards, which is the part that is easy
+/// to miss: `ArtIndex.init` runs *before* recovery and claims the bump with a
+/// compare-and-set that only fires on zero, so it will never run again. Left
+/// at zero, the next node allocation starts at arena offset 0 -- the global
+/// header -- and the rebuilt index writes over the region table. finalize
+/// rewrites the bump from the replayed maximum, but only after the replay has
+/// already allocated through it.
+fn resetIndex(arena_mem: []u8, regions: layout.Regions) void {
+    const art_start = regions.art_root;
+    const art_end = art_start + regions.art_bytes;
+    if (art_end > arena_mem.len) return; // Nothing sane to clear.
+    @memset(arena_mem[art_start..art_end], 0);
+    const bump_off = regions.artBumpOffset();
+    if (bump_off + 4 <= arena_mem.len) {
+        const bump: *u32 = @ptrCast(@alignCast(&arena_mem[bump_off]));
+        bump.* = @intCast(regions.artStart());
+    }
 }
 
 /// Loads and verifies the snapshot. Returns the extents it restored, or
@@ -833,6 +898,13 @@ fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32, regions: 
     // Idempotent: writing the same aligned maxima twice changes nothing.
     // Each bump is clamped to its init and 8-aligned; out-of-range bumps
     // on small arenas (tests) are skipped instead of panicking.
+    //
+    // Each bump is written from what the log proves was written, not from
+    // what the arena happens to contain. The arena is a superset: the
+    // process died holding writes that never reached the log, and with no
+    // snapshot those are unreachable anyway, because resetIndex has already
+    // emptied the tree the keys lived in. Handing that space back out is
+    // what keeps an arena from growing without bound across crashes.
     const rec_bump_off = regions.recordBumpOffset();
     const art_bump_off = regions.artBumpOffset();
     const str_bump_off = regions.string_start;
@@ -1107,18 +1179,28 @@ test "WAL index_op records rebuild the ART on replay" {
 
     // Round 1: the "crashed" writer. Keys live at value_offset, payload is
     // the key, exactly as processDelta encodes a DELTA_INDEX_OP.
+    // The record bytes travel too, in the same order the client pushes them:
+    // the index operation first, then the value. A log with only the index
+    // operations is the crash-in-the-middle case, and it is covered by its
+    // own test below.
+    // Offsets inside the record region, where a record actually lives. The
+    // replay's index pass now requires that: an entry naming an offset below
+    // the record region describes bytes that are not a record at all.
+    const regions = layout.defaultRegions(arena.len);
     const keys = [_][]const u8{ "alpha", "bravo", "charlie", "delta", "echo" };
-    const values = [_]u32{ 4096, 4160, 4224, 4288, 4352 };
+    var values: [keys.len]u32 = undefined;
+    const bytes = [_]u8{ 0xAA, 0xBB };
     var wal = try WalManager.init(allocator, path);
     for (keys, 0..) |key, i| {
+        values[i] = @intCast(regions.record_start + 8 + i * 64);
         try writeEntryOfKind(&wal, values[i], key, .index_op);
+        try writeEntryOfKind(&wal, values[i], &bytes, .arena_write);
     }
     try wal.flushBuffer();
     wal.shutdown();
 
     // Round 2: a fresh arena, as after SIGKILL.
     @memset(arena, 0);
-    const regions = layout.defaultRegions(arena.len);
     var art_index = ArtIndex.init(arena, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
     try recoverWal(allocator, path, arena, &art_index, regions);
 
@@ -1133,6 +1215,48 @@ test "WAL index_op records rebuild the ART on replay" {
     // A key that was never logged must NOT be findable: this asserts the
     // replay is driven by the log and not by leftover arena bytes.
     try std.testing.expect(art_index.search("foxtrot") == null);
+}
+
+test "an index operation whose record never reached the log is dropped" {
+    // Deltas are independent ring entries, so the index operation -- the
+    // first thing pushed for a record -- can be durable while the value
+    // deltas behind it were still queued at the crash. Applying it anyway
+    // leaves a key resolving to an offset above the record bump, which the
+    // next allocation then reuses: the key reads somebody else's record
+    // instead of failing. The entry has to go.
+    const WalManager = @import("wal.zig").WalManager;
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const dirpath = try tmp.dir.realpath(".", &dirbuf);
+    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/orphan.takyon", .{dirpath});
+
+    const arena_size = layout.STRING_ARENA_START + (1 * 1024 * 1024);
+    const arena = try allocator.alloc(u8, arena_size);
+    defer allocator.free(arena);
+    @memset(arena, 0);
+
+    const regions = layout.defaultRegions(arena.len);
+    const kept_at: u32 = @intCast(regions.record_start + 8);
+    const orphan_at: u32 = @intCast(regions.record_start + 4096);
+
+    // "kept" gets its bytes; "orphan" only gets the index operation.
+    const kept_bytes = [_]u8{ 1, 2, 3, 4 };
+    var wal = try WalManager.init(allocator, path);
+    try writeEntryOfKind(&wal, kept_at, "kept", .index_op);
+    try writeEntryOfKind(&wal, kept_at, &kept_bytes, .arena_write);
+    try writeEntryOfKind(&wal, orphan_at, "orphan", .index_op);
+    try wal.flushBuffer();
+    wal.shutdown();
+
+    var art_index = ArtIndex.init(arena, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recoverWal(allocator, path, arena, &art_index, regions);
+
+    try std.testing.expectEqual(@as(?u32, kept_at), art_index.search("kept"));
+    try std.testing.expect(art_index.search("orphan") == null);
 }
 
 test "WAL framing fuzz never fails fatally (256 random files)" {

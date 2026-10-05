@@ -46,6 +46,10 @@ const ADMIN_IDLE_SLICE_NS: u64 = 100 * std.time.ns_per_ms;
 //             WalManager.bytes_written; wal_segments = WalManager.next_segment;
 //             uptime_s = seconds since daemon start; fl_* = ART freelist
 //             counters: quarantined orphans, opt-in reuses, dropped overflows;
+//             ring_saturated / ring_saturated_wait_ms / deltas_dropped /
+//             durable_tail = ring pressure and durability progress: how many
+//             pushes had to wait, how long they waited, how many deltas
+//             never reached the log, and how far the log is durably written;
 //             energy_source = `none` unless a platform counter was readable,
 //             in which case a rapl-package or rapl-subunit domain;
 //             energy_uj = microjoules accumulated since start, which is 0
@@ -158,8 +162,9 @@ fn handleAdminConn(stream: std.net.Stream, ctx: *AdminCtx) void {
         const uptime_s: i64 = @divTrunc(@max(now - ctx.start_ms, 0), 1000);
         const fl = freelist.stats();
         const e = ctx.sampler.report();
-        var out: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d} fl_quarantined={d} fl_reused={d} fl_dropped={d} energy_source={s} energy_uj={d} energy_samples={d} energy_read_errors={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s, fl.quarantined, fl.reused, fl.dropped, e.source.name(), e.microjoules, e.samples, e.read_errors }) catch return;
+        const rs = ctx.rb.stats();
+        var out: [768]u8 = undefined;
+        const msg = std.fmt.bufPrint(&out, "METRICS ring_depth={d} wal_bytes={d} wal_segments={d} uptime_s={d} fl_quarantined={d} fl_reused={d} fl_dropped={d} ring_saturated={d} ring_saturated_wait_ms={d} deltas_dropped={d} durable_tail={d} energy_source={s} energy_uj={d} energy_samples={d} energy_read_errors={d}\n", .{ ctx.rb.depth(), ctx.wal.bytes_written, ctx.wal.next_segment, uptime_s, fl.quarantined, fl.reused, fl.dropped, rs.saturated_total, rs.saturated_wait_ns / 1_000_000, rs.dropped_total, rs.durable_tail, e.source.name(), e.microjoules, e.samples, e.read_errors }) catch return;
         stream.writeAll(msg) catch {};
     } else if (std.mem.eql(u8, line, "CHECKPOINT")) {
         const ckpt = DeltaMessage{ .offset = 0, .size = 0, .is_arena = 2, .data = [_]u8{0} ** 48 };
@@ -581,11 +586,29 @@ pub fn main() !void {
     // checkpoint delta (flusher owns snapshotting). 0 disables checkpoints.
     var last_metrics = std.time.milliTimestamp();
     var last_checkpoint = std.time.milliTimestamp();
+    var last_saturated: usize = 0;
+    var last_dropped: usize = 0;
     while (server_running.load(.acquire)) {
         const now = std.time.milliTimestamp();
         if (now - last_metrics >= 10_000) {
             last_metrics = now;
+            const rs = rb.stats();
             std.debug.print("[TakyonDB-Daemon] Ring depth: {d}\n", .{rb.depth()});
+            // Saturation is reported when it happens rather than only on
+            // request: an operator who has to ask to find out that 40% of
+            // their writes were being refused is an operator who finds out
+            // too late.
+            if (rs.saturated_total > last_saturated) {
+                std.debug.print(
+                    "[TakyonDB-Daemon] Ring saturated {d} time(s), {d} ms of waiting so far, durable through {d}/{d}.\n",
+                    .{ rs.saturated_total - last_saturated, rs.saturated_wait_ns / 1_000_000, rs.durable_tail, rb.publishPos() },
+                );
+                last_saturated = rs.saturated_total;
+            }
+            if (rs.dropped_total > last_dropped) {
+                std.debug.print("[TakyonDB-Daemon] {d} delta(s) were dropped and never reached the log.\n", .{rs.dropped_total - last_dropped});
+                last_dropped = rs.dropped_total;
+            }
         }
         if (checkpoint_sec != 0 and now - last_checkpoint >= @as(i64, @intCast(checkpoint_sec * 1000))) {
             last_checkpoint = now;

@@ -55,6 +55,8 @@ extern "C" {
     int32_t takyon_verify_record(const uint8_t* buf, uint32_t len);
     int32_t takyon_scrub_records(const uint8_t* buf, uint32_t len, uint32_t* ok_out,
                                  uint32_t* corrupt_out, uint32_t* bytes_out, uint32_t* truncated_out);
+    int32_t takyon_commit(uint32_t timeout_ms);
+    int32_t takyon_ring_stats_get(uint32_t index, uint64_t* out);
     int takyon_trigger_checkpoint();
     int takyon_start_vacuum(uint32_t string_offset);
     void takyon_stop_vacuum();
@@ -380,6 +382,55 @@ napi_value ScanRange(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Wait until everything written before this call is durably on disk.
+// The status code is returned as-is rather than thrown: -2 (back pressure,
+// i.e. the wait expired) and -3 (nothing is being logged at all) are states
+// the caller needs to branch on, and an exception cannot carry a code the
+// proxy can distinguish from the other failures.
+napi_value Commit(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    CHECK_NAPI(napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+
+    uint32_t timeout_ms = 5000;
+    if (argc >= 1) {
+        int32_t t = 0;
+        CHECK_NAPI(napi_get_value_int32(env, args[0], &t));
+        if (t < 0) {
+            napi_throw_range_error(env, nullptr, "timeoutMs must be >= 0");
+            return nullptr;
+        }
+        timeout_ms = (uint32_t)t;
+    }
+
+    int32_t status = takyon_commit(timeout_ms);
+    napi_value result;
+    CHECK_NAPI(napi_create_int32(env, status, &result));
+    return result;
+}
+
+// Ring pressure counters, as a plain object of numbers. An object rather
+// than an array so that adding a counter later does not renumber the ones
+// callers already read.
+napi_value RingStats(napi_env env, napi_callback_info info) {
+    (void)info;
+    static const char* names[] = {"saturated_total", "saturated_wait_ns", "dropped_total",
+                                  "durable_tail"};
+    napi_value obj;
+    CHECK_NAPI(napi_create_object(env, &obj));
+    for (uint32_t i = 0; i < 4; i++) {
+        uint64_t value = 0;
+        if (takyon_ring_stats_get(i, &value) != 0) continue;
+        napi_value v;
+        CHECK_NAPI(napi_create_double(env, (double)value, &v));
+        CHECK_NAPI(napi_set_named_property(env, obj, names[i], v));
+    }
+    // Returned flat, not wrapped: the TS binding declares this as returning
+    // the counters themselves, and wrapping them one level deeper is a
+    // silent all-zeros read on the other side.
+    return obj;
+}
+
 napi_value TriggerCheckpoint(napi_env env, napi_callback_info info) {    (void)info;
     int32_t result = ::takyon_trigger_checkpoint();
     napi_value res;
@@ -697,6 +748,12 @@ napi_value ScrubRecords(napi_env env, napi_callback_info info) {
     return obj;
 }
 
+// Count derived from the table itself. A literal count here silently drops
+// the exports past it: N-API defines the first N and reports success, so
+// `disconnect_shm` and `stop_vacuum` can vanish from the addon while every
+// other test still passes.
+#define NAPI_DESC_COUNT(d) (sizeof(d) / sizeof((d)[0]))
+
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         { "initSharedMemory", 0, InitSharedMemory, 0, 0, 0, napi_default, 0 },
@@ -716,12 +773,14 @@ napi_value Init(napi_env env, napi_value exports) {
         { "agg_max_selected", 0, AggMaxSelected, 0, 0, 0, napi_default, 0 },
         { "verify_record", 0, VerifyRecord, 0, 0, 0, napi_default, 0 },
         { "scrub_records", 0, ScrubRecords, 0, 0, 0, napi_default, 0 },
+        { "commit", 0, Commit, 0, 0, 0, napi_default, 0 },
+        { "ringStats", 0, RingStats, 0, 0, 0, napi_default, 0 },
         { "trigger_checkpoint", 0, TriggerCheckpoint, 0, 0, 0, napi_default, 0 },
         { "start_vacuum", 0, StartVacuum, 0, 0, 0, napi_default, 0 },
         { "stop_vacuum", 0, StopVacuum, 0, 0, 0, napi_default, 0 },
         { "disconnect_shm", 0, DisconnectShm, 0, 0, 0, napi_default, 0 }
     };
-    CHECK_NAPI(napi_define_properties(env, exports, 21, desc));
+    CHECK_NAPI(napi_define_properties(env, exports, NAPI_DESC_COUNT(desc), desc));
     return exports;
 }
 

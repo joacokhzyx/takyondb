@@ -66,6 +66,11 @@ print the suite count, so nothing else needs updating — that is why the
 count in the harness output is computed rather than typed, and why this
 page does not list them either.
 
+`xfail: 'reason'` marks a suite that pins a known-open defect. It still
+runs, still has to fail, and the harness prints the reason — and reports
+an **XPASS** if it starts passing, so the marker cannot outlive the fix.
+Delete the marker when the suite is green.
+
 If the suite needs a CI job of its own, that goes in a workflow, and the
 workflow name is a link target people paste: renaming one means fixing
 every reference to it in the same commit.
@@ -85,6 +90,14 @@ The energy suite is the fourth kind: it asserts the *absence* of a
 number. With no readable energy counter the daemon must report zero
 microjoules, because a figure invented from CPU time is not a measurement.
 See [energy.md](energy.md).
+
+The randomized one is the fifth kind, and the most productive per line
+written. `e2e_crash_property_test.js` generates mutations from a seed,
+keeps the mutation log outside the process, `SIGKILL`s the daemon at
+advancing points, and asserts what survived. A deterministic suite proves
+one path; this one found four recovery bugs in recovery, each of which a
+reasoned-about test had agreed was correct. It is currently `xfail`: it
+finds a fifth. See [next-steps.md](next-steps.md).
 
 ## Prerequisites and known constraints
 

@@ -65,6 +65,24 @@ pub const RingBuffer = struct {
         head: usize align(CACHE_LINE),
         tail: usize align(CACHE_LINE),
         capacity: usize align(CACHE_LINE),
+        /// Producer position known to be on disk.
+        ///
+        /// The flusher publishes the ring's `tail` as of the last completed
+        /// `fsync`, so a caller that read `tail` at some moment can wait
+        /// until this reaches it and know every delta it pushed before that
+        /// moment is durable. It lives in the ring region rather than the
+        /// global header for one reason: `recoverWal`'s finalize already
+        /// zeroes this whole region, so the counters reset with the ring
+        /// they describe. A stale `durable_tail` left over from a previous
+        /// incarnation would satisfy every barrier immediately, which is the
+        /// one thing this must never do.
+        durable_tail: usize align(CACHE_LINE),
+        /// Pushes refused because the ring was full.
+        saturated_total: usize align(CACHE_LINE),
+        /// Nanoseconds callers spent waiting for a full ring to drain.
+        saturated_wait_ns: usize align(CACHE_LINE),
+        /// Deltas the flusher dropped after they failed validation.
+        dropped_total: usize align(CACHE_LINE),
     };
 
     /// Initializes a RingBuffer over an existing shared memory segment.
@@ -98,6 +116,13 @@ pub const RingBuffer = struct {
             header.head = 0;
             header.tail = 0;
             header.capacity = capacity;
+            // Counters describe the life of this ring, which starts here.
+            // Leaving a previous incarnation's `durable_tail` in place would
+            // satisfy a durability barrier before a single byte was written.
+            header.durable_tail = 0;
+            header.saturated_total = 0;
+            header.saturated_wait_ns = 0;
+            header.dropped_total = 0;
             do_init = true;
         } else if (header.capacity == 0) {
             // Autonomous mode (no daemon created the header yet). Claim it
@@ -105,6 +130,10 @@ pub const RingBuffer = struct {
             header.head = 0;
             header.tail = 0;
             header.capacity = capacity;
+            header.durable_tail = 0;
+            header.saturated_total = 0;
+            header.saturated_wait_ns = 0;
+            header.dropped_total = 0;
             do_init = true;
         } else {
             effective = header.capacity;
@@ -134,6 +163,77 @@ pub const RingBuffer = struct {
         const head = @atomicLoad(usize, &self.header.head, .acquire);
         const tail = @atomicLoad(usize, &self.header.tail, .acquire);
         return tail - head;
+    }
+
+    /// The producer position a caller can treat as its write barrier: every
+    /// delta before it has been pushed, and therefore every delta before it
+    /// is covered by whatever `durableTail` eventually reaches.
+    pub fn publishPos(self: *const RingBuffer) usize {
+        return @atomicLoad(usize, &self.header.tail, .acquire);
+    }
+
+    /// How far the log has been durably written, in producer positions.
+    pub fn durableTail(self: *const RingBuffer) usize {
+        return @atomicLoad(usize, &self.header.durable_tail, .acquire);
+    }
+
+    /// Called by the flusher after a completed `fsync`, publishing how far
+    /// the log is durably written.
+    ///
+    /// The position published is the ring's *consumer* position, not its
+    /// producer position, and the difference is the whole correctness of a
+    /// durability barrier. The flusher pops a delta, writes it into the
+    /// sector buffer, and flushes that sector: so everything below `head` is
+    /// on disk at the moment of the call. Using `tail` instead would claim
+    /// durability for every delta a client pushed while the sector was being
+    /// written -- deltas still sitting in the ring, in no sector, on no disk.
+    /// A `commit()` waiting on that claim returns, and a kill at that instant
+    /// loses exactly the writes the caller was promised.
+    pub fn publishDurable(self: *const RingBuffer) void {
+        const now = @atomicLoad(usize, &self.header.head, .acquire);
+        // Monotonic: an out-of-order call must never move it backwards.
+        var prev = @atomicLoad(usize, &self.header.durable_tail, .acquire);
+        while (now > prev) {
+            prev = @cmpxchgWeak(usize, &self.header.durable_tail, prev, now, .acq_rel, .acquire) orelse return;
+        }
+    }
+
+    /// Records that a push was refused because the ring was full, and how
+    /// long the caller waited for it to drain. Both are cumulative for the
+    /// life of the ring, which is what an operator needs: a rate, not a
+    /// snapshot that reads zero the moment the burst ends.
+    ///
+    /// Plain loads and stores, not an atomic add: the caller is the producer
+    /// and these are statistics, not coordination. A lost increment under a
+    /// race would show up as a slightly low count, which is the right kind
+    /// of wrong for a counter an operator reads.
+    pub fn recordSaturation(self: *const RingBuffer, waited_ns: u64) void {
+        const total = @atomicLoad(usize, &self.header.saturated_total, .monotonic);
+        @atomicStore(usize, &self.header.saturated_total, total + 1, .monotonic);
+        const waited = @atomicLoad(usize, &self.header.saturated_wait_ns, .monotonic);
+        @atomicStore(usize, &self.header.saturated_wait_ns, waited + waited_ns, .monotonic);
+    }
+
+    pub fn recordDrop(self: *const RingBuffer) void {
+        const dropped = @atomicLoad(usize, &self.header.dropped_total, .monotonic);
+        @atomicStore(usize, &self.header.dropped_total, dropped + 1, .monotonic);
+    }
+
+    /// Saturation and drop counters, for `METRICS`.
+    pub const Stats = struct {
+        saturated_total: usize,
+        saturated_wait_ns: usize,
+        dropped_total: usize,
+        durable_tail: usize,
+    };
+
+    pub fn stats(self: *const RingBuffer) Stats {
+        return .{
+            .saturated_total = @atomicLoad(usize, &self.header.saturated_total, .acquire),
+            .saturated_wait_ns = @atomicLoad(usize, &self.header.saturated_wait_ns, .acquire),
+            .dropped_total = @atomicLoad(usize, &self.header.dropped_total, .acquire),
+            .durable_tail = @atomicLoad(usize, &self.header.durable_tail, .acquire),
+        };
     }
 
     /// Pushes a delta to the ring buffer (Vyukov MPMC).
@@ -269,6 +369,89 @@ test "RingBuffer wrap-around" {
         try std.testing.expect(rb.pop() == null);
     }
     try std.testing.expectEqual(@as(usize, 0), rb.depth());
+}
+
+test "durability follows the consumer, never the producer" {
+    var mem: [8192]u8 align(CACHE_LINE) = undefined;
+    var rb = try RingBuffer.init(mem[0..], 8, true);
+
+    try std.testing.expectEqual(@as(usize, 0), rb.durableTail());
+
+    const d1: DeltaMessage = undefined;
+    const d2: DeltaMessage = undefined;
+    try std.testing.expect(rb.push(d1));
+    try std.testing.expect(rb.push(d2));
+    try std.testing.expectEqual(@as(usize, 2), rb.publishPos());
+
+    // Pushed but not yet drained: the flusher has written no sector, so
+    // nothing is durable. This is what makes commit() a claim rather than a
+    // sleep.
+    rb.publishDurable();
+    try std.testing.expectEqual(@as(usize, 0), rb.durableTail());
+
+    // Drained into a sector and synced. Note that a third delta is pushed
+    // before the publish: it is in no sector, so the published position must
+    // not include it. Publishing the producer position here is the bug that
+    // would let commit() return for a write a kill then loses.
+    try std.testing.expect(rb.push(d1));
+    _ = rb.pop();
+    _ = rb.pop();
+    rb.publishDurable();
+    try std.testing.expectEqual(@as(usize, 2), rb.durableTail());
+
+    // A late or duplicate publish must not move the marker backwards. If it
+    // did, a commit waiting on an older position would be satisfied by a
+    // flush that happened before its own writes.
+    rb.publishDurable();
+    try std.testing.expectEqual(@as(usize, 2), rb.durableTail());
+
+    _ = rb.pop();
+    rb.publishDurable();
+    try std.testing.expectEqual(@as(usize, 3), rb.durableTail());
+}
+
+test "saturation and drop counters accumulate for the life of the ring" {
+    var mem: [8192]u8 align(CACHE_LINE) = undefined;
+    var rb = try RingBuffer.init(mem[0..], 8, true);
+
+    var st = rb.stats();
+    try std.testing.expectEqual(@as(usize, 0), st.saturated_total);
+    try std.testing.expectEqual(@as(usize, 0), st.saturated_wait_ns);
+    try std.testing.expectEqual(@as(usize, 0), st.dropped_total);
+
+    rb.recordSaturation(1_000);
+    rb.recordSaturation(2_500);
+    rb.recordDrop();
+    rb.recordDrop();
+    rb.recordDrop();
+
+    st = rb.stats();
+    try std.testing.expectEqual(@as(usize, 2), st.saturated_total);
+    try std.testing.expectEqual(@as(usize, 3_500), st.saturated_wait_ns);
+    try std.testing.expectEqual(@as(usize, 3), st.dropped_total);
+}
+
+test "a ring reinitialized as master starts from zero, not from its last life" {
+    // The counters live in the ring because that is the region recovery
+    // zeroes. This pins the other half: an attach that *claims* the region
+    // must zero them too, or a stale durable_tail would satisfy every
+    // barrier before a single byte was written.
+    var mem: [8192]u8 align(CACHE_LINE) = undefined;
+    var rb = try RingBuffer.init(mem[0..], 8, true);
+    const d: DeltaMessage = undefined;
+    try std.testing.expect(rb.push(d));
+    _ = rb.pop();
+    rb.publishDurable();
+    rb.recordSaturation(10);
+    rb.recordDrop();
+    try std.testing.expectEqual(@as(usize, 1), rb.durableTail());
+
+    var rb2 = try RingBuffer.init(mem[0..], 8, true);
+    const st = rb2.stats();
+    try std.testing.expectEqual(@as(usize, 0), st.durable_tail);
+    try std.testing.expectEqual(@as(usize, 0), st.saturated_total);
+    try std.testing.expectEqual(@as(usize, 0), st.saturated_wait_ns);
+    try std.testing.expectEqual(@as(usize, 0), st.dropped_total);
 }
 
 test "RingBuffer rejects non-pow2 capacity" {

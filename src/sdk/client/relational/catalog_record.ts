@@ -13,7 +13,7 @@
 
 import { ColumnDef } from './column';
 import { RelationalType } from './types';
-import { TakyonBindings } from '../proxy';
+import { TakyonBindings, BackpressureError } from '../proxy';
 import { readRegions, stringDataStart } from '../layout';
 
 /** `"TACT"` little-endian, the first four bytes of a catalog record. */
@@ -293,7 +293,14 @@ export class CatalogRecordStore {
     if (this.bindings.notifyArena(at, payload.length) !== 0) {
       throw new Error('notifyArena failed for catalog record: ring full or arena not mapped');
     }
-    if (this.bindings.insert_index(catalogRecordKey(table), at) !== 0) {
+    const rc = this.bindings.insert_index(catalogRecordKey(table), at);
+    if (rc === -2) {
+      throw new BackpressureError(
+        `catalog record '${table}': the log ring stayed full, so this record is in shared ` +
+          'memory but not in the log.'
+      );
+    }
+    if (rc !== 0) {
       throw new Error(`insert_index failed for catalog record '${table}'`);
     }
     return at;

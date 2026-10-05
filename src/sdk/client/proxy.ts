@@ -14,6 +14,48 @@ import {
 } from './layout';
 
 /**
+ * Ring pressure and durability counters, read straight from the ring
+ * header. Cumulative for the life of the ring, which is what an operator
+ * needs: a rate is derivable from a cumulative count, but a snapshot that
+ * reads zero the moment the burst ends is not the same information.
+ */
+export interface RingPressureStats {
+    /** Pushes that found the ring full and had to wait. */
+    saturated_total: number;
+    /** Nanoseconds callers spent waiting for a full ring to drain. */
+    saturated_wait_ns: number;
+    /** Deltas dropped after failing validation. Always 0 in a healthy daemon. */
+    dropped_total: number;
+    /** Producer position the log is durably written through. */
+    durable_tail: number;
+}
+
+/**
+ * Thrown when a write could not be logged: the ring stayed full for the
+ * whole wait, or `commit()` gave up before the flusher caught up.
+ *
+ * A distinct type rather than a generic `Error`, because the caller's next
+ * move differs from the one for any other failure. Takyon writes in place,
+ * so the bytes this call touched are already in mapped memory and readable
+ * right now; this says the *log* does not have them. Applying back-pressure
+ * and continuing is correct. Treating it as a failed write and retrying
+ * blindly is not, and a generic error type is what invited that.
+ */
+export class BackpressureError extends Error {
+    /** False by construction: this is precisely the not-durable case. */
+    public readonly durable = false;
+
+    /**
+     * @param message - Human-readable cause.
+     * @param detail - The native return code behind the failure.
+     */
+    constructor(message: string, public readonly detail: { code: number } = { code: -2 }) {
+        super(message);
+        this.name = 'BackpressureError';
+    }
+}
+
+/**
  * The native engine surface: one method per `pub export fn` in
  * `src/core/c_abi/exports.zig`, wrapped by `src/sdk/bindings/binding.cc`.
  *
@@ -253,6 +295,27 @@ export interface TakyonBindings {
     scrub_records?(buf: Uint8Array): { ok: number; corrupt: number; bytes: number; truncated: boolean };
 
     /**
+     * Waits until everything written before the call is durably on disk.
+     *
+     * Optional so an older addon loads: without it `commit()` reports that
+     * the feature is unavailable instead of silently doing nothing.
+     *
+     * @param timeout_ms - Upper bound on the wait, 0 to poll once.
+     * @returns 0 on success, -1 on error, -2 when the wait expired, -3
+     *   when nothing is being logged and so nothing can be durable.
+     */
+    commit?(timeout_ms: number): number;
+
+    /**
+     * Ring pressure counters: how many pushes had to wait for a full ring,
+     * how long they waited, how many deltas never reached the log, and how
+     * far the log is durably written.
+     *
+     * @returns The counters as a plain object.
+     */
+    ringStats?(): RingPressureStats;
+
+    /**
      * Queues a checkpoint sentinel on the ring.
      *
      * @returns 0 when the sentinel was queued, -1 when the ring is not
@@ -431,6 +494,118 @@ export class TakyonClient {
     }
 
     /**
+     * Waits until everything written before the call is durably on disk.
+     *
+     * The guarantee is about this call's own writes. `put()` already has
+     * the value in mapped memory, visible to readers, the moment it
+     * returns: Takyon writes in place. What it could not promise was that
+     * the value would survive a crash. This is the call that adds that
+     * promise, which is why it is explicit and not a property of `put()`.
+     *
+     * @param timeoutMs - Upper bound on the wait. Defaults to 5000.
+     * @returns Nothing. The call either succeeded or threw.
+     * @throws {BackpressureError} If the wait expired (`-2`): the writes
+     *   are in mapped memory but not in the log.
+     * @throws {Error} If nothing is being logged, so nothing can become
+     *   durable (`-3`). The common case is running without a daemon.
+     * @throws {Error} If the addon predates `commit`.
+     * @example
+     * ```ts
+     * db.put('k', 1);
+     * db.commit(); // returns only after 1 reached the log and fsync returned
+     * ```
+     */
+    public commit(timeoutMs = 5000): void {
+        const fn = this.bindings.commit;
+        if (!fn) {
+            throw new Error(
+                'commit() requires a newer TakyonDB addon; this one does not export takyon_commit.'
+            );
+        }
+        const rc = fn.call(this.bindings, timeoutMs);
+        if (rc === 0) return;
+        if (rc === -2) {
+            throw new BackpressureError(
+                `commit() timed out after ${timeoutMs}ms: these writes are in mapped memory but not in the log.`
+            );
+        }
+        if (rc === -3) {
+            throw new Error(
+                'commit() cannot provide durability: no daemon is logging this data directory, ' +
+                    'so nothing exists that could make these writes durable.'
+            );
+        }
+        throw new Error(`commit() failed with native code ${rc}`);
+    }
+
+    /**
+     * Ring pressure and durability counters.
+     *
+     * @returns The counters, or zeros when the addon predates them.
+     */
+    public ringStats(): RingPressureStats {
+        const fn = this.bindings.ringStats;
+        if (!fn) return { saturated_total: 0, saturated_wait_ns: 0, dropped_total: 0, durable_tail: 0 };
+        const raw = fn.call(this.bindings) as Partial<RingPressureStats> | undefined;
+        return {
+            saturated_total: Number(raw?.saturated_total ?? 0),
+            saturated_wait_ns: Number(raw?.saturated_wait_ns ?? 0),
+            dropped_total: Number(raw?.dropped_total ?? 0),
+            durable_tail: Number(raw?.durable_tail ?? 0),
+        };
+    }
+
+    /**
+     * Queues one delta, translating a refused push into the typed error.
+     *
+     * Every write path goes through here rather than checking the return
+     * code itself, because the type the caller catches is the only way they
+     * can tell "the log ring is full, slow down" from "this value is
+     * invalid" -- and a per-call-site check is exactly how those two drift
+     * apart. `data` is at most 48 bytes and is never copied.
+     *
+     * @param offset - Absolute arena offset the delta describes.
+     * @param data - The scratch payload, already filled by the caller.
+     * @param what - Field name or operation, for the error message.
+     * @throws {BackpressureError} If the ring stayed full for the whole
+     *   wait. The bytes are already in mapped memory; the log does not have
+     *   them.
+     * @throws {Error} For any other refusal.
+     */
+    private pushDeltaOrBackpressure(offset: number, data: Uint8Array, what: string): void {
+        const rc = this.bindings.pushDelta(offset, data);
+        if (rc === 0) return;
+        if (rc === -2) {
+            throw new BackpressureError(
+                `write to '${what}': the log ring stayed full. The value is in mapped memory ` +
+                    'but not in the log, so it will not survive a crash.'
+            );
+        }
+        throw new Error(`write to '${what}' failed: pushDelta returned ${rc}`);
+    }
+
+    /**
+     * Announces arena bytes, translating a refused push into the typed error.
+     *
+     * @param offset - Absolute arena offset of the payload.
+     * @param size - Payload length in bytes.
+     * @param what - Operation name, for the error message.
+     * @throws {BackpressureError} If the ring stayed full for the whole wait.
+     * @throws {Error} For any other refusal.
+     */
+    private notifyArenaOrBackpressure(offset: number, size: number, what: string): void {
+        const rc = this.bindings.notifyArena(offset, size);
+        if (rc === 0) return;
+        if (rc === -2) {
+            throw new BackpressureError(
+                `${what}: the log ring stayed full. The bytes are in mapped memory but not ` +
+                    'in the log.'
+            );
+        }
+        throw new Error(`${what} failed: notifyArena returned ${rc}`);
+    }
+
+    /**
      * Asks a daemon to snapshot. With no daemon attached the sentinel sits
      * in a ring nobody drains, so this reports success and nothing
      * persists.
@@ -524,6 +699,10 @@ export class TakyonClient {
             );
         }
         const bindings = this.bindings;
+        // The Proxy traps below are plain methods on the handler object, so
+        // `this` inside them is the handler, not the client. Anything they
+        // call on the client has to come from here.
+        const client = this;
         const sharedView = this.view();
         const bumpView = this.stringBump();
 
@@ -597,18 +776,14 @@ export class TakyonClient {
                         // replays in ring order, so announcing the bytes
                         // first is what makes the pointer it records
                         // afterwards resolvable during recovery.
-                        if (bindings.notifyArena(allocatedOffset, strLen) !== 0) {
-                            throw new Error("notifyArena failed: ring buffer full or arena not mapped");
-                        }
+                        client.notifyArenaOrBackpressure(allocatedOffset, strLen, `string write to '${String(prop)}'`);
 
                         sharedView.setUint32(abs, allocatedOffset, true);
                         sharedView.setUint32(abs + 4, strLen, true);
 
                         scratchView.setUint32(0, allocatedOffset, true);
                         scratchView.setUint32(4, strLen, true);
-                        if (bindings.pushDelta(abs, scratchU8_8) !== 0) {
-                            throw new Error("pushDelta failed: ring buffer full");
-                        }
+                        client.pushDeltaOrBackpressure(abs, scratchU8_8, `${String(prop)}`);
 
                         return true;
                     }
@@ -620,9 +795,7 @@ export class TakyonClient {
                             }
                             sharedView.setUint8(abs, value);
                             scratchView.setUint8(0, value);
-                            if (bindings.pushDelta(abs, scratchU8_1) !== 0) {
-                                throw new Error("pushDelta failed: ring buffer full");
-                            }
+                            client.pushDeltaOrBackpressure(abs, scratchU8_1, `${String(prop)}`);
                             break;
                         case 'uint32':
                             if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
@@ -630,9 +803,7 @@ export class TakyonClient {
                             }
                             sharedView.setUint32(abs, value, true);
                             scratchView.setUint32(0, value, true);
-                            if (bindings.pushDelta(abs, scratchU8_4) !== 0) {
-                                throw new Error("pushDelta failed: ring buffer full");
-                            }
+                            client.pushDeltaOrBackpressure(abs, scratchU8_4, `${String(prop)}`);
                             break;
                         case 'float64':
                             if (typeof value !== 'number') {
@@ -640,9 +811,7 @@ export class TakyonClient {
                             }
                             sharedView.setFloat64(abs, value, true);
                             scratchView.setFloat64(0, value, true);
-                            if (bindings.pushDelta(abs, scratchU8_8) !== 0) {
-                                throw new Error("pushDelta failed: ring buffer full");
-                            }
+                            client.pushDeltaOrBackpressure(abs, scratchU8_8, `${String(prop)}`);
                             break;
                     }
 

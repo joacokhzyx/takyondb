@@ -3,7 +3,7 @@
  * `Collection`s that namespace the shared ART index.
  */
 
-import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength } from './client/proxy';
+import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength, BackpressureError } from './client/proxy';
 import { TakyonSchema, FieldType } from './client/schema';
 import { loadBindings } from './client/addon';
 import { MAX_KEY_LEN } from './client/layout';
@@ -83,8 +83,13 @@ export class Collection<T extends Record<string, FieldType>> {
      * @throws {Error} If the key is empty, over the length or byte limit, or
      *   contains a NUL.
      * @throws {Error} If the record arena is exhausted.
-     * @throws {Error} If `insert_index` returns nonzero, which covers a
-     *   full ring, an exhausted string arena, and an ART insert failure.
+     * @throws {BackpressureError} If the ring stayed full for the whole
+     *   wait, so this row's bytes are in mapped memory but not in the log.
+     *   Distinct from the other failures because it is the one that
+     *   succeeds if the caller slows down, and the one that must not be
+     *   retried blindly.
+     * @throws {Error} If `insert_index` returns nonzero for another reason:
+     *   an exhausted string arena or an ART insert failure.
      * @throws {TypeError} If a field is assigned a value of the wrong
      *   JavaScript type for its schema type.
      */
@@ -96,7 +101,17 @@ export class Collection<T extends Record<string, FieldType>> {
         const namespaced = this.namespacedKey(key);
         const offset = this.db.allocateRecordOffset(this.schema.totalSize);
 
-        if (this.db.client.getBindings().insert_index(namespaced, offset) !== 0) {
+        const rc = this.db.client.getBindings().insert_index(namespaced, offset);
+        if (rc === -2) {
+            // The index delta never reached the log. The record offset was
+            // allocated but nothing references it, so the next insert after
+            // a successful retry leaves no gap a reader can see.
+            throw new BackpressureError(
+                `insert('${key}'): the log ring stayed full. The record is allocated in ` +
+                    'mapped memory but not in the log, so it will not survive a crash.'
+            );
+        }
+        if (rc !== 0) {
             throw new Error(`insert_index failed for key '${key}'`);
         }
 

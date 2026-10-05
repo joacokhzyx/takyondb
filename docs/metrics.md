@@ -25,11 +25,11 @@ for what is and is not gated.
 
 | Area | Count |
 |---|---|
-| Zig source files | 36 (10448 lines) |
-| TypeScript source files | 45 prod (5499 lines) |
-| Zig tests | 101 in 30 files |
-| TypeScript unit tests | 134 in 28 files |
-| E2E suites | 14 scripts |
+| Zig source files | 36 (10931 lines) |
+| TypeScript source files | 45 prod (5701 lines) |
+| Zig tests | 105 in 30 files |
+| TypeScript unit tests | 141 in 28 files |
+| E2E suites | 16 scripts |
 | Documentation pages | 32 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
