@@ -111,9 +111,31 @@ pins it.
 ## Governance and support
 
 One maintainer, decisions by argument, and a repository whose credibility
-is worth more than a green board. Questions go in issues and
-discussions; security reports do not, and
-[SECURITY.md](SECURITY.md) says where they go instead.
+is worth more than a green board. `main` is protected: both workflows must
+be green before anything merges, which is the only review gate there is.
+
+Releases are cut from tags by the release job in `Takyon CI`, which
+publishes the npm package and creates the GitHub release from CI artifacts
+rather than from a local machine. The pre-tag checklist is in
+[docs/release.md](docs/release.md), and it is a list of commands rather
+than a narrative because everything in it is machine-checked.
+
+Where to ask:
+
+| You have | Go to |
+|---|---|
+| A reproducible bug | An issue, using the bug template |
+| A design argument | Discussions |
+| A feature | An issue, naming the gate it serves |
+| A vulnerability | [SECURITY.md](SECURITY.md). Not the issue tracker |
+
+## Open source
+
+MIT, DCO, a code of conduct, and a security policy. Commits are signed
+off (`git commit -s`), which is what lets the project be contributed to
+without a CLA. No binaries, caches or database files are committed;
+installers are built from CI artifacts, so a release can only contain
+something CI built.
 
 Licensed under the [MIT License](LICENSE). Contributing means agreeing
 that your contribution carries the same license.

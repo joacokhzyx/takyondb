@@ -27,35 +27,30 @@ This style guide establishes strict formatting, naming conventions, and document
 
 ---
 
-## 3. Mandatory Documentation Headers
+## 3. File headers
 
-Every source file must begin with a structured header detailing its file name, purpose, author/maintenance information, and license notices.
+A source file states what it is for in one line, at the top, and nothing
+else. The banner format this guide used to mandate — filename, author,
+license, in a box — was removed on purpose: it repeated the filename the
+reader can already see, and across the SDK it was 42% of all comments in
+`src/`. The Zig files that still carry a license line keep it; nothing
+requires it, and adding one is not a contribution.
 
-### Zig Header Template
-```zig
-// ============================================================================
-// File: [filename.zig]
-// Description: [Provide a brief, high-level overview of the module logic]
-// Author/Maintainer: TakyonDB Contributors
-// License: MIT. See LICENSE for details.
-// ============================================================================
-```
+What every file does owe the reader is a statement of purpose, in prose,
+written by whoever wrote the module.
 
-### TypeScript Header Template
-```typescript
-/**
- * ============================================================================
- * File: [filename.ts]
- * Description: [Provide a brief, high-level overview of the module/class]
- * Author/Maintainer: TakyonDB Contributors
- * License: MIT. See LICENSE for details.
- * ============================================================================
- */
-```
+## 4. Tests
 
----
+Every Zig module carries inline `test "..."` blocks, aggregated into
+`zig build test` by `src/core/test.zig`. Every TypeScript module has a
+sibling `*.test.ts`. A module without either is a gap, and it is visible
+in review rather than in a coverage report nobody reads.
 
-## 4. Docstrings & Function Documentation
+A test that cannot fail is worse than no test. If an assertion cannot
+tell success from a broken system, fix the assertion or mark the case
+`xfail` with the reason.
+
+## 5. Docstrings and function documentation
 
 Every public function, structure, or interface must have explicit comments outlining behavior, parameters, returns, and error handling states.
 
@@ -98,3 +93,22 @@ export function createMemoryProxy(buffer: ArrayBuffer, layout: LayoutDescriptor)
     // ...
 }
 ```
+
+---
+
+## 6. Rules that are not formatting
+
+* **No hidden allocation.** A Zig function that allocates takes an
+  `Allocator` and documents whether it can fail with
+  `error.OutOfMemory`. A caller that cannot see the allocation cannot see
+  the failure.
+* **No magic numbers.** Use the constants in
+  `src/core/memory/layout.zig`. They exist so that the arena map has one
+  definition instead of several that agree until they do not.
+* **No comment that restates the code.** `// Allocate offset for this
+  record` above a call to `allocateRecordOffset` is deleted. A comment
+  earns its place by saying what the code cannot: why, what breaks
+  otherwise, what the history was.
+* **US English, and check the diff before pushing.** A find-and-replace
+  has already put `alignmint` inside a live parameter name in this
+  codebase.

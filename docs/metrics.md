@@ -14,7 +14,8 @@ node scripts/project_stats.js --json   # machine readable
 What this page is for: a quick orientation (how much code, how much test, how
 much doc, how many harnesses and workflows). It is deliberately *not* a
 performance page — see [performance-truth.md](performance-truth.md) for
-measurements, and [coverage.md](coverage.md) for what is and is not covered.
+measurements, and [verify.md](verify.md#what-is-deliberately-not-gated)
+for what is and is not gated.
 
 <!-- generated:stats:start -->
 
@@ -25,7 +26,7 @@ measurements, and [coverage.md](coverage.md) for what is and is not covered.
 | Zig tests | 86 in 29 files |
 | TypeScript unit tests | 129 in 28 files |
 | E2E suites | 15 scripts |
-| Documentation pages | 63 |
+| Documentation pages | 48 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
 | CI workflows | 2 |

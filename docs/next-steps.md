@@ -87,8 +87,10 @@ adding runners to the matrix or publishing per-platform packages.
 
 ## Verification gaps
 
-* No coverage measurement is wired up. [coverage.md](coverage.md) states
-  the intent; nothing enforces or reports it.
+* No coverage measurement is wired up. The structural intent is in
+  [verify.md](verify.md#what-is-deliberately-not-gated): every Zig module
+  carries inline tests, every TypeScript module a sibling test file, and a
+  module without one is visible in review. Nothing measures or reports it.
 * Benchmarks are recorded, not gated. Shared CI runners are not a stable
   reference, so a timing gate would be flaky by construction, which also
   means a large regression is only caught by a human reading the artifact.

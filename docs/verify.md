@@ -42,6 +42,40 @@ repository that has to be kept in step by hand.
 The E2E suites need a `ReleaseSafe` build and start their own daemons;
 they clean up after themselves, including on failure.
 
+## What CI runs that this script does not
+
+Two workflows, and the matrix is not a default one:
+
+| Workflow | Platform notes |
+|---|---|
+| `Takyon CI` | `ubuntu-latest`, `windows-2022`, `macos-15`. The macOS and Windows versions are pinned rather than `-latest` because Zig 0.14.1 predates the macOS 26 SDK and its test binaries fail to link `libSystem` there, and because that Zig's standard library does not compile against the VS2026 SDK on `windows-2025`. Both revisit when the toolchain moves |
+| `Takyon Relational Suite` | The relational layer: native scan, refcount, graceful unlink, crash recovery, corruption, catalog reboot, the seeded bench, and the examples |
+
+Platform details that exist only in CI:
+
+* Line endings are enforced through `.gitattributes`, so a Windows
+  checkout cannot rewrite a Zig file.
+* `lib/node.lib` is untracked and fetched per build on Windows; it is the
+  only binary the build needs from outside.
+* Stale shared memory is removed between suites. A leftover POSIX segment
+  from a differently-sized run carries a foreign layout, and the engine
+  rightly refuses it.
+* `NPM_TOKEN` exists only in Actions and never on disk.
+* Artifacts are installers plus `zig-out/bin` and `zig-out/lib`, and the
+  release job publishes the SDK and creates the GitHub release from them.
+
+## What is deliberately not gated
+
+* **Coverage percentage.** There is none measured, so there is none to
+  enforce. The intent instead is structural: every Zig module carries
+  inline `test "..."` blocks aggregated by `src/core/test.zig`, and every
+  TypeScript module has a sibling `*.test.ts`. A new module without one
+  is the gap, and it is visible in review.
+* **Benchmark timing.** Shared runners are not a stable reference, so a
+  timing gate would be flaky by construction. The relational bench is a
+  gate on *completion*, not on a number; a regression shows up as a human
+  reading the artifact.
+
 ## Before measuring anything
 
 Build with `-Doptimize=ReleaseSafe`. A bare `zig build` is a Debug build,
