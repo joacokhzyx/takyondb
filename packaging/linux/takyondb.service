@@ -1,5 +1,6 @@
 [Unit]
-Description=TakyonDB Zero-Copy In-Memory Storage Daemon
+Description=TakyonDB data layer daemon
+Documentation=https://github.com/joacokhzyx/takyondb
 After=network.target
 Documentation=https://github.com/joacokhzyx/takyondb
 

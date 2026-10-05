@@ -1,7 +1,7 @@
 {
   "name": "takyondb",
   "version": "0.1.0",
-  "description": "TypeScript SDK wrapper for the ultra-low-latency TakyonDB storage engine",
+  "description": "TypeScript SDK for TakyonDB, the data layer for servers: storage, indexes and queries in one process over one shared-memory arena",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -47,8 +47,11 @@
   },
   "keywords": [
     "database",
-    "zero-copy",
+    "embedded",
+    "server",
     "shared-memory",
+    "key-value",
+    "relational",
     "typescript",
     "zig"
   ],

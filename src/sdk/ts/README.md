@@ -1,7 +1,11 @@
 # TakyonDB TypeScript SDK (`takyondb`)
 
-TypeScript wrapper for the TakyonDB ultra-low-latency storage engine
-(zero-copy shared-memory client + fluent collection API).
+TypeScript SDK for TakyonDB: key-value collections over a shared-memory
+arena, plus a relational layer with tables, queries, joins and a `SELECT`
+subset. See [docs/mission.md](https://github.com/joacokhzyx/takyondb/blob/main/docs/mission.md)
+for what the project is for and
+[docs/next-steps.md](https://github.com/joacokhzyx/takyondb/blob/main/docs/next-steps.md)
+for what this package cannot do yet.
 
 ## Runtime requirements
 

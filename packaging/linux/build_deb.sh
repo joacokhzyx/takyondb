@@ -25,9 +25,10 @@ Section: database
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: TakyonDB Team <maintainers@takyondb.io>
-Description: Insanely fast, zero-copy, lock-free in-memory database
- TakyonDB bridges Zig and Node.js using shared memory mappings and lock-free
- ART indexing for sub-millisecond query performance.
+Description: The data layer for servers: storage, indexes and queries in
+ one process over one shared-memory arena. TakyonDB is a Zig engine with
+ an N-API bridge and a TypeScript SDK, with a checksummed write-ahead log
+ and verified snapshots.
 EOF
 
 # Post-install script

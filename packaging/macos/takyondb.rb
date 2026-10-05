@@ -1,5 +1,5 @@
 class Takyondb < Formula
-  desc "Insanely fast, zero-copy, lock-free in-memory database"
+  desc "Data layer for servers: storage, indexes and queries in one process"
   homepage "https://github.com/joacokhzyx/takyondb"
   url "https://github.com/joacokhzyx/takyondb/archive/refs/tags/v1.0.0.tar.gz"
   license "MIT"
