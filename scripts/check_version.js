@@ -5,11 +5,11 @@
 //
 // The version used to be hardcoded in six unrelated places and they
 // disagreed: src/sdk/ts/package.json said 0.1.0 while the Debian, macOS and
-// Windows packagers and the Homebrew formula said 1.0.0, SECURITY.md
-// documented 0.1.x, and a historical v1.0.0 git tag predates the SDK by
-// hundreds of commits. docs/release.md carried the reconciliation as a
+// Windows packagers and the Homebrew formula said 1.0.0, and SECURITY.md
+// documented 0.1.x. docs/release.md carried the reconciliation as a
 // manual checklist item, which is the kind of thing that gets forgotten at
-// the moment it matters.
+// the moment it matters. (A v1.0.0 git tag also predated the SDK by
+// hundreds of commits and has since been deleted; nothing to reconcile.)
 //
 // Two languages cannot literally share one file, so there are two canonical
 // values and this check is what makes "one source of truth" true rather than

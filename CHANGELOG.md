@@ -89,6 +89,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
+- **The `v1.0.0` tag.** It pointed at commit `b10c94a`, 373 commits before
+  this entry, and it never had a release behind it: zero releases have
+  ever been published from this repository. So the tag asserted a version
+  the project does not claim, at a point where the current version is
+  still pre-alpha and the maintainer's position is that even 0.1.0 is not
+  a release yet. A visitor who found the tag before the README concluded
+  the project had shipped a stable 1.0.0. It is deleted from the remote and
+  from the local clone; the commit it pointed at is still reachable from
+  the branch history.
 - **Three documentation pages that contradicted each other.**
   `docs/roadmap-visual.md`, `docs/executive-roadmap.md` and
   `docs/final-status.md` duplicated `ROADMAP.md` and `CHANGELOG.md` while

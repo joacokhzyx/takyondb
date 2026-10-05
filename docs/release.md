@@ -59,6 +59,8 @@ Then, mechanically:
 * The daemon defaults to a 64 MiB arena and `--data-dir .`. The SDK's default
   arena size matches, so `new TakyonDB()` and a bare `takyondb` line up; a
   mismatch is refused with `SizeMismatch`.
-* A historical `v1.0.0` tag exists from before the SDK was versioned. It does
-  not correspond to any published release and is left in place rather than
-  rewritten.
+* A `v1.0.0` tag once existed from before the SDK was versioned. It never
+  had a release behind it and it claimed a version the project does not
+  hold, so it has been deleted from the remote and from local clones. The
+  commit it pointed at is still reachable in the branch history. Nothing
+  to reconcile at the next tag.
