@@ -131,7 +131,8 @@ maybe.
 The claim "a server consumes much less" is a claim about energy and
 time, so it is measured like one. The rules are already
 [performance-truth.md](performance-truth.md)'s; they extend to joules
-as follows.
+as follows, and [energy.md](energy.md) states the full contract including
+the hardware it needs.
 
 * Every comparison publishes the hardware, the kernel, the toolchain,
   the optimization mode, the workload, the client location and the
@@ -146,6 +147,13 @@ as follows.
 * Idle cost is measured with no client attached, because for a database
   that is mostly waiting, idle cost is the number that dominates.
 * The runs where the result is bad are published with the good ones.
+
+The daemon now reads the platform energy counter when one exists and
+reports what it found in `METRICS`. Without a counter it reports none and
+reports zero, because a joule figure invented from CPU time is not an
+energy measurement. That instrument is shipped; the comparison it exists
+to feed has not been run, and a host with a readable counter is a
+prerequisite rather than a detail.
 
 ## The gates
 

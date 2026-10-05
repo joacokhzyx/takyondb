@@ -12,6 +12,9 @@ zig build run -Doptimize=ReleaseSafe [-- <mem_bytes>]
 
 * Single optional positional arg: arena size in bytes, default `64 * 1024 * 1024`.
   Non-numeric input logs a warning and falls back to 64 MB.
+* `--data-dir`, `--checkpoint-sec`, `--port`, `--no-energy` and
+  `--energy-root` are the flags. `takyondb --help` lists them with their
+  defaults; see [Energy counters](#energy-counters) for the last two.
 * Recovery + WAL paths are the relative files `data.takyon` (plus
   `data.takyon.snap`) in the daemon's **working directory** — run from the
   repo root unless you intend to create them elsewhere.
@@ -31,7 +34,7 @@ Line-based ASCII: one line in, one line out, then close. Covered by
 | --- | --- |
 | `PING` | `PONG` |
 | `HEALTH` | `OK uptime_s=<n> arena=<bytes> ring=<depth>` |
-| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x>` (`fl_*` = ART freelist: quarantined orphans, opt-in reuses, dropped overflows) |
+| `METRICS` | `METRICS ring_depth=<d> wal_bytes=<b> wal_segments=<n> uptime_s=<u> fl_quarantined=<q> fl_reused=<r> fl_dropped=<x> energy_source=<s> energy_uj=<j> energy_samples=<k> energy_read_errors=<e>` (`fl_*` = ART freelist: quarantined orphans, opt-in reuses, dropped overflows. `energy_*` = the platform energy counter; see [Energy counters](#energy-counters)) |
 | `CHECKPOINT` | `QUEUED` (or `FULL` when the ring is full) |
 | `SCAN <prefix> [max]` | `OK <n> <o1>,<o2>,...` (offsets with prefix; default 64, cap 128) |
 | `RANGE <prefix> <lo> <hi> [max]` | same, suffix in [`lo`, `hi`]; `-` = unbounded |
@@ -40,6 +43,44 @@ Line-based ASCII: one line in, one line out, then close. Covered by
 `SCAN`/`RANGE` read the daemon's own lock-free ART view (best-effort
 under concurrent writers). Prefixes with spaces are not expressible
 through the space-split protocol — use the N-API `scan_prefix` then.
+
+## Energy counters
+
+The daemon samples the platform's energy counter when one is readable,
+and reports what it found in `METRICS` and in its startup line.
+
+| Field | Meaning |
+| --- | --- |
+| `energy_source` | `none`, `rapl-package` or `rapl-subunit` |
+| `energy_uj` | Microjoules accumulated since start. **Always 0 when the source is `none`** |
+| `energy_samples` | Readings folded in. The first is a baseline, not a delta |
+| `energy_read_errors` | Readings that failed; a non-zero value on a readable counter is a bug to report |
+
+Two properties matter more than the numbers:
+
+* **A joule figure is never synthesized.** With no readable counter there
+  is no sampler thread, no allocation and no syscall, and `energy_uj`
+  reads zero. CPU seconds are not converted into joules with a universal
+  factor, because processor power depends on the hardware, the frequency
+  policy and the system state. `scripts/e2e_energy_test.js` fails the
+  build if a zero-sourced reading ever reports microjoules.
+* **A package counter is the whole socket, not this process.**
+  `rapl-package` measures every process on the CPU package, so the
+  daemon reports the gross accumulation and leaves attribution to the
+  harness, which knows what else was running. A per-route or per-process
+  joule figure computed from it is an estimate and has to be labelled as
+  one.
+
+Only the Linux `powercap` tree is implemented
+(`/sys/class/powercap/intel-rapl:0`). Windows, macOS and containers
+without the counter report `none`.
+
+Flags:
+
+| Flag | Effect |
+| --- | --- |
+| `--no-energy` | Probe but do not sample. For harnesses that must isolate the sampler's own cost |
+| `--energy-root <dir>` | Read the counter from another tree. The seam `scripts/e2e_energy_test.js` uses to exercise the sensor path on a runner with no RAPL |
 
 ## Packaging (built in CI from `zig-out/`, never committed)
 

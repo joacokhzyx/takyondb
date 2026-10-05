@@ -287,16 +287,26 @@ end to end through a cursor.
 
 ### The decision
 
-A sampler in the daemon reads the platform's energy counter when one
-exists, at 1 Hz, and reports `energy_source` in `METRICS`: the sensor
-path, or `cpu-proxy` when there is none. With no sensor the joule
-fields read zero and never an estimate. No thread is created when there
-is no sensor.
+Shipped. `src/core/energy.zig` reads the platform's energy counter at
+1 Hz, folds each reading into an accumulation, handles the counter's
+wrap, and reports `energy_source`, `energy_uj`, `energy_samples` and
+`energy_read_errors` in `METRICS`. With no sensor it owns no thread, no
+allocation and no syscall, and the joule fields read zero rather than an
+estimate.
 
-The report format follows `docs/performance-truth.md` and extends it:
-hardware, kernel, toolchain, optimization mode, workload, client
-location, repetitions, spread, and the measurement device or the
-statement that there was none.
+Two seams make it testable and attributable: `--no-energy` skips sampling
+so a harness can isolate the instrument, and `--energy-root` points the
+probe at another tree so the sensor path runs on a runner that has no
+sensor. `scripts/e2e_energy_test.js` uses the second one, and fails if a
+zero-sourced reading ever reports microjoules.
+
+### What is still open
+
+The report format and the comparison. `docs/energy.md` states the full
+contract and, more usefully, what hardware it needs: a Linux host with a
+readable package counter and exclusive use during the measurement window.
+A container is not a measurement host, which is why this gate cannot be
+closed from a codespace.
 
 ### The experiment that closes it
 

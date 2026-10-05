@@ -20,12 +20,12 @@ measurements, and [coverage.md](coverage.md) for what is and is not covered.
 
 | Area | Count |
 |---|---|
-| Zig source files | 33 (9027 lines) |
+| Zig source files | 34 (9454 lines) |
 | TypeScript source files | 45 prod (5284 lines) |
-| Zig tests | 83 in 28 files |
+| Zig tests | 86 in 29 files |
 | TypeScript unit tests | 129 in 28 files |
-| E2E suites | 14 scripts |
-| Documentation pages | 62 |
+| E2E suites | 15 scripts |
+| Documentation pages | 63 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
 | CI workflows | 2 |

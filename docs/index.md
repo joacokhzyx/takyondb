@@ -66,6 +66,7 @@ runs it.
 | Page | What it answers |
 |---|---|
 | [performance-truth.md](performance-truth.md) | Every published number: how to reproduce it and what it excludes |
+| [energy.md](energy.md) | How an energy claim is measured, and what hardware that needs |
 | [bench-relational.md](bench-relational.md) | Relational benchmark harnesses |
 | [testing-relational.md](testing-relational.md) | Relational test strategy |
 | [e2e.md](e2e.md) | The E2E suites and how to run them |

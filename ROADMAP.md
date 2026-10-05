@@ -117,17 +117,23 @@ path with the native filter and aggregate kernels reached.
 explicitly labelled proxy backs it, "a server consumes much less" is an
 assertion.
 
-**Deliverable:** a sampler in the daemon that reads the platform energy
-counter when one exists and reports `energy_source` in `METRICS`, with
-no thread and no estimate when there is no sensor; and a report format
-that publishes hardware, toolchain, workload, repetitions and spread.
+**Shipped:** the sampler. `src/core/energy.zig` reads the platform
+energy counter at 1 Hz, handles the counter's wrap, reports
+`energy_source`, `energy_uj`, `energy_samples` and `energy_read_errors`
+in `METRICS`, and owns no thread at all when no counter is readable.
+Joules are never derived from CPU time.
+`scripts/e2e_energy_test.js` covers both directions on any host.
 
-**Exit criterion:** the comparison this repository has never run —
+**Still open:** the report format and the comparison itself. A published
+figure needs hardware, toolchain, workload, repetitions and spread, and
+the exit criterion is the comparison this repository has never run —
 TakyonDB, an embedded SQLite, `redis-server` and a server database — on
-one host, one workload, one durability setting, with the CPU accounting
-published whether or not a sensor exists.
+one host, one workload, one durability setting. That needs a host with a
+readable counter and exclusive use during the measurement window; see
+[docs/energy.md](docs/energy.md).
 
-**Rough size:** days for the sampler, plus whatever the comparison costs.
+**Rough size:** the sampler is done; the comparison is days of harness
+time plus the waiting for a measurement host.
 
 ## Gate 6: more than one language
 
