@@ -5,6 +5,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The daemon can measure its own energy, or say that it cannot.**
+  `src/core/energy.zig` samples the platform's energy counter at 1 Hz and
+  reports `energy_source`, `energy_uj`, `energy_samples` and
+  `energy_read_errors` in `METRICS`. With no readable counter it spawns
+  nothing and reports zero microjoules: a joule figure derived from CPU
+  time and an assumed watts-per-core is not an energy measurement, so the
+  code does not produce one. Measured on the host that has no counter,
+  idle cost is unchanged at **0.004 cores**.
+
+  Two flags make the instrument usable rather than merely present.
+  `--no-energy` skips sampling so a harness can isolate the sampler's own
+  cost, and `--energy-root` points the probe at another tree, which is how
+  `scripts/e2e_energy_test.js` exercises the sensor path on a CI runner
+  that has no RAPL. The suite checks all three directions — zero without a
+  counter, a named source and a non-zero accumulation with one, and no
+  sampler under `--no-energy` — and each direction can fail.
+
+  A package counter is the whole CPU socket rather than this process, so
+  the figures are gross and attribution belongs to the harness, which
+  knows what else was running. What is **not** done is the comparison:
+  Gate 5 stays open until the four-way run against an embedded SQLite,
+  `redis-server` and a server database happens at one durability setting,
+  which needs a host with a readable counter and exclusive use during the
+  measurement window. `docs/energy.md` states the contract and the
+  hardware.
+- **The public TypeScript surface is documented.** Every exported symbol and
+  public class member in `src/sdk/` now carries JSDoc with `@param`,
+  `@returns` and `@throws` where they apply, so the contracts appear in editor
+  hovers and generated declarations rather than only in `docs/sdk.md`. The SDK
+  previously had exactly one `@param` and no `@returns` or `@throws` across
+  4,956 lines, and 49% of exports had no doc comment at all. The 26
+  boilerplate file banners are gone: 871 lines repo-wide that were 42% of all
+  comments in `src/` and repeated the filename the reader can already see,
+  replaced by a one-line statement of what each module is for.
+
+  Documenting the surface against the C-ABI rather than from memory turned up
+  ten places where `docs/sdk.md` and the code disagree, including two methods
+  whose return values the doc described backwards. Those are fixed in the
+  JSDoc now and queued for the `docs/` pass.
+
 ### Changed
 
 - **The project has a mission, and the docs now measure it against the
@@ -70,23 +112,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   were stale.
 
 The work below shipped under [0.1.0](#010---2026-09-25).
-
-### Added
-
-- **The public TypeScript surface is documented.** Every exported symbol and
-  public class member in `src/sdk/` now carries JSDoc with `@param`,
-  `@returns` and `@throws` where they apply, so the contracts appear in editor
-  hovers and generated declarations rather than only in `docs/sdk.md`. The SDK
-  previously had exactly one `@param` and no `@returns` or `@throws` across
-  4,956 lines, and 49% of exports had no doc comment at all. The 26
-  boilerplate file banners are gone: 871 lines repo-wide that were 42% of all
-  comments in `src/` and repeated the filename the reader can already see,
-  replaced by a one-line statement of what each module is for.
-
-  Documenting the surface against the C-ABI rather than from memory turned up
-  ten places where `docs/sdk.md` and the code disagree, including two methods
-  whose return values the doc described backwards. Those are fixed in the
-  JSDoc now and queued for the `docs/` pass.
 
 ### Changed
 
