@@ -1,98 +1,178 @@
-# TakyonDB Roadmap
+# TakyonDB roadmap
 
-Where the project stands and what comes next. Checked items are done and
-covered by tests/CI; unchecked items are the "something very big" pipeline.
+Seven gates between where the project is and the mission in
+[docs/mission.md](docs/mission.md). Each one has an exit criterion that
+can be run rather than argued about, and a design behind it in
+[docs/infrastructure.md](docs/infrastructure.md).
 
-## Done (shipped)
+Two other pages carry the load this one used to: open limits are in
+[docs/next-steps.md](docs/next-steps.md), and what shipped is in
+[CHANGELOG.md](CHANGELOG.md). A roadmap is a list of things that are not
+true yet, so this page deliberately holds no counts and no dates that
+nobody regenerates.
 
-- [x] MIT license, lean repo (no binaries/caches in git), contribution docs
-- [x] Reproducible CI on `main`: Zig `0.14.1`, `zig fmt --check`,
-      `zig build test`, `tsc --noEmit`, `vitest run`
-- [x] Canonical memory map (`layout.zig` ↔ `layout.ts`), no magic numbers
-- [x] Full ART: `Node4 → 16 → 48 → 256` growth, overwrite, delete,
-      prefix keys via terminator byte, OOM handling, unit tests
-- [x] ART shrink on delete (`256 → 48 → 16 → 4`) with type cascade
-- [x] MPMC ring with per-slot sequence numbers (Vyukov)
-- [x] Durable WAL: `fsync` per sector, Direct I/O with buffered fallback,
-      corrupt-delta filtering, drain-before-checkpoint, segmented rotation
-- [x] Verified snapshots: full-arena coverage (records + ART + strings),
-      CRC check on load, `fsync` + directory sync before WAL rotation
-- [x] Recovery round-trip test (snapshot → reboot → records + index intact)
-- [x] Stoppable vacuum with full ART traversal and double-buffer compaction,
-      multi-column compaction
-- [x] SHM lifecycle: `takyon_disconnect_shm`, N-API finalizer, no fd leaks
-- [x] Hardened N-API bridge (every status checked, no key truncation)
-- [x] SDK unit tests (schema, layout, proxy with mocked bridge)
-- [x] Daemon TCP/admin protocol (`PING/HEALTH/METRICS/CHECKPOINT`), `--data-dir`,
-      `--checkpoint-sec`, `--port`, periodic checkpoints
-- [x] Modern toolchain: ESLint 9, typescript-eslint 8, `@types/node` 22
-- [x] Relational phase 1 (TS): tables, schemas, queries, joins, aggs, tx,
-      SQL subset, 20+ unit tests green
-- [x] Relational phase 1 (Zig): types, catalog, row, filter, agg, scan,
-      query, join, tx with unit tests wired into `zig build test`
+## Where the project stands
 
-## Next: correctness hardening
+A Zig storage daemon, a C++ N-API bridge and a TypeScript SDK over one
+shared arena. Key-value collections, a relational layer that currently
+keeps its rows in a JavaScript `Map`, a checksummed write-ahead log,
+verified snapshots, and an idle daemon that sleeps.
 
-- [x] Node freelist (shipped: size-segregated quarantine `freelist.zig` +
-      10 orphan points in `art.zig` + opt-in reuse with quiescence contract;
-      epoch-based default-on reuse future)
-- [x] Fuzz the C-ABI surface (arbitrary offsets/sizes/keys) in CI
-      (shipped: deterministic 3000-case xorshift sweep in `fuzz_surface.zig`
-      over gated entrypoints + pure kernels; strict op validation fix)
-- [x] `shm_unlink` ownership + multi-tenant segments (named arenas)
-      (shipped: `resolveShmName` validation + OS namespacing + share-match
-      reject + daemon unlinks the name on graceful shutdown with unlink
-      idempotency tests + graceful-unlink E2E in CI; name-keyed
-      multi-mapping stays future)
-- [x] `munmap`/`CloseHandle` failure injection tests (shipped: teardown
-      injection seam `unmapSegment`/`closeHandle` + counters + failure tests)
+The mission is larger than the engine. Three of the seven gates below
+exist because region sizes are compile-time constants, there is no
+durability call, and there is no cache tier. Estimates are engineering
+judgments, not commitments, and they exclude review time.
 
-## Next: relational hardening (zero-copy, no copy-paste SQL engines)
+## Gate 0: truth
 
-- [x] Native prefix scan (`ArtIndex.scanPrefix` + `takyon_scan_prefix` +
-      N-API `scan_prefix` + `ArtMirror.scanTable`, E2E vs daemon vivo)
-- [x] Bounded range scan (`ArtIndex.scanRange` with hi pruning +
-      `takyon_scan_range` + N-API `scan_range` + `ArtMirror.scanRange`)
-- [x] Pushdown kernels (`column.zig`: SIMD `filterU32`, Kahan `kahanSum`;
-      arena wiring future)
-- [x] Multi-root ART for secondary indexes (logical roots: disjoint
-      `idx:<table>:<col>:` namespaces + `multiroot.zig` registry with UNIQUE
-      flags + cardinality + order-preserving hex pads; padded numeric range
-      + cardinality in `NativeSecondaryIndex`; physical per-root arenas future)
-- [x] Predicate pushdown (SIMD filter) + vectorized aggregation in Zig
-      (`column.zig` filterU32/filterF64 + selected aggs via C-ABI/N-API
-      `pushdown.ts` with TS fallback; zero-copy arena wiring future)
-- [x] Persistent catalog records (`__catalog__:<table>`) with snapshot cover
-      (fixed codec Zig + TS + `CatalogRecordStore` save/load + reboot E2E
-      across SIGKILL in CI; JSON sidecar remains as ops bridge)
-- [x] Row checksums for relational rows (`row.zig` sealed 12B header
-      with CRC32 + tamper tests; background scrubber future)
-- [x] `npm run bench:relational` reproducible (insert/scan/filter/join/agg)
-      (seeded 20k LCG42 + hardware report + CI gate after dist build)
+Not a phase. A standing gate: every published number has a harness, a
+workload and a hardware record, and every claim in `README.md` either
+names a mechanism in the code or a measurement.
 
-## Next: performance truth
+Closed today by `docs/performance-truth.md`, `scripts/docs_check.js`,
+the generated `docs/metrics.md` and the CI gates that keep them honest.
 
-- [x] Reproducible `npm run bench` (pinned workload + hardware report;
-      `scripts/bench_proxy.js` pooled vs per-op + `bench_scan.js` vs daemon vivo)
-- [ ] `SharedArrayBuffer` real + `Atomics.wait/notify` instead of
-      external `ArrayBuffer` re-mapping per worker
-- [x] Zero-alloc hot paths in the SDK (pooled `DataView`/`TextEncoder`/codecs/scratch;
-      measured insert -32%, find+update p50/p99 -54%/-55%)
-- [x] Published p50/p95/p99 with methodology, not marketing numbers
-      (`docs/performance-truth.md`: KV chaos + pooled proxy + seeded relational)
+## Gate 1: a substrate that is configured, not compiled
 
-## Next: operability
+**In the way:** every other gate. The record region ends where the index
+root begins no matter how large the arena is, the index is a fixed
+region, and the error a caller sees on exhaustion names a constant they
+cannot change.
 
-- [x] Daemon TCP/admin protocol (PING/HEALTH/METRICS/CHECKPOINT plus
-      SCAN/RANGE over the native index; graceful drain on SIGINT)
-- [x] Checksums on record headers, background scrubber (shipped: sealed
-      TREC envelope `record_crc.zig` + allocation-free `scrub.zig` walker +
-      C-ABI/N-API `verify_record`/`scrub_records` + TS mirror `scrub.ts`;
-      daemon write-path migration + periodic scrub wiring future)
-- [x] Packaging from CI artifacts only (no committed binaries;
-      `packaging/{linux,macos,windows}` + `ci.yml` artifacts + release job)
+**Deliverable:** region boundaries and capacities as header values read
+and validated at attach; a configuration file whose absence changes
+nothing; the snapshot footer carrying the region table; startup refusing
+an impossible configuration with a message that names the field.
 
-## Non-goals (for now)
+**Exit criterion:** a 2 GiB arena holding 500,000 records through the
+shipped SDK, with a checkpoint and a crash-recovery round trip.
 
-- SQL / query language (stays a KV + index engine)
-- Clustering / replication (single-node durability first)
+**Rough size:** the header table and its version bump are days; making
+the snapshot and recovery carry relocated regions is one to two weeks.
+
+## Gate 2: an explicit durability contract
+
+**In the way:** every claim about being a database, and the cache tier,
+because a cache that cannot be told what to keep is a cache that writes
+everything to disk.
+
+**Deliverable:** a `commit()` an application can call; a push that waits
+when the ring is full and raises a typed back-pressure error instead of
+throwing from a proxy trap; saturation counters in `METRICS`; and the
+invariant that a mutation is never reported as failed after its bytes
+are in the arena.
+
+**Exit criterion:** a randomized crash-consistency property test. A
+deterministic generator, a mutation log kept outside the process,
+`kill -9` at uniformly random points, and an assertion after restart
+that the recovered arena matches the log, over payload sizes chosen so
+sector boundaries land in every position, a hundred trials minimum.
+
+**Rough size:** three days, and the test is most of it.
+
+## Gate 3: the cache tier
+
+**In the way:** the mission. A server that still needs a second process
+for hot values has not been unburdened.
+
+**Deliverable:** an embedded tier over the same arena and the same index
+— TTL, per-namespace eviction policy, a volatile write policy that keeps
+cache mutations out of the log, an amortized sweeper on the flusher's
+existing backoff, and hit, miss, eviction and byte counters in
+`METRICS`. It depends on reclaim that does not exist yet: a record free
+list, index-node reuse turned on, and the quiescence contract the index
+comments already require.
+
+**Exit criterion:** the same workload against `redis-server` and against
+this tier, on one host, at the same durability setting, publishing hit
+rate, CPU-seconds per operation, resident memory and bytes written per
+operation. The gate closes when the tier holds the same hit rate at a
+lower total cost, and the comparison is published either way.
+
+**Rough size:** three to five weeks, most of it in reclaim.
+
+**Not in this gate:** a wire protocol, sets, lists, sorted sets,
+scripting, pub/sub, streams, replication.
+
+## Gate 4: the relational engine in the arena
+
+**In the way:** the word "relational" in the project's own description.
+Tables, joins and aggregations work, but their rows are JavaScript
+objects that do not survive the process, and the native kernels are not
+reached from the query path.
+
+**Deliverable:** rows as sealed records in the mapped arena using the
+format the Zig side already specifies and tests; an executor that walks
+arena rows into a selection vector; a scan cursor so a table larger than
+the current per-call cap can be read end to end.
+
+**Exit criterion:** a one-million-row scan through the shipped query
+path with the native filter and aggregate kernels reached.
+
+**Rough size:** three to six weeks.
+
+## Gate 5: measuring energy instead of inferring it
+
+**In the way:** the mission's central claim. Until a power sensor or an
+explicitly labelled proxy backs it, "a server consumes much less" is an
+assertion.
+
+**Deliverable:** a sampler in the daemon that reads the platform energy
+counter when one exists and reports `energy_source` in `METRICS`, with
+no thread and no estimate when there is no sensor; and a report format
+that publishes hardware, toolchain, workload, repetitions and spread.
+
+**Exit criterion:** the comparison this repository has never run —
+TakyonDB, an embedded SQLite, `redis-server` and a server database — on
+one host, one workload, one durability setting, with the CPU accounting
+published whether or not a sensor exists.
+
+**Rough size:** days for the sampler, plus whatever the comparison costs.
+
+## Gate 6: more than one language
+
+**In the way:** "any technology" is a claim about languages as much as
+about data models, and today there is one SDK.
+
+**Deliverable:** a Zig client library, then a versioned C header over the
+existing C ABI, then bindings on top of that header. Publishing the ABI
+means publishing the trust-boundary contract: which exports validate
+their arguments, which return a failure rather than trusting the caller,
+and which are safe to call with no daemon running.
+
+**Exit criterion:** a Zig program opens a mapped segment, performs a
+write and a read against a running daemon, and recovers after a restart.
+
+## Not on any gate
+
+| Excluded | Until |
+|---|---|
+| A wire protocol, including RESP compatibility | The mission needs a cache tier, not a Redis clone. Deciding otherwise is a different product. |
+| Multi-tenancy and named segments per tenant | One segment is one database for one operator. |
+| Replication, clustering, failover | The single-node engine does not yet state its own durability contract honestly. |
+| Full SQL or PostgreSQL compatibility | Gate 4 decides how far the query surface goes, and that argument has not happened yet. |
+| An ORM | The SDK is the interface. |
+| Sets, lists, sorted sets, scripting, pub/sub, streams | Each needs its own reclaim story. |
+
+## Shipped foundations
+
+Summarized here so the shape of the engine is legible; the entries with
+their measurements are in [CHANGELOG.md](CHANGELOG.md).
+
+* Arena with a single canonical map, mirrored between Zig and TypeScript.
+* Adaptive radix tree with growth, shrink, prefix keys and bounded
+  allocation.
+* Lock-free MPMC ring with per-slot sequence numbers.
+* Write-ahead log with per-sector checksums, `fsync` discipline, direct
+  I/O with a buffered fallback, and a logical record for index writes.
+* Verified snapshots carrying only the extents in use, with a versioned
+  footer that refuses what it cannot read.
+* Recovery from snapshot plus log, including a malformed-log path that
+  cannot abort the daemon.
+* Daemon lifecycle: shared-memory ownership, graceful unlink, an admin
+  endpoint, and idle loops that sleep instead of spinning.
+* Relational layer in TypeScript and a Zig core, with tests on both
+  sides, an SQL subset, hash joins, aggregations and a durable catalog.
+* Test and measurement infrastructure: unit suites on both languages,
+  E2E suites against a live daemon, and benchmark harnesses that report
+  their own hardware.
