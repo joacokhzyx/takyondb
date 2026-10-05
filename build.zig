@@ -79,6 +79,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_core_tests = b.addRunArtifact(core_tests);
+
+    // The server module gets its own test root. Zig cannot reach outside a
+    // module's directory, so the daemon's inline tests cannot live in the
+    // engine's aggregator, and hiding them in an E2E suite would be the one
+    // thing this repository tells people not to do.
+    const server_tests_mod = b.createModule(.{
+        .root_source_file = b.path("src/server/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    server_tests_mod.addImport("core", core_mod);
+    const server_tests = b.addTest(.{ .root_module = server_tests_mod });
+    const run_server_tests = b.addRunArtifact(server_tests);
+
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_server_tests.step);
 }

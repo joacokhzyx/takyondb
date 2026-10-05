@@ -97,24 +97,35 @@ pub const EXTENT_COUNT: usize = 4;
 /// a megabyte of padding and seq counters, and recovery's finalize()
 /// already zeroes all of it. Writing it out and then zeroing it on the
 /// way back in would be pure waste.
-pub const EXTENT_STARTS: [EXTENT_COUNT]usize = .{
-    0, // global header: [0, RING_OFFSET)
-    layout.RECORD_BUMP_OFFSET, // record bump word + records
-    layout.ART_ROOT_OFFSET, // ART root + ART bump word + ART nodes
-    layout.STRING_ARENA_START, // string bump word + string bytes
-};
+/// First byte of each extent, for a given region table. Layout version 3
+/// made these runtime values: the extent boundaries are the same numbers
+/// the header carries, so a snapshot and the arena it came from cannot
+/// disagree about where a region begins.
+pub fn extentStarts(regions: layout.Regions) [EXTENT_COUNT]usize {
+    return .{
+        0, // global header: [0, RING_OFFSET)
+        regions.recordBumpOffset(), // record bump word + records
+        regions.art_root, // ART root + ART bump word + ART nodes
+        regions.string_start, // string bump word + string bytes
+    };
+}
 
 /// Smallest non-zero length each extent can have: the bytes between a
 /// region's bookkeeping word and its first allocation (the header is a
 /// fixed GLOBAL_RESERVED bytes and is always all of it or nothing). The
 /// writer cannot produce anything shorter, so a footer claiming one is
 /// corrupt and is refused rather than half-restored.
-pub const EXTENT_MIN_LENS: [EXTENT_COUNT]u32 = .{
-    @intCast(layout.RING_OFFSET),
-    8, // record bump word, up to RECORD_START
-    8, // ART root + ART bump word, up to ART_START
-    4, // string bump word, up to STRING_DATA_START
-};
+pub fn extentMinLens(regions: layout.Regions) [EXTENT_COUNT]u32 {
+    return .{
+        @intCast(layout.RING_OFFSET),
+        // The record bump word up to the first record byte. Derived rather
+        // than fixed at 8: `record_start` is a configured value, and a
+        // constant here would refuse a legitimate table.
+        @intCast(regions.record_start - regions.recordBumpOffset()),
+        8, // ART root + ART bump word, up to the first node
+        4, // string bump word, up to the first payload byte
+    };
+}
 
 // Footer word offsets. MAGIC_OFFSET/VERSION_OFFSET (layout-v2) coincide
 // with the first two, which is why they are used for those words.
@@ -126,9 +137,22 @@ const FOOTER_FLAGS_OFF: usize = 16;
 /// First footer word holding an extent length; extent `i` is at
 /// `FOOTER_FIRST_LEN_OFF + 4*i`.
 pub const FOOTER_FIRST_LEN_OFF: usize = 20;
+/// First footer word holding the region table, in the same order as
+/// `layout.Regions`: arena_bytes, ring_capacity, record_start,
+/// record_bytes, art_root, art_bytes, string_start, string_bytes.
+///
+/// This is the reason a snapshot has to carry the table and not just the
+/// lengths. The lengths say how much of each region is in use; without the
+/// boundaries there is no way to know where to put those bytes back, and
+/// guessing from this build's constants would restore a snapshot taken on a
+/// differently-configured arena into the wrong offsets. Recovery refuses a
+/// snapshot whose table is not the one it is restoring into.
+pub const FOOTER_REGIONS_OFF: usize = FOOTER_FIRST_LEN_OFF + 4 * EXTENT_COUNT;
+/// Words of region table in the footer.
+pub const FOOTER_REGION_WORDS: usize = 8;
 /// First byte of a v3 footer that must be zero. v2's zero tail starts at
 /// 24, v1's at 8, so the tail length alone tells the shapes apart.
-pub const FOOTER_V3_TAIL_OFF: usize = FOOTER_FIRST_LEN_OFF + 4 * EXTENT_COUNT;
+pub const FOOTER_V3_TAIL_OFF: usize = FOOTER_REGIONS_OFF + 4 * FOOTER_REGION_WORDS;
 /// Zero tail of a v2 (contiguous prefix) footer.
 pub const FOOTER_V2_TAIL_OFF: usize = 24;
 /// Zero tail of a v1 footer: it had no magic, no version and no flags.
@@ -154,8 +178,37 @@ fn readBump(arena_mem: []const u8, offset: usize, fallback: u32) u32 {
 /// the region's first byte. The second case is what a still-zeroed bump
 /// word looks like before the allocator has ever run, and it must not
 /// underflow the length.
-fn bumpExtent(arena_mem: []const u8, region: usize, word_offset: usize, init: u32) Extent {
-    const start: u32 = @intCast(EXTENT_STARTS[region]);
+/// Writes the region table into a footer block, in `layout.Regions` field
+/// order. The order is a contract with `readFooterRegions` and with the
+/// reader in recovery.zig; both sides name the fields, never the numbers.
+fn writeFooterRegions(buf: []u8, regions: layout.Regions) void {
+    const words = [_]u32{
+        regions.arena_bytes,  regions.ring_capacity, regions.record_start,
+        regions.record_bytes, regions.art_root,      regions.art_bytes,
+        regions.string_start, regions.string_bytes,
+    };
+    for (words, 0..) |w, i| {
+        std.mem.writeInt(u32, buf[FOOTER_REGIONS_OFF + 4 * i ..][0..4], w, .little);
+    }
+}
+
+/// Reads the region table out of a footer block.
+pub fn readFooterRegions(footer: []const u8) ?layout.Regions {
+    if (footer.len < FOOTER_V3_TAIL_OFF) return null;
+    return .{
+        .arena_bytes = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 0 ..][0..4], .little),
+        .ring_capacity = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 4 ..][0..4], .little),
+        .record_start = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 8 ..][0..4], .little),
+        .record_bytes = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 12 ..][0..4], .little),
+        .art_root = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 16 ..][0..4], .little),
+        .art_bytes = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 20 ..][0..4], .little),
+        .string_start = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 24 ..][0..4], .little),
+        .string_bytes = std.mem.readInt(u32, footer[FOOTER_REGIONS_OFF + 28 ..][0..4], .little),
+    };
+}
+
+fn bumpExtent(arena_mem: []const u8, starts: [EXTENT_COUNT]usize, region: usize, word_offset: usize, init: u32) Extent {
+    const start: u32 = @intCast(starts[region]);
     if (word_offset + 4 > arena_mem.len) return .{ .start = start, .len = 0 };
     const bump = readBump(arena_mem, word_offset, init);
     if (bump <= start or bump > arena_mem.len) return .{ .start = start, .len = 0 };
@@ -170,15 +223,16 @@ fn bumpExtent(arena_mem: []const u8, region: usize, word_offset: usize, init: u3
 /// of writes for a database holding nothing. The three bumps are
 /// independent, so the extents are computed per region and an empty
 /// database costs 1 KiB (the header) + 20 bytes of bump words.
-pub fn snapshotExtents(arena_mem: []const u8) [EXTENT_COUNT]Extent {
+pub fn snapshotExtents(arena_mem: []const u8, regions: layout.Regions) [EXTENT_COUNT]Extent {
+    const starts = extentStarts(regions);
     var ext: [EXTENT_COUNT]Extent = undefined;
     ext[EXT_HDR] = if (arena_mem.len >= layout.RING_OFFSET)
         .{ .start = 0, .len = @intCast(layout.RING_OFFSET) }
     else
         .{ .start = 0, .len = 0 };
-    ext[EXT_REC] = bumpExtent(arena_mem, EXT_REC, layout.RECORD_BUMP_OFFSET, layout.RECORD_BUMP_INIT);
-    ext[EXT_ART] = bumpExtent(arena_mem, EXT_ART, layout.ART_BUMP_OFFSET, layout.ART_START);
-    ext[EXT_STR] = bumpExtent(arena_mem, EXT_STR, layout.STRING_BUMP_OFFSET, layout.STRING_DATA_START);
+    ext[EXT_REC] = bumpExtent(arena_mem, starts, EXT_REC, regions.recordBumpOffset(), regions.record_start);
+    ext[EXT_ART] = bumpExtent(arena_mem, starts, EXT_ART, regions.artBumpOffset(), @intCast(regions.artStart()));
+    ext[EXT_STR] = bumpExtent(arena_mem, starts, EXT_STR, regions.string_start, @intCast(regions.stringDataStart()));
     return ext;
 }
 
@@ -253,7 +307,7 @@ fn syncPosix(fd: std.posix.fd_t) void {
     }
 }
 
-pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *RingBuffer) !void {
+pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *RingBuffer, regions: layout.Regions) !void {
     // Throttle: return early (log + return, NOT an error) when called
     // sooner than minIntervalMs after the last success.
     {
@@ -276,7 +330,7 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     }
     try wal.flushBuffer();
 
-    const extents = snapshotExtents(arena_mem);
+    const extents = snapshotExtents(arena_mem, regions);
     const payload = payloadBytes(extents);
     const blocks = payloadBlocks(payload);
     std.debug.print(
@@ -400,6 +454,7 @@ pub fn createSnapshot(arena_mem: []const u8, wal: *WalManager, ring_buffer: *Rin
     for (extents, 0..) |e, i| {
         std.mem.writeInt(u32, buf[FOOTER_FIRST_LEN_OFF + 4 * i ..][0..4], e.len, .little);
     }
+    writeFooterRegions(buf, regions);
 
     if (builtin.os.tag == .windows) {
         var written: std.os.windows.DWORD = 0;
@@ -609,7 +664,7 @@ test "empty 64 MiB arena snapshots to kilobytes, not megabytes" {
 
     var wal = try WalManager.init(allocator, paths[0]);
     defer wal.shutdown();
-    try createSnapshot(mem, &wal, &ring);
+    try createSnapshot(mem, &wal, &ring, layout.defaultRegions(mem.len));
 
     const snap = try std.fs.cwd().openFile(paths[1], .{});
     defer snap.close();
@@ -683,7 +738,7 @@ test "snapshot + recovery round-trip preserves records and index" {
 
     var wal = try WalManager.init(allocator, wal_path);
     defer wal.shutdown();
-    try createSnapshot(mem, &wal, &ring);
+    try createSnapshot(mem, &wal, &ring, layout.defaultRegions(mem.len));
 
     // Footer v3 sanity: magic/format/crc/layout/flags, one length per
     // extent, and a zero tail whose length is what distinguishes v3 from
@@ -700,7 +755,7 @@ test "snapshot + recovery round-trip preserves records and index" {
         try std.testing.expectEqual(SNAPSHOT_VERSION, std.mem.readInt(u32, footer[4..8], .little));
         try std.testing.expectEqual(LAYOUT_VERSION, std.mem.readInt(u32, footer[12..16], .little));
         try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, footer[16..20], .little));
-        const ext = snapshotExtents(mem);
+        const ext = snapshotExtents(mem, layout.defaultRegions(mem.len));
         for (ext, 0..) |e, i| {
             try std.testing.expectEqual(e.len, std.mem.readInt(u32, footer[20 + 4 * i ..][0..4], .little));
         }
@@ -715,8 +770,9 @@ test "snapshot + recovery round-trip preserves records and index" {
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     @memset(mem2, 0);
-    var art_index = art.ArtIndex.init(mem2, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
-    try recovery.recoverWal(allocator, wal_path, mem2, &art_index);
+    const regions = layout.defaultRegions(mem2.len);
+    var art_index = art.ArtIndex.init(mem2, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recovery.recoverWal(allocator, wal_path, mem2, &art_index, regions);
 
     // Record bytes survived verbatim.
     try std.testing.expectEqualSlices(u8, mem[layout.RECORD_START..exp_rec], mem2[layout.RECORD_START..exp_rec]);
@@ -828,16 +884,17 @@ test "sparse snapshot restores every byte and index key into a dirty arena" {
 
     var wal = try WalManager.init(allocator, paths[0]);
     defer wal.shutdown();
-    try createSnapshot(mem, &wal, &ring);
+    try createSnapshot(mem, &wal, &ring, layout.defaultRegions(mem.len));
 
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     // Poison: nothing here may survive unless the snapshot put it back.
     @memset(mem2, 0xCD);
-    var art_index = art.ArtIndex.init(mem2, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
-    try recovery.recoverWal(allocator, paths[0], mem2, &art_index);
+    const regions = layout.defaultRegions(mem2.len);
+    var art_index = art.ArtIndex.init(mem2, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recovery.recoverWal(allocator, paths[0], mem2, &art_index, regions);
 
-    const ext = snapshotExtents(mem);
+    const ext = snapshotExtents(mem, layout.defaultRegions(mem.len));
     try std.testing.expect(ext[EXT_REC].len > BLOCK);
     try std.testing.expect(ext[EXT_STR].len > BLOCK);
 
@@ -993,7 +1050,7 @@ test "a v2 contiguous-prefix snapshot is rejected, not reinterpreted" {
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     @memset(mem2, 0xCD);
-    try recovery.recoverWal(allocator, paths[0], mem2, null);
+    try recovery.recoverWal(allocator, paths[0], mem2, null, layout.defaultRegions(mem2.len));
 
     // Not one byte of the rejected payload exists in the arena, and not
     // one byte of the poison is left either: recovery returned before
@@ -1053,7 +1110,7 @@ test "a torn snapshot is detected by the two-pass CRC and applied to nothing" {
 
     var wal = try WalManager.init(allocator, paths[0]);
     defer wal.shutdown();
-    try createSnapshot(mem, &wal, &ring);
+    try createSnapshot(mem, &wal, &ring, layout.defaultRegions(mem.len));
 
     // Flip one byte in the middle of the record extent's first data block.
     // The footer is untouched, so the only thing that can catch this is the
@@ -1073,7 +1130,7 @@ test "a torn snapshot is detected by the two-pass CRC and applied to nothing" {
     const mem2 = try allocator.alloc(u8, arena_size);
     defer allocator.free(mem2);
     @memset(mem2, 0xCD);
-    try recovery.recoverWal(allocator, paths[0], mem2, null);
+    try recovery.recoverWal(allocator, paths[0], mem2, null, layout.defaultRegions(mem2.len));
 
     // Rejected, and because the extents had already been scattered, they
     // are blanked rather than left holding half a payload. What is left is

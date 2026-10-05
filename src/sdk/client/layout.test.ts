@@ -48,7 +48,72 @@ describe('shared layout', () => {
     it('exposes header magic/version constants and 16MB minimum arena', () => {
         expect(layout.MAGIC_OFFSET).toBe(0);
         expect(layout.VERSION_OFFSET).toBe(4);
-        expect(layout.LAYOUT_VERSION).toBe(2);
+        expect(layout.LAYOUT_VERSION).toBe(layout.LAYOUT_VERSION_WITH_TABLE);
         expect(layout.MIN_ARENA_SIZE).toBe(16 * 1024 * 1024);
+    });
+});
+
+describe('region table', () => {
+    function arenaOf(bytes: number): ArrayBuffer {
+        const buffer = new ArrayBuffer(bytes);
+        layout.writeRegions(buffer, layout.defaultRegions(bytes));
+        return buffer;
+    }
+
+    it('round-trips through a buffer', () => {
+        const bytes = 16 * 1024 * 1024;
+        const buffer = arenaOf(bytes);
+        const r = layout.readRegions(buffer);
+        expect(r.arenaBytes).toBe(bytes);
+        expect(r.ringCapacity).toBe(layout.RING_DEFAULT_CAPACITY);
+        expect(r.recordStart).toBe(layout.RECORD_START);
+        expect(r.artRoot).toBe(layout.ART_ROOT_OFFSET);
+        expect(r.stringStart).toBe(layout.STRING_ARENA_START);
+        expect(layout.recordBumpOffset(r)).toBe(layout.RECORD_BUMP_OFFSET);
+        expect(layout.stringDataStart(r)).toBe(layout.STRING_DATA_START);
+    });
+
+    it('carries regions the constants cannot express', () => {
+        // The point of the gate: a 64 MiB record region on a 256 MiB arena,
+        // which the default layout has no way to describe.
+        const bytes = 256 * 1024 * 1024;
+        const r: layout.Regions = {
+            arenaBytes: bytes,
+            ringCapacity: 4096,
+            recordStart: 296136,
+            recordBytes: 64 * 1024 * 1024,
+            artRoot: 296136 + 64 * 1024 * 1024,
+            artBytes: 8 * 1024 * 1024,
+            stringStart: 296136 + 72 * 1024 * 1024,
+            stringBytes: bytes - (296136 + 72 * 1024 * 1024),
+        };
+        const buffer = new ArrayBuffer(bytes);
+        layout.writeRegions(buffer, r);
+        expect(layout.readRegions(buffer)).toEqual(r);
+        expect(() => layout.validateRegions(layout.readRegions(buffer), bytes)).not.toThrow();
+    });
+
+    it('refuses a segment with no table rather than guessing', () => {
+        const bare = new ArrayBuffer(4096);
+        expect(() => layout.readRegions(bare)).toThrow(/not a Takyon arena/);
+
+        // Right magic, layout version 2: no table behind it.
+        const old = new ArrayBuffer(4096);
+        const view = new DataView(old);
+        view.setUint32(layout.MAGIC_OFFSET, layout.ARENA_MAGIC, true);
+        view.setUint32(layout.VERSION_OFFSET, 2, true);
+        expect(() => layout.readRegions(old)).toThrow(/layout version 2/);
+    });
+
+    it('names the relation that is broken', () => {
+        const bytes = 16 * 1024 * 1024;
+        const good = layout.defaultRegions(bytes);
+        expect(() => layout.validateRegions(good, bytes)).not.toThrow();
+
+        expect(() => layout.validateRegions({ ...good, arenaBytes: 1 }, bytes)).toThrow(/built for 1 bytes/);
+        expect(() => layout.validateRegions({ ...good, ringCapacity: 3000 }, bytes)).toThrow(/power of two/);
+        expect(() => layout.validateRegions({ ...good, recordBytes: good.artRoot }, bytes)).toThrow(/runs into the index/);
+        expect(() => layout.validateRegions({ ...good, artRoot: good.artRoot + 4, artBytes: good.artBytes - 4 }, bytes)).toThrow(/8-byte aligned/);
+        expect(() => layout.validateRegions({ ...good, stringBytes: 4 }, bytes)).toThrow(/no room for its bump word/);
     });
 });

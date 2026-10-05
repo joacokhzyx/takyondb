@@ -15,6 +15,7 @@ const WalManager = core.wal.WalManager;
 const ArtIndex = core.art.ArtIndex;
 const freelist = core.freelist;
 const energy = core.energy;
+const config_mod = @import("config.zig");
 
 var server_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true);
 var global_wal: ?*WalManager = null;
@@ -262,6 +263,7 @@ fn printHelp() void {
         \\  --data-dir <dir>       Directory for the WAL and snapshots (default: ".")
         \\  --checkpoint-sec <n>   Seconds between automatic checkpoints (default: 60)
         \\  --port <n>             Admin TCP port on 127.0.0.1 (default: 7723)
+        \\  --config <file>        Read region sizes and daemon settings from JSON
         \\  --no-energy            Do not sample the platform energy counter
         \\  --energy-root <dir>    Read the energy counter from this tree instead
         \\                        of /sys/class/powercap (for testing)
@@ -337,6 +339,7 @@ pub fn main() !void {
     var admin_port: u16 = 7723;
     var sample_energy: bool = true;
     var energy_root: []const u8 = energy.POWERCAP_ROOT;
+    var config_path: ?[]const u8 = null;
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.skip(); // skip executable name
@@ -395,6 +398,20 @@ pub fn main() !void {
                 std.debug.print("[TakyonDB-Daemon] ERROR: --port requires a numeric argument\n", .{});
                 std.process.exit(1);
             };
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            if (args.next()) |p| {
+                config_path = p;
+            } else {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --config requires a file path\n", .{});
+                std.process.exit(1);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--config=")) {
+            const value = arg["--config=".len..];
+            if (value.len == 0) {
+                std.debug.print("[TakyonDB-Daemon] ERROR: --config requires a non-empty file path\n", .{});
+                std.process.exit(1);
+            }
+            config_path = value;
         } else if (std.mem.eql(u8, arg, "--no-energy")) {
             sample_energy = false;
         } else if (std.mem.eql(u8, arg, "--energy-root")) {
@@ -425,6 +442,25 @@ pub fn main() !void {
         std.debug.print("[TakyonDB-Daemon] ERROR: memory size {d} bytes is below minimum {d} bytes (MIN_ARENA_SIZE); increase the first argument.\n", .{ mem_size, layout.MIN_ARENA_SIZE });
         std.process.exit(1);
     }
+
+    // Configuration, loaded after the flags so it can fill what they left
+    // out. Every key is optional and every default is the constant it
+    // replaces, so no file at all is the same as an empty one.
+    var config = config_mod.Config{};
+    if (config_path) |path| {
+        config = config_mod.load(allocator, path) catch |err| {
+            std.debug.print(
+                "[TakyonDB-Daemon] ERROR: cannot read {s} ({s}).\n",
+                .{ path, @errorName(err) },
+            );
+            std.process.exit(1);
+        };
+        std.debug.print("[TakyonDB-Daemon] Configuration: {s}\n", .{path});
+    }
+    if (config.data_dir) |d| data_dir = d;
+    if (config.checkpoint_sec) |v| checkpoint_sec = v;
+    if (config.admin_port) |v| admin_port = v;
+    if (config.energy) |v| sample_energy = v;
 
     // Build wal/snap paths by joining <data-dir> + "data.takyon".
     // WalManager owns a dupeZ copy; snapshot/recovery derive "<wal>.snap".
@@ -458,18 +494,47 @@ pub fn main() !void {
     // zero bump word, so it is safe to run against an arena whose ART region
     // the snapshot has already restored.
     const recoverWal = core.recovery.recoverWal;
-    var art_index = ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
-    try recoverWal(allocator, wal_path, arena.memory, &art_index);
+
+    // 1b. Region table. `SharedArena` stamped the default table when it
+    // created the segment; a configuration file overrides it here, before
+    // anything reads a region. This is the last point where the table can
+    // be changed, and it is written into the header so every client that
+    // attaches later reads the same numbers the daemon is using.
+    var regions = config_mod.regionsFor(layout.defaultRegions(arena.memory.len), config.regions);
+    // The mapping is the authority on its own size. A config file states
+    // how much room a region needs, never how big the arena is.
+    regions.arena_bytes = @intCast(arena.memory.len);
+    layout.validateRegions(regions, arena.memory.len) catch |err| {
+        std.debug.print(
+            "[TakyonDB-Daemon] ERROR: the region table is not valid for this arena ({s}).\n" ++
+                "  Every region is a size in takyon.json; the boundaries are derived from them.\n",
+            .{@errorName(err)},
+        );
+        std.process.exit(1);
+    };
+    layout.writeRegions(arena.memory, regions);
+    std.debug.print(
+        "[TakyonDB-Daemon] Regions: arena={d} ring={d} records=[{d},{d}) index=[{d},{d}) strings=[{d},{d})\n",
+        .{
+            regions.arena_bytes,  regions.ring_capacity,
+            regions.record_start, regions.record_start + regions.record_bytes,
+            regions.art_root,     regions.art_root + regions.art_bytes,
+            regions.string_start, regions.string_start + regions.string_bytes,
+        },
+    );
+
+    var art_index = ArtIndex.init(arena.memory, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recoverWal(allocator, wal_path, arena.memory, &art_index, regions);
 
     // 3. Initialize Lock-Free RingBuffer inside the shared memory block
     // We reserve the first 1024 bytes for future metadata/headers.
-    var rb = try RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, true);
+    var rb = try RingBuffer.init(arena.memory[layout.RING_OFFSET..], regions.ring_capacity, true);
     std.debug.print("[TakyonDB-Daemon] RingBuffer initialized in memory header.\n", .{});
 
     // 4. Start WAL Flusher
     var wal = try WalManager.init(allocator, wal_path);
     global_wal = &wal;
-    try wal.spawnWalFlusher(&rb, arena.memory);
+    try wal.spawnWalFlusher(&rb, arena.memory, regions);
     std.debug.print("[TakyonDB-Daemon] WAL Flusher running and anchored to block.\n", .{});
 
     // 4b. The admin SCAN/RANGE commands read through the same art_index the

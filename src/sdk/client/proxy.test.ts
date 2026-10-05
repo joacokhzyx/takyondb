@@ -7,10 +7,17 @@ import {
     RECORD_BUMP_OFFSET,
     STRING_BUMP_OFFSET,
     STRING_DATA_START,
+    defaultRegions,
+    writeRegions,
 } from './layout';
 
 function mockBindings(size: number, store: Map<string, number>): TakyonBindings {
     const buffer = new ArrayBuffer(size);
+    // A real arena carries a header, so the fixture writes one. The SDK
+    // refuses a segment without a table, which is the right behaviour: a
+    // client that guessed the regions would write into the index.
+    const regions = defaultRegions(size);
+    writeRegions(buffer, regions);
     // Pre-seed bump words the way a fresh arena looks (when they fit).
     const view = new DataView(buffer);
     if (RECORD_BUMP_OFFSET + 4 <= size) view.setUint32(RECORD_BUMP_OFFSET, RECORD_BUMP_INIT, true);
@@ -79,26 +86,43 @@ describe('TakyonDB with mocked bridge', () => {
         expect(() => ((proxy as Record<string, unknown>).username = 42)).toThrow();
     });
 
-    it('rejects out-of-range record mapping', () => {
+    it('rejects a record that would run past the record region', () => {
+        // The bound is the record region the arena's header declares, not
+        // the end of the mapping: an arena whose records end at 2 MiB has
+        // 62 MiB of index and strings behind them, and writing a record
+        // there would corrupt the index.
+        const size = 16 * 1024 * 1024;
         const store = new Map<string, number>();
-        const client = new TakyonClient(mockBindings(1024, store), 1024);
+        const client = new TakyonClient(mockBindings(size, store), size);
         const schema = new TakyonSchema({ ...UserDef });
-        expect(() => client.createProxy(schema, 4096)).toThrow();
+        const regions = client.getRegions();
+        expect(() => client.createProxy(schema, regions.artRoot)).toThrow();
+    });
+
+    it('refuses a segment that carries no region table', () => {
+        // A client that fell back to the constants would be writing where
+        // the daemon put the index, so a header-less segment is refused at
+        // attach rather than tolerated.
+        const store = new Map<string, number>();
+        const bare = new ArrayBuffer(16 * 1024 * 1024);
+        const bindings = mockBindings(16 * 1024 * 1024, store);
+        bindings.initSharedMemory = () => bare;
+        expect(() => new TakyonClient(bindings, bare.byteLength)).toThrow(/not a Takyon arena/);
     });
 
     it('stopVacuum tolerates bridges without the method', () => {
         const store = new Map<string, number>();
-        const bindings = mockBindings(1024, store);
+        const bindings = mockBindings(16 * 1024 * 1024, store);
         delete bindings.stop_vacuum;
-        const client = new TakyonClient(bindings, 1024);
+        const client = new TakyonClient(bindings, 16 * 1024 * 1024);
         expect(client.stopVacuum()).toBe(false);
     });
 
     it('shutdownEngine tolerates bridges without the method', () => {
         const store = new Map<string, number>();
-        const bindings = mockBindings(1024, store);
+        const bindings = mockBindings(16 * 1024 * 1024, store);
         delete bindings.disconnect_shm;
-        const client = new TakyonClient(bindings, 1024);
+        const client = new TakyonClient(bindings, 16 * 1024 * 1024);
         expect(client.shutdownEngine()).toBe(false);
     });
 

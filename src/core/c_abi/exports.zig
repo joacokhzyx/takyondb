@@ -24,6 +24,12 @@ var ring_buffer: RingBuffer = undefined;
 var ring_ready: bool = false;
 var arena: SharedArena = undefined;
 var arena_ready: bool = false;
+/// The attached segment's region table, read once at connect time. Every
+/// entry point that needs a region boundary reads it from here rather than
+/// from a compile-time constant, which is what makes a configured arena
+/// work through the C ABI at all. Null until `takyon_connect_shm` succeeds,
+/// so a caller that skipped connect gets the `-1` every other guard gives.
+var engine_regions: ?layout.Regions = null;
 var art_index: art.ArtIndex = undefined;
 
 // The engine owns exactly ONE process-wide SHM mapping. Every connect with
@@ -94,8 +100,15 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
         if (arena.memory.len != size) return null;
         if (engine_name_len != shm_name.len or !std.mem.eql(u8, engine_name_buf[0..engine_name_len], shm_name)) return null;
         engine_refs += 1;
-        ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, false) catch return null;
-        art_index = art.ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+        // Read the table again on a shared re-connect: the daemon may have
+        // reconfigured the regions since the first client attached, and a
+        // second client holding the old boundaries would write into a
+        // region that is no longer there.
+        const regions = layout.readRegions(arena.memory) catch return null;
+        layout.validateRegions(regions, arena.memory.len) catch return null;
+        engine_regions = regions;
+        ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], regions.ring_capacity, false) catch return null;
+        art_index = art.ArtIndex.init(arena.memory, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
         return arena.memory.ptr;
     }
 
@@ -127,7 +140,42 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
     // writes for no benefit. See takyon_insert_index.
     daemon_attached = !created;
 
-    ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], layout.RING_DEFAULT_CAPACITY, created) catch {
+    // The segment's own table is the authority. `SharedArena` stamped the
+    // default table when this process created the segment, and a daemon
+    // stamped its configured one before any client could attach, so both
+    // paths land on a table that describes this mapping.
+    const regions = layout.readRegions(arena.memory) catch blk: {
+        var owned = arena;
+        owned.close();
+        arena_ready = false;
+        daemon_attached = false;
+        engine_refs = 0;
+        break :blk layout.Regions{
+            .arena_bytes = 0,
+            .ring_capacity = 0,
+            .record_start = 0,
+            .record_bytes = 0,
+            .art_root = 0,
+            .art_bytes = 0,
+            .string_start = 0,
+            .string_bytes = 0,
+        };
+    };
+    // A table that does not describe this mapping is a reason to refuse the
+    // whole attach: every region boundary below would be a guess. Written
+    // with `catch` because an `if (error_union) |_| {...}` reads as "on
+    // success", and that inversion refuses every valid arena.
+    layout.validateRegions(regions, arena.memory.len) catch {
+        var owned = arena;
+        owned.close();
+        arena_ready = false;
+        daemon_attached = false;
+        engine_refs = 0;
+        return null;
+    };
+    engine_regions = regions;
+
+    ring_buffer = RingBuffer.init(arena.memory[layout.RING_OFFSET..], regions.ring_capacity, created) catch {
         var owned = arena;
         owned.close();
         arena_ready = false;
@@ -137,8 +185,8 @@ pub export fn takyon_connect_shm(name_ptr: [*:0]const u8, size: usize) callconv(
     };
     ring_ready = true;
 
-    // Initialize ART Index (see layout.zig for the canonical offsets).
-    art_index = art.ArtIndex.init(arena.memory, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
+    // Initialize ART Index at the boundaries the table names.
+    art_index = art.ArtIndex.init(arena.memory, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
 
     // Initialize Vacuum thread implicitly here? No, start it explicitly.
 
@@ -168,6 +216,7 @@ pub export fn takyon_disconnect_shm() callconv(.c) void {
     arena_ready = false;
     ring_ready = false;
     daemon_attached = false;
+    engine_regions = null;
 }
 
 /// Bump-allocates `src.len` bytes in the string arena and copies `src` in.
@@ -185,16 +234,18 @@ pub export fn takyon_disconnect_shm() callconv(.c) void {
 /// hands out offset 0 — the ring header — which corrupts head, tail and
 /// capacity and surfaces much later as an inexplicable fault in the index.
 fn allocString(arena_mem: []u8, src: []const u8) ?u32 {
+    const regions = engine_regions orelse return null;
     const aligned_len = (src.len + 7) & ~@as(usize, 7);
-    if (aligned_len == 0 or aligned_len > arena_mem.len) return null;
-    const bump_ptr: *u32 = @ptrCast(@alignCast(arena_mem.ptr + layout.STRING_BUMP_OFFSET));
+    if (aligned_len == 0 or aligned_len > regions.string_bytes) return null;
+    const bump_ptr: *u32 = @ptrCast(@alignCast(arena_mem.ptr + regions.string_start));
     // Seed the bump on first use. @cmpxchgStrong doubles as the check, so
     // this costs one uncontended compare on the hot path.
-    _ = @cmpxchgStrong(u32, bump_ptr, 0, layout.STRING_DATA_START, .monotonic, .monotonic);
+    _ = @cmpxchgStrong(u32, bump_ptr, 0, @intCast(regions.stringDataStart()), .monotonic, .monotonic);
     var cur = @atomicLoad(u32, bump_ptr, .monotonic);
+    const string_limit: usize = regions.string_start + regions.string_bytes;
     while (true) {
         const end = @as(usize, cur) + aligned_len;
-        if (end > arena_mem.len) return null;
+        if (end > string_limit) return null;
         if (@cmpxchgStrong(u32, bump_ptr, cur, @intCast(end), .monotonic, .monotonic)) |actual| {
             cur = actual;
         } else {
@@ -489,8 +540,9 @@ pub export fn takyon_scrub_records(buf_ptr: ?[*]const u8, len: u32, ok_out: ?*u3
 
 pub export fn takyon_start_vacuum(string_field_offset: u32) callconv(.c) i32 {
     if (!arena_ready) return -1;
+    const regions = engine_regions orelse return -1;
     if (@as(usize, string_field_offset) >= arena.memory.len) return -1;
-    vacuum.spawnVacuum(&arena, &art_index, string_field_offset) catch return -1;
+    vacuum.spawnVacuum(&arena, &art_index, regions, string_field_offset) catch return -1;
     return 0;
 }
 

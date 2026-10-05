@@ -28,7 +28,7 @@ var vacuum_offsets: ?[]u32 = null;
 /// Starts the background vacuum thread. Returns AlreadyRunning if one is
 /// active. Stop it with stopVacuum() (joins the thread; no more detached
 /// infinite threads).
-pub fn spawnVacuumMulti(arena: *SharedArena, art_index: *art.ArtIndex, offsets: []const u32) !void {
+pub fn spawnVacuumMulti(arena: *SharedArena, art_index: *art.ArtIndex, regions: layout.Regions, offsets: []const u32) !void {
     vacuum_mutex.lock();
     defer vacuum_mutex.unlock();
     if (running.load(.acquire)) return error.AlreadyRunning;
@@ -36,7 +36,7 @@ pub fn spawnVacuumMulti(arena: *SharedArena, art_index: *art.ArtIndex, offsets: 
     const dup = allocator.dupe(u32, offsets) catch return error.OutOfMemory;
     vacuum_offsets = dup;
     running.store(true, .release);
-    vacuum_thread = std.Thread.spawn(.{}, vacuumLoopMulti, .{ arena, art_index, @as([]const u32, dup) }) catch |err| {
+    vacuum_thread = std.Thread.spawn(.{}, vacuumLoopMulti, .{ arena, art_index, regions, @as([]const u32, dup) }) catch |err| {
         allocator.free(dup);
         vacuum_offsets = null;
         running.store(false, .release);
@@ -45,9 +45,9 @@ pub fn spawnVacuumMulti(arena: *SharedArena, art_index: *art.ArtIndex, offsets: 
     };
 }
 
-pub fn spawnVacuum(arena: *SharedArena, art_index: *art.ArtIndex, string_field_offset: u32) !void {
+pub fn spawnVacuum(arena: *SharedArena, art_index: *art.ArtIndex, regions: layout.Regions, string_field_offset: u32) !void {
     var tmp = [_]u32{string_field_offset};
-    return spawnVacuumMulti(arena, art_index, tmp[0..]);
+    return spawnVacuumMulti(arena, art_index, regions, tmp[0..]);
 }
 
 pub fn stopVacuum() void {
@@ -64,14 +64,14 @@ pub fn stopVacuum() void {
     }
 }
 
-fn vacuumLoop(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u32) void {
+fn vacuumLoop(arena: *SharedArena, index: *art.ArtIndex, regions: layout.Regions, string_field_offset: u32) void {
     var tmp = [_]u32{string_field_offset};
-    vacuumLoopMulti(arena, index, tmp[0..]);
+    vacuumLoopMulti(arena, index, regions, tmp[0..]);
 }
 
-fn vacuumLoopMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32) void {
+fn vacuumLoopMulti(arena: *SharedArena, index: *art.ArtIndex, regions: layout.Regions, offsets: []const u32) void {
     while (running.load(.acquire)) {
-        runVacuumOnceMulti(arena, index, offsets, null) catch {};
+        runVacuumOnceMulti(arena, index, regions, offsets, null) catch {};
         // Back off: compaction is periodic maintenance, not a hot loop.
         std.Thread.sleep(100 * std.time.ns_per_ms);
     }
@@ -88,15 +88,16 @@ pub fn minArenaForVacuum() usize {
     return layout.STRING_DATA_START + 8192;
 }
 
-pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, string_field_offset: u32) !void {
+pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, regions: layout.Regions, string_field_offset: u32) !void {
     var tmp = [_]u32{string_field_offset};
-    return runVacuumOnceMulti(arena, index, tmp[0..], null);
+    return runVacuumOnceMulti(arena, index, regions, tmp[0..], null);
 }
 
-pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []const u32, wal: ?*WalManager) !void {
+pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, regions: layout.Regions, offsets: []const u32, wal: ?*WalManager) !void {
     const allocator = std.heap.page_allocator;
     if (arena.memory.len < minArenaForVacuum()) return error.ArenaTooSmall;
-    if (layout.STRING_BUMP_OFFSET + 4 > arena.memory.len) return error.ArenaTooSmall;
+    if (regions.string_start + 4 > arena.memory.len) return error.ArenaTooSmall;
+    if (regions.string_start + regions.string_bytes > arena.memory.len) return error.ArenaTooSmall;
 
     // 1. Collect live record offsets from every node type.
     var live_records = std.ArrayList(u32).init(allocator);
@@ -133,13 +134,18 @@ pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, offsets: []
 
     // 3. Double-buffer geometry: split the string region into two banks and
     // compact into whichever bank the bump pointer is NOT using.
-    const region = arena.memory.len - layout.STRING_DATA_START;
+    // The string region, from the table. Using the end of the mapping here
+    // would put the two banks past the region on any arena whose strings do
+    // not run to the last byte, which is exactly what configuration makes
+    // likely.
+    const string_data_start = regions.stringDataStart();
+    const region = string_data_start + regions.string_bytes - string_data_start;
     const bank_size = region / 2;
     if (bank_size == 0) return error.ArenaTooSmall;
-    const bank0 = layout.STRING_DATA_START;
-    const bank1 = layout.STRING_DATA_START + bank_size;
+    const bank0: usize = string_data_start;
+    const bank1: usize = string_data_start + bank_size;
 
-    const bump_ptr: *u32 = @ptrCast(@alignCast(&arena.memory[layout.STRING_BUMP_OFFSET]));
+    const bump_ptr: *u32 = @ptrCast(@alignCast(&arena.memory[regions.string_start]));
     const current_bump = @atomicLoad(u32, bump_ptr, .acquire);
     const dst_bank = if (@as(usize, current_bump) >= bank1) bank0 else bank1;
     if (total_len > bank_size) return error.OutOfMemory;
@@ -352,7 +358,7 @@ test "vacuum multi-column relocates both string columns" {
     try idx.insert("b", rec1);
 
     var cols = [_]u32{ OFF_A, OFF_B };
-    try runVacuumOnceMulti(&arena, &idx, cols[0..], null);
+    try runVacuumOnceMulti(&arena, &idx, layout.defaultRegions(mem.len), cols[0..], null);
 
     const new00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], .little);
     const new01 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_B ..][0..4], .little);
@@ -458,7 +464,7 @@ test "vacuum WAL-logged relocation survives recovery" {
 
     var wal = try WalManager.init(t_alloc, owned_path);
     var cols = [_]u32{ OFF_A, OFF_B };
-    try runVacuumOnceMulti(&arena, &idx, cols[0..], &wal);
+    try runVacuumOnceMulti(&arena, &idx, layout.defaultRegions(mem.len), cols[0..], &wal);
     wal.shutdown();
 
     const new00 = std.mem.readInt(u32, mem[@as(usize, rec0) + OFF_A ..][0..4], .little);
@@ -478,8 +484,9 @@ test "vacuum WAL-logged relocation survives recovery" {
     const mem2 = try p_alloc.dupe(u8, pre);
     defer p_alloc.free(mem2);
     const recoverWal = @import("../storage/recovery.zig").recoverWal;
-    var art_index = art.ArtIndex.init(mem2, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
-    try recoverWal(t_alloc, owned_path, mem2, &art_index);
+    const regions = layout.defaultRegions(mem2.len);
+    var art_index = art.ArtIndex.init(mem2, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recoverWal(t_alloc, owned_path, mem2, &art_index, regions);
 
     const r00 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_A ..][0..4], .little);
     const r01 = std.mem.readInt(u32, mem2[@as(usize, rec0) + OFF_B ..][0..4], .little);

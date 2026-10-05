@@ -7,9 +7,10 @@
 import { TakyonSchema, FieldType } from './schema';
 import {
     MAX_DELTA_INLINE,
-    RECORD_BUMP_OFFSET,
-    STRING_BUMP_OFFSET,
-    STRING_DATA_START,
+    readRegions,
+    stringDataStart,
+    validateRegions,
+    type Regions,
 } from './layout';
 
 /**
@@ -356,6 +357,8 @@ export class TakyonClient {
     private sharedView?: DataView;
     // Single bump-pointer views for the string/record arenas.
     private bumpView?: Uint32Array;
+    /** The mapped segment's region boundaries. Read once at construction. */
+    private regions!: Regions;
     private recordBumpView?: Uint32Array;
 
     /**
@@ -373,7 +376,18 @@ export class TakyonClient {
         const buf = this.bindings.initSharedMemory(size);
         if (!buf) throw new Error("Failed to map shared memory");
         this.buffer = buf;
+        // Read and check the region table before anything can address a
+        // region. The engine validated it before it wrote anything, so a
+        // failure here means the two builds disagree about the layout, and
+        // continuing would put records where the index is.
+        this.regions = readRegions(buf);
+        validateRegions(this.regions, buf.byteLength);
     }
+
+    /**
+     * @returns The mapped arena's region boundaries, read from its header.
+     */
+    public getRegions(): Regions { return this.regions; }
 
     private view(): DataView {
         if (!this.sharedView) this.sharedView = new DataView(this.buffer);
@@ -381,7 +395,9 @@ export class TakyonClient {
     }
 
     private stringBump(): Uint32Array {
-        if (!this.bumpView) this.bumpView = new Uint32Array(this.buffer, STRING_BUMP_OFFSET, 1);
+        if (!this.bumpView) {
+            this.bumpView = new Uint32Array(this.buffer, this.regions.stringStart, 1);
+        }
         return this.bumpView;
     }
 
@@ -409,7 +425,7 @@ export class TakyonClient {
      */
     public getRecordBumpView(): Uint32Array {
         if (!this.recordBumpView) {
-            this.recordBumpView = new Uint32Array(this.buffer, RECORD_BUMP_OFFSET, 1);
+            this.recordBumpView = new Uint32Array(this.buffer, this.regions.recordStart - 8, 1);
         }
         return this.recordBumpView;
     }
@@ -480,11 +496,12 @@ export class TakyonClient {
      * @returns A proxy whose schema fields read and write that record.
      *   Properties outside the schema fall through to a plain object.
      * @throws {Error} If `baseOffset` is not a non-negative integer, or the
-     *   record would extend past the end of the mapping.
+     *   record would extend past this arena's record region.
      * @throws {TypeError} If a string field is assigned a non-string, a
      *   `uint8` or `uint32` field a non-integer or an out-of-range number,
      *   or a `float64` field a non-number.
-     * @throws {Error} If the string arena is exhausted, or `notifyArena` or
+     * @throws {Error} If the string region configured for this arena is
+   *   exhausted, or `notifyArena` or
      *   `pushDelta` returns nonzero because the ring is full.
      * @throws {Error} On read, if a stored string pointer addresses memory
      *   past the end of the mapping.
@@ -496,9 +513,14 @@ export class TakyonClient {
         if (!Number.isInteger(baseOffset) || baseOffset < 0) {
             throw new Error(`baseOffset out of range: ${baseOffset}`);
         }
-        if (baseOffset + schema.totalSize > this.buffer.byteLength) {
+        // The record region, not the mapping. An arena whose records end at
+        // 2 MiB has index and strings behind that address, and a record
+        // mapped there corrupts them without failing.
+        const regions = this.regions;
+        if (baseOffset + schema.totalSize > regions.recordStart + regions.recordBytes) {
             throw new Error(
-                `record [${baseOffset}, ${baseOffset + schema.totalSize}) exceeds shared memory (${this.buffer.byteLength} bytes)`
+                `record [${baseOffset}, ${baseOffset + schema.totalSize}) exceeds this arena's ` +
+                    `record region, which ends at ${regions.recordStart + regions.recordBytes}`
             );
         }
         const bindings = this.bindings;
@@ -506,7 +528,7 @@ export class TakyonClient {
         const bumpView = this.stringBump();
 
         const targetBuffer = this.buffer;
-        
+
         return new Proxy({} as MappedObject<T>, {
             get(target, prop: string | symbol) {
                 if (typeof prop === 'string' && schema.fields[prop]) {
@@ -551,9 +573,9 @@ export class TakyonClient {
                         }
                         const { written: strLen } = sharedEncoder.encodeInto(value, encodeScratch);
 
-                        if (STRING_DATA_START >= targetBuffer.byteLength) {
+                        if (regions.stringStart + 4 >= targetBuffer.byteLength) {
                             throw new Error(
-                                `shared memory (${targetBuffer.byteLength} bytes) too small for string arena at ${STRING_DATA_START}`
+                                `shared memory (${targetBuffer.byteLength} bytes) too small for string arena at ${regions.stringStart}`
                             );
                         }
                         // Seed the bump on first use. A zero bump would hand
@@ -562,9 +584,9 @@ export class TakyonClient {
                         // atomic on the hot path. Mirrors `allocString` in
                         // `src/core/c_abi/exports.zig`, which the C-ABI
                         // insert path uses for index keys.
-                        Atomics.compareExchange(bumpView, 0, 0, STRING_DATA_START);
+                        Atomics.compareExchange(bumpView, 0, 0, stringDataStart(regions));
                         const allocatedOffset = Atomics.add(bumpView, 0, strLen);
-                        if (allocatedOffset + strLen > targetBuffer.byteLength) {
+                        if (allocatedOffset + strLen > regions.stringStart + regions.stringBytes) {
                             throw new Error("Out of string arena memory");
                         }
 

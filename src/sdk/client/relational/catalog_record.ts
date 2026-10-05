@@ -14,7 +14,7 @@
 import { ColumnDef } from './column';
 import { RelationalType } from './types';
 import { TakyonBindings } from '../proxy';
-import { STRING_BUMP_OFFSET, STRING_DATA_START } from '../layout';
+import { readRegions, stringDataStart } from '../layout';
 
 /** `"TACT"` little-endian, the first four bytes of a catalog record. */
 export const CATALOG_REC_MAGIC = 0x54434154;
@@ -210,11 +210,19 @@ export function decodeCatalogRecord(buf: Uint8Array): DecodedCatalog {
   return { table, columns };
 }
 
-/** Where a `CatalogRecordStore` places its payloads inside the arena. */
+/**
+ * Where a `CatalogRecordStore` places its payloads inside the arena.
+ *
+ * The defaults are read from the arena's own header, so a configured arena
+ * puts its catalog bytes in its own string region. The overrides exist for
+ * tests that need a small buffer; leaving them unset on a real arena is the
+ * correct thing to do, because a catalog written to the wrong region is a
+ * catalog that recovery will not find.
+ */
 export interface CatalogRecordArenaOpts {
-  /** Byte offset of the string bump word. Defaults to `STRING_BUMP_OFFSET`. */
+  /** Byte offset of the string bump word. Defaults to the header's. */
   readonly bumpOffset?: number;
-  /** First usable payload byte. Defaults to `STRING_DATA_START`. */
+  /** First usable payload byte. Defaults to the header's. */
   readonly dataStart?: number;
 }
 
@@ -243,8 +251,14 @@ export class CatalogRecordStore {
     private readonly memory: ArrayBuffer,
     opts: CatalogRecordArenaOpts = {},
   ) {
-    this.bumpOffset = opts.bumpOffset ?? STRING_BUMP_OFFSET;
-    this.dataStart = opts.dataStart ?? STRING_DATA_START;
+    if (opts.bumpOffset != null && opts.dataStart != null) {
+      this.bumpOffset = opts.bumpOffset as number;
+      this.dataStart = opts.dataStart as number;
+    } else {
+      const regions = readRegions(memory);
+      this.bumpOffset = opts.bumpOffset ?? regions.stringStart;
+      this.dataStart = opts.dataStart ?? stringDataStart(regions);
+    }
     if (this.bumpOffset + 4 > memory.byteLength || this.dataStart > memory.byteLength) {
       throw new Error('catalog arena geometry exceeds shared memory');
     }

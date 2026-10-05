@@ -328,8 +328,8 @@ pub const WalManager = struct {
     }
 
     /// Spawns the background Flusher thread for lock-free RingBuffer consumption.
-    pub fn spawnWalFlusher(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8) !void {
-        self.flusher_thread = try std.Thread.spawn(.{}, flusherLoop, .{ self, ring_buffer, arena_mem });
+    pub fn spawnWalFlusher(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8, regions: layout.Regions) !void {
+        self.flusher_thread = try std.Thread.spawn(.{}, flusherLoop, .{ self, ring_buffer, arena_mem, regions });
     }
 
     /// Shuts down the background flusher and closes the file.
@@ -524,7 +524,7 @@ pub const WalManager = struct {
     /// The backoff doubles from IDLE_MIN to IDLE_MAX and resets on the first
     /// delta, so a burst is still drained at full speed while a quiet daemon
     /// costs nothing. IDLE_MAX is also the worst-case shutdown latency.
-    fn flusherLoop(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8) void {
+    fn flusherLoop(self: *WalManager, ring_buffer: *RingBuffer, arena_mem: []const u8, regions: layout.Regions) void {
         var backoff_ns: u64 = IDLE_MIN_SLEEP_NS;
 
         while (self.running.load(.acquire)) {
@@ -541,7 +541,7 @@ pub const WalManager = struct {
                         };
                     }
                     self.flushBuffer() catch {};
-                    snapshot.createSnapshot(arena_mem, self, ring_buffer) catch |err| {
+                    snapshot.createSnapshot(arena_mem, self, ring_buffer, regions) catch |err| {
                         std.debug.print("[WAL] Error creating snapshot: {s}\n", .{@errorName(err)});
                     };
                 } else {
@@ -598,7 +598,7 @@ test "WAL Lock-Free Flusher Integration" {
     // No defer shutdown, we do it explicitly
 
     // 2. Spawn flusher background thread
-    try wal.spawnWalFlusher(&rb, mem);
+    try wal.spawnWalFlusher(&rb, mem, layout.defaultRegions(mem.len));
 
     // 3. Inject 100,000 deltas from Producer thread (main test thread)
     var timer = try std.time.Timer.start();

@@ -39,6 +39,11 @@ const FOOTER_MAGIC: u32 = if (@hasDecl(layout, "ARENA_MAGIC")) layout.ARENA_MAGI
 /// snapshot carried nothing for it.
 pub const SnapshotMeta = struct {
     extents: [snap.EXTENT_COUNT]snap.Extent,
+    /// The region table this snapshot was written against, read from its
+    /// footer. Recovery refuses a snapshot whose table is not the one it is
+    /// restoring into, so this is the value that was already checked rather
+    /// than a diagnostic.
+    regions: layout.Regions,
 
     pub fn record(self: SnapshotMeta) snap.Extent {
         return self.extents[snap.EXT_REC];
@@ -124,6 +129,17 @@ fn applyIndexOps(art_index: *ArtIndex, index_ops: *IndexOps) u32 {
         std.debug.print("[TakyonDB-Bootloader] Replayed {d}/{d} index operations from the WAL.\\n", .{ applied, index_ops.ops.items.len });
     }
     return applied;
+}
+
+/// u32 views of the derived boundaries. The engine stores these offsets as
+/// u32 words, so every caller that needs one as a word goes through here
+/// rather than casting the usize return at each use site.
+fn artStartOf(regions: layout.Regions) u32 {
+    return @intCast(regions.artStart());
+}
+
+fn stringDataStartOf(regions: layout.Regions) u32 {
+    return @intCast(regions.stringDataStart());
 }
 
 fn readWord(arena_mem: []const u8, offset: usize, fallback: u32) u32 {
@@ -231,11 +247,13 @@ fn isLegacyV1Shape(buf: *const [4096]u8) bool {
 /// against the region each one must stay inside. A footer is a file on
 /// disk, so nothing in it is trusted until it has been proved to be
 /// describable as extents of *this* arena.
-fn extentsFromFooter(buf: *const [4096]u8, arena_len: usize) ?[snap.EXTENT_COUNT]snap.Extent {
+fn extentsFromFooter(buf: *const [4096]u8, arena_len: usize, regions: layout.Regions) ?[snap.EXTENT_COUNT]snap.Extent {
+    const starts = snap.extentStarts(regions);
+    const min_lens = snap.extentMinLens(regions);
     var extents: [snap.EXTENT_COUNT]snap.Extent = undefined;
     for (0..snap.EXTENT_COUNT) |i| {
         const len = std.mem.readInt(u32, buf[snap.FOOTER_FIRST_LEN_OFF + 4 * i ..][0..4], .little);
-        const start: usize = snap.EXTENT_STARTS[i];
+        const start: usize = starts[i];
         if (start > arena_len) {
             // This arena is too small to hold the region at all: nothing
             // can be claimed for it.
@@ -247,7 +265,7 @@ fn extentsFromFooter(buf: *const [4096]u8, arena_len: usize) ?[snap.EXTENT_COUNT
         // A length the writer could never have produced means the footer
         // is not describing this format; refuse it instead of restoring a
         // region it admits it does not cover in full.
-        if (len != 0 and len < snap.EXTENT_MIN_LENS[i]) return null;
+        if (len != 0 and len < min_lens[i]) return null;
         extents[i] = .{ .start = @intCast(start), .len = len };
     }
     // Strictly ascending and disjoint: the packed payload walk, and the
@@ -333,10 +351,10 @@ fn undoRestore(arena_mem: []u8, extents: [snap.EXTENT_COUNT]snap.Extent) void {
 /// panic on the out-of-range bump word rather than return an error. Passing
 /// null skips the index replay, which is correct: such an arena cannot hold
 /// index operations.
-pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, art_index: ?*ArtIndex) !void {
-    var rec_max: u32 = layout.RECORD_BUMP_INIT;
-    var art_max: u32 = layout.ART_START;
-    var str_max: u32 = layout.STRING_DATA_START;
+pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: []u8, art_index: ?*ArtIndex, regions: layout.Regions) !void {
+    var rec_max: u32 = regions.record_start;
+    var art_max: u32 = @intCast(regions.artStart());
+    var str_max: u32 = @intCast(regions.stringDataStart());
     var index_ops = IndexOps{
         .keys = std.ArrayList(u8).init(allocator),
         .ops = std.ArrayList(IndexOps.IndexOp).init(allocator),
@@ -344,21 +362,21 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     defer index_ops.deinit();
 
     // Phase 1: snapshot with CRC verification (two passes).
-    if (try loadSnapshot(allocator, path, arena_mem)) |meta| {
+    if (try loadSnapshot(allocator, path, arena_mem, regions)) |meta| {
         // Seed maxima from the restored bump words, so all three arenas
         // survive even with no further WAL replay. Each extent ends at its
         // region's bump by construction, so its end is a second, redundant
         // witness: it is used when the extent could not carry the word
         // itself (a truncated region, or a small arena with no bump word
         // at all) and can only ever agree with the word otherwise.
-        const arena_rec = readWord(arena_mem, layout.RECORD_BUMP_OFFSET, layout.RECORD_BUMP_INIT);
-        const arena_art = readWord(arena_mem, layout.ART_BUMP_OFFSET, layout.ART_START);
-        const arena_str = readWord(arena_mem, layout.STRING_BUMP_OFFSET, layout.STRING_DATA_START);
+        const arena_rec = readWord(arena_mem, regions.recordBumpOffset(), regions.record_start);
+        const arena_art = readWord(arena_mem, regions.artBumpOffset(), artStartOf(regions));
+        const arena_str = readWord(arena_mem, regions.string_start, stringDataStartOf(regions));
         rec_max = @max(rec_max, @max(arena_rec, meta.record().end()));
         art_max = @max(arena_art, meta.art().end());
-        art_max = @max(art_max, layout.ART_START);
+        art_max = @max(art_max, artStartOf(regions));
         str_max = @max(arena_str, meta.strings().end());
-        str_max = @max(str_max, layout.STRING_DATA_START);
+        str_max = @max(str_max, stringDataStartOf(regions));
         // Clamp seeds to arena bounds: a larger arena image truncated here
         // must not push bumps past the end.
         if (rec_max > arena_mem.len) rec_max = @as(u32, @intCast(arena_mem.len));
@@ -367,7 +385,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     }
 
     // Phase 2: WAL delta replay.
-    replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max, &index_ops);
+    replayWal(allocator, path, arena_mem, &rec_max, &art_max, &str_max, &index_ops, regions);
 
     // Phase 3: re-apply logical index operations. Must run before finalize,
     // which overwrites the ART bump from art_max; rebuilding the index moves
@@ -375,7 +393,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
     if (index_ops.ops.items.len > 0) {
         if (art_index) |idx| {
             _ = applyIndexOps(idx, &index_ops);
-            const arena_art = readWord(arena_mem, layout.ART_BUMP_OFFSET, layout.ART_START);
+            const arena_art = readWord(arena_mem, regions.artBumpOffset(), artStartOf(regions));
             if (arena_art > art_max) art_max = arena_art;
         } else {
             std.debug.print(
@@ -385,7 +403,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
         }
     }
 
-    finalize(arena_mem, rec_max, art_max, str_max);
+    finalize(arena_mem, rec_max, art_max, str_max, regions);
 }
 
 /// Loads and verifies the snapshot. Returns the extents it restored, or
@@ -400,7 +418,7 @@ pub fn recoverWal(allocator: std.mem.Allocator, path: [:0]const u8, arena_mem: [
 /// from the footer is checked before the result is trusted. Splitting it
 /// this way is what makes a torn snapshot detectable instead of
 /// half-applied.
-fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem: []u8) !?SnapshotMeta {
+fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem: []u8, regions: layout.Regions) !?SnapshotMeta {
     var snap_buf: [4096]u8 = undefined;
     const snap_path = try std.fmt.bufPrintZ(&snap_buf, "{s}.snap", .{wal_path});
     const Crc32 = if (@hasDecl(std.hash.crc, "Crc32"))
@@ -483,8 +501,31 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
         );
         return null;
     }
+    // The table the snapshot was written against must be the table this
+    // arena is using. The lengths alone cannot say where those bytes go: a
+    // snapshot of a 2 GiB arena with a 256 MiB index region and a snapshot
+    // of a 64 MiB one produce the same four numbers, and scattering the
+    // first at the second's offsets corrupts the arena without failing.
+    const snap_regions = snap.readFooterRegions(&last) orelse {
+        std.debug.print("[TakyonDB-Bootloader] Snapshot footer carries no region table; ignoring.\n", .{});
+        return null;
+    };
+    layout.validateRegions(snap_regions, arena_mem.len) catch |err| {
+        std.debug.print(
+            "[TakyonDB-Bootloader] Snapshot region table is not valid for this arena ({s}); ignoring.\n",
+            .{@errorName(err)},
+        );
+        return null;
+    };
+    if (!std.meta.eql(snap_regions, regions)) {
+        std.debug.print(
+            "[TakyonDB-Bootloader] Snapshot was taken with a different region table than this arena uses; ignoring. Start the daemon with the same takyon.json it was written with, or delete the snapshot and let the log replay.\n",
+            .{},
+        );
+        return null;
+    }
     const claimed_crc = std.mem.readInt(u32, last[8..12], .little);
-    const extents = extentsFromFooter(&last, arena_mem.len) orelse {
+    const extents = extentsFromFooter(&last, arena_mem.len, regions) orelse {
         std.debug.print("[TakyonDB-Bootloader] Snapshot extents are not extents of this arena; ignoring.\n", .{});
         return null;
     };
@@ -530,7 +571,7 @@ fn loadSnapshot(allocator: std.mem.Allocator, wal_path: [:0]const u8, arena_mem:
         undoRestore(arena_mem, extents);
         return null;
     }
-    return SnapshotMeta{ .extents = extents };
+    return SnapshotMeta{ .extents = extents, .regions = regions };
 }
 
 /// Formats `<base>.NNNNNN` (zero-padded 6 digits, sentinel-terminated)
@@ -563,15 +604,16 @@ fn replayWal(
     art_max: *u32,
     str_max: *u32,
     index_ops: *IndexOps,
+    regions: layout.Regions,
 ) void {
-    replayOneSegment(allocator, path, arena_mem, rec_max, art_max, str_max, index_ops);
+    replayOneSegment(allocator, path, arena_mem, rec_max, art_max, str_max, index_ops, regions);
     var n: u32 = 0;
     while (n < MAX_SEGMENTS) : (n += 1) {
         var sbuf: [4096]u8 = undefined;
         const seg = formatSegmentPathZ(&sbuf, path[0..path.len], n) catch break;
         const probe = openExisting(seg) orelse break; // stop at first missing N
         closeFd(probe);
-        replayOneSegment(allocator, seg, arena_mem, rec_max, art_max, str_max, index_ops);
+        replayOneSegment(allocator, seg, arena_mem, rec_max, art_max, str_max, index_ops, regions);
     }
 }
 
@@ -589,6 +631,7 @@ fn replayOneSegment(
     art_max: *u32,
     str_max: *u32,
     index_ops: *IndexOps,
+    regions: layout.Regions,
 ) void {
     // Buffer layout. The low CARRY_REGION bytes hold the tail of an entry
     // split across sector boundaries; the final page is the sector just
@@ -713,9 +756,9 @@ fn replayOneSegment(
             // ART_ROOT_OFFSET fold into the record max but stay below
             // RECORD_BUMP_INIT, so they never move the bump.
             const bounded: u32 = @intCast(end_offset);
-            if (header.offset < layout.ART_ROOT_OFFSET) {
+            if (header.offset < regions.art_root) {
                 if (bounded > rec_max.*) rec_max.* = bounded;
-            } else if (header.offset < layout.STRING_ARENA_START) {
+            } else if (header.offset < regions.string_start) {
                 if (bounded > art_max.*) art_max.* = bounded;
             } else {
                 if (bounded > str_max.*) str_max.* = bounded;
@@ -772,26 +815,43 @@ fn carryLenFrom(buf: []u8, cursor: usize, end_idx: usize) usize {
     return 0;
 }
 
-fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32) void {
+/// First offset inside the record region with room for `len` bytes.
+///
+/// A test that writes through the log has to place its payload where a
+/// record belongs. Recovery restores the index and string bump words from
+/// their own regions, so a payload that straddles the boundary comes back
+/// with four bytes of allocator state in the middle of it -- which reads as
+/// a replay bug and is not one. `expect` fails loudly rather than quietly
+/// shrinking the arena the test was written against.
+fn recordPayloadOffset(regions: layout.Regions, len: usize) !u32 {
+    const at: usize = regions.record_start + 8;
+    if (at + len > @as(usize, regions.record_start) + regions.record_bytes) return error.PayloadTooBig;
+    return @intCast(at);
+}
+
+fn finalize(arena_mem: []u8, rec_max: u32, art_max: u32, str_max: u32, regions: layout.Regions) void {
     // Idempotent: writing the same aligned maxima twice changes nothing.
     // Each bump is clamped to its init and 8-aligned; out-of-range bumps
     // on small arenas (tests) are skipped instead of panicking.
-    if (layout.RECORD_BUMP_OFFSET + 4 <= arena_mem.len) {
-        const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.RECORD_BUMP_OFFSET])));
-        bump_ptr.* = align8(@max(rec_max, layout.RECORD_BUMP_INIT));
+    const rec_bump_off = regions.recordBumpOffset();
+    const art_bump_off = regions.artBumpOffset();
+    const str_bump_off = regions.string_start;
+    if (rec_bump_off + 4 <= arena_mem.len) {
+        const bump_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[rec_bump_off])));
+        bump_ptr.* = align8(@max(rec_max, regions.record_start));
     }
-    if (layout.ART_BUMP_OFFSET + 4 <= arena_mem.len) {
-        const art_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.ART_BUMP_OFFSET])));
-        art_ptr.* = align8(@max(art_max, layout.ART_START));
+    if (art_bump_off + 4 <= arena_mem.len) {
+        const art_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[art_bump_off])));
+        art_ptr.* = align8(@max(art_max, artStartOf(regions)));
     }
-    if (layout.STRING_BUMP_OFFSET + 4 <= arena_mem.len) {
-        const str_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[layout.STRING_BUMP_OFFSET])));
-        str_ptr.* = align8(@max(str_max, layout.STRING_DATA_START));
+    if (str_bump_off + 4 <= arena_mem.len) {
+        const str_ptr = @as(*u32, @ptrCast(@alignCast(&arena_mem[str_bump_off])));
+        str_ptr.* = align8(@max(str_max, stringDataStartOf(regions)));
     }
 
     // 3. IPC channel cleanup: clear the full ring region.
-    if (layout.RING_OFFSET <= layout.RECORD_BUMP_OFFSET and layout.RECORD_BUMP_OFFSET <= arena_mem.len) {
-        @memset(arena_mem[layout.RING_OFFSET..layout.RECORD_BUMP_OFFSET], 0);
+    if (layout.RING_OFFSET <= rec_bump_off and rec_bump_off <= arena_mem.len) {
+        @memset(arena_mem[layout.RING_OFFSET..rec_bump_off], 0);
     }
 
     std.debug.print("[TakyonDB-Bootloader] Isomorphic recovery completed. Bumps rec={} art={} str={}.\n", .{ rec_max, art_max, str_max });
@@ -811,9 +871,10 @@ test "WAL multi-sector entry round-trip (5000B payload)" {
 
     // 6-byte header + 5000B payload = 5006B > 4092B sector payload,
     // so the entry always spans two sectors on disk.
-    const payload_off: u32 = 8000;
     const payload_len: usize = 5000;
-    const arena_size: usize = 16384;
+    const arena_size: usize = 65536;
+    const regions = layout.defaultRegions(arena_size);
+    const payload_off = try recordPayloadOffset(regions, payload_len);
 
     var payload: [5000]u8 = undefined;
     for (&payload, 0..) |*b, i| b.* = @as(u8, @intCast((i * 31 + 7) % 251));
@@ -828,7 +889,7 @@ test "WAL multi-sector entry round-trip (5000B payload)" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena, null);
+    try recoverWal(allocator, path, arena, null, regions);
     try std.testing.expectEqualSlices(u8, &payload, arena[payload_off .. payload_off + payload_len]);
 }
 
@@ -870,12 +931,14 @@ test "WAL replay survives MULTIPLE partial sectors" {
     const batches = 3;
     const per_batch = 4;
     const arena_size: usize = 16384;
+    const regions = layout.defaultRegions(arena_size);
+    const base = try recordPayloadOffset(regions, batches * per_batch * 8);
 
     var wal = try WalManager.init(allocator, path);
     for (0..batches) |b| {
         for (0..per_batch) |i| {
             const idx = b * per_batch + i;
-            const off: u32 = @intCast(1000 + idx * 8);
+            const off: u32 = base + @as(u32, @intCast(idx * 8));
             const byte = [_]u8{@intCast(0xA0 + idx)};
             try writeEntry(&wal, off, &byte);
         }
@@ -886,12 +949,12 @@ test "WAL replay survives MULTIPLE partial sectors" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena, null);
+    try recoverWal(allocator, path, arena, null, regions);
 
     for (0..batches) |b| {
         for (0..per_batch) |i| {
             const idx = b * per_batch + i;
-            const off: usize = 1000 + idx * 8;
+            const off: usize = base + idx * 8;
             try std.testing.expectEqual(
                 @as(u8, @intCast(0xA0 + idx)),
                 arena[off],
@@ -916,15 +979,23 @@ test "WAL replay survives many flushed batches (2000 entries)" {
 
     const total = 2000;
     const per_batch = 7;
-    const arena_size: usize = 65536;
+    // Big enough that the record region holds all 2000 four-byte entries.
+    const arena_size: usize = 1024 * 1024;
 
     var wal = try WalManager.init(allocator, path);
+    // 2000 entries at four bytes each, so the record region has to be big
+    // enough to hold them: a payload spread across two regions would come
+    // back with a bump word in the middle, which is a fixture problem, not a
+    // replay one.
+    const regions = layout.defaultRegions(arena_size);
+    const base = try recordPayloadOffset(regions, total * 4);
+
     var written: usize = 0;
     while (written < total) {
         const n = @min(per_batch, total - written);
         for (0..n) |i| {
             const idx = written + i;
-            const off: u32 = @intCast(1000 + idx * 4);
+            const off: u32 = base + @as(u32, @intCast(idx * 4));
             const byte = [_]u8{@intCast(idx % 251)};
             try writeEntry(&wal, off, &byte);
         }
@@ -936,13 +1007,13 @@ test "WAL replay survives many flushed batches (2000 entries)" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena, null);
+    try recoverWal(allocator, path, arena, null, regions);
 
     // Count how many entries actually landed, in order to report the
     // shortfall instead of failing on the first mismatch.
     var recovered: usize = 0;
     while (recovered < total) : (recovered += 1) {
-        const off: usize = 1000 + recovered * 4;
+        const off: usize = base + recovered * 4;
         if (arena[off] != @as(u8, @intCast(recovered % 251))) break;
     }
     try std.testing.expectEqual(@as(usize, total), recovered);
@@ -971,15 +1042,18 @@ test "WAL replay does not carry padding past a full sector" {
     var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try std.fmt.bufPrintZ(&pathbuf, "{s}/boundary.takyon", .{dirpath});
 
-    const arena_size: usize = 65536;
+    const arena_size: usize = 1024 * 1024;
     const total = 600;
     // Vary the payload so the sector lands on every slack in 1..5 across
     // runs, and keep entries small enough that a full sector holds many.
     const payload_len = 5;
 
+    const regions = layout.defaultRegions(arena_size);
+    const base = try recordPayloadOffset(regions, total * (8 + payload_len));
+
     var wal = try WalManager.init(allocator, path);
     for (0..total) |i| {
-        const off: u32 = @intCast(2000 + i * 8);
+        const off: u32 = base + @as(u32, @intCast(i * 8));
         const bytes = [_]u8{@intCast(i % 251)} ** payload_len;
         try writeEntry(&wal, off, &bytes);
         // Non-forced flush: this is the path that must never emit an
@@ -994,11 +1068,11 @@ test "WAL replay does not carry padding past a full sector" {
     const arena = try allocator.alloc(u8, arena_size);
     defer allocator.free(arena);
     @memset(arena, 0);
-    try recoverWal(allocator, path, arena, null);
+    try recoverWal(allocator, path, arena, null, regions);
 
     var recovered: usize = 0;
     while (recovered < total) : (recovered += 1) {
-        const off: usize = 2000 + recovered * 8;
+        const off: usize = base + recovered * 8;
         if (arena[off] != @as(u8, @intCast(recovered % 251))) break;
     }
     try std.testing.expectEqual(@as(usize, total), recovered);
@@ -1044,8 +1118,9 @@ test "WAL index_op records rebuild the ART on replay" {
 
     // Round 2: a fresh arena, as after SIGKILL.
     @memset(arena, 0);
-    var art_index = ArtIndex.init(arena, layout.ART_ROOT_OFFSET, layout.ART_BUMP_OFFSET, layout.ART_START);
-    try recoverWal(allocator, path, arena, &art_index);
+    const regions = layout.defaultRegions(arena.len);
+    var art_index = ArtIndex.init(arena, regions.art_root, regions.artBumpOffset(), @intCast(regions.artStart()));
+    try recoverWal(allocator, path, arena, &art_index, regions);
 
     for (keys, 0..) |key, i| {
         const found = art_index.search(key) orelse {
@@ -1087,6 +1162,6 @@ test "WAL framing fuzz never fails fatally (256 random files)" {
         // Arbitrary bytes must never fail fatally: the parser stops at the
         // first bad CRC/length and returns with whatever prefix was valid
         // (possibly an empty arena).
-        try recoverWal(allocator, path, arena, null);
+        try recoverWal(allocator, path, arena, null, layout.defaultRegions(arena.len));
     }
 }

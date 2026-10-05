@@ -126,15 +126,27 @@ fn lastErrno() std.posix.E {
     return @enumFromInt(@as(u16, @intCast(n)));
 }
 
-/// Stamps the ARENA_MAGIC + LAYOUT_VERSION header (u32 little-endian).
+/// Stamps the arena header: magic, layout version and the region table.
+///
+/// The table written here is always the default one, because this runs
+/// before anyone has had a chance to configure anything. A daemon that
+/// wants a configured table overwrites it with `layout.writeRegions`
+/// immediately after mapping, before the first read of any region. A
+/// client that creates the segment itself has no configuration to apply,
+/// and defaults are the honest thing for it to get.
 fn writeHeader(mem: []u8) void {
-    std.mem.writeInt(u32, mem[layout.MAGIC_OFFSET..][0..4], layout.ARENA_MAGIC, .little);
-    std.mem.writeInt(u32, mem[layout.VERSION_OFFSET..][0..4], layout.LAYOUT_VERSION, .little);
+    if (mem.len < layout.HEADER_BYTES) return;
+    layout.writeRegions(mem, layout.defaultRegions(mem.len));
 }
 
-/// Verifies the ARENA_MAGIC + LAYOUT_VERSION header.
+/// Verifies the header, and with it the region table's presence.
+///
+/// A version this build does not speak is refused rather than adapted to.
+/// The cost of guessing an arena's regions is not a failed attach; it is a
+/// writer that thinks records start at one offset while a reader thinks
+/// they start at another.
 fn checkHeader(mem: []u8) bool {
-    if (mem.len < layout.VERSION_OFFSET + 4) return false;
+    if (mem.len < layout.HEADER_BYTES) return false;
     const magic = std.mem.readInt(u32, mem[layout.MAGIC_OFFSET..][0..4], .little);
     const version = std.mem.readInt(u32, mem[layout.VERSION_OFFSET..][0..4], .little);
     return magic == layout.ARENA_MAGIC and version == layout.LAYOUT_VERSION;

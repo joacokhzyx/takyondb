@@ -6,17 +6,7 @@
 import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength } from './client/proxy';
 import { TakyonSchema, FieldType } from './client/schema';
 import { loadBindings } from './client/addon';
-import {
-    ART_ROOT_OFFSET,
-    MAX_KEY_LEN,
-    RECORD_BUMP_INIT,
-    RECORD_START,
-} from './client/layout';
-
-// Fixed-length records grow from RECORD_START up to the ART index.
-// The bump word lives at RECORD_BUMP_OFFSET (see layout.zig); there must be
-// exactly one record bump shared by all clients.
-const MAX_RECORD_ARENA = ART_ROOT_OFFSET;
+import { MAX_KEY_LEN } from './client/layout';
 
 // The engine ART index requires NUL-free keys, and takyon_insert_index /
 // takyon_search_index accept at most MAX_KEY_LEN bytes. JS string length
@@ -249,7 +239,6 @@ export class TakyonDB {
      * index and pushdown bindings that `TakyonDB` does not wrap.
      */
     public readonly client: TakyonClient;
-    private currentRecordOffset: number = RECORD_START;
 
     /**
      * @param bindings - Native addon bindings. Optional: when omitted the
@@ -310,24 +299,30 @@ export class TakyonDB {
      * @param size - Record size in bytes, matching `schema.totalSize`.
      * @returns The absolute arena offset of the allocation.
      * @throws {Error} If `size` is not a positive integer, or the
-     *   allocation would run into the ART root at `ART_ROOT_OFFSET`. That
-     *   limit is fixed by `layout.zig`, so the only fix is a larger
-     *   `memorySize`, not a bigger arena.
+     *   allocation would run into the region the arena's header says the
+     *   index begins at. That limit is the record region this arena was
+     *   configured with; a larger arena only helps if its record region
+     *   was configured larger too.
      * @internal
      */
     public allocateRecordOffset(size: number): number {
         if (!Number.isInteger(size) || size <= 0) {
             throw new Error(`record size must be positive, got ${size}`);
         }
+        const regions = this.client.getRegions();
         // Single shared bump word (see layout.zig). Atomics make the
         // allocation itself thread-safe across workers. The view is
         // pooled on the client, so an insert allocates no view.
         const atomicArr = this.client.getRecordBumpView();
-        Atomics.compareExchange(atomicArr, 0, 0, RECORD_BUMP_INIT);
+        Atomics.compareExchange(atomicArr, 0, 0, regions.recordStart);
         const allocatedOffset = Atomics.add(atomicArr, 0, size);
 
-        if (allocatedOffset + size > MAX_RECORD_ARENA) {
-            throw new Error("Out of record memory. Increase MAX_RECORD_ARENA.");
+        if (allocatedOffset + size > regions.recordStart + regions.recordBytes) {
+            throw new Error(
+                `Out of record memory: this arena's record region is ` +
+                    `${regions.recordBytes} bytes. Raise "regions": { "record_bytes": N } ` +
+                    'in takyon.json and restart the daemon.',
+            );
         }
 
         return allocatedOffset;

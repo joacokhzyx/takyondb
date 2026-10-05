@@ -212,15 +212,94 @@ pub const Regions = struct {
 /// with a config file is also a behaviour change, and nobody can tell which
 /// of their problems is which.
 pub fn defaultRegions(arena_bytes: usize) Regions {
+    const arena: u32 = @intCast(arena_bytes);
+    const ring_end: u32 = @intCast(RING_OFFSET + ringBytes(RING_DEFAULT_CAPACITY));
+    const rec_start_u32: u32 = ring_end + 8;
+    // The three boundary constants are `usize`; the table is u32 because
+    // every word in the header is one.
+    const record_start_const: u32 = RECORD_START;
+    const art_root_const: u32 = ART_ROOT_OFFSET;
+    const string_start_const: u32 = STRING_ARENA_START;
+
+    if (arena >= STRING_ARENA_START) {
+        return .{
+            .arena_bytes = arena,
+            .ring_capacity = RING_DEFAULT_CAPACITY,
+            .record_start = record_start_const,
+            .record_bytes = art_root_const - record_start_const,
+            .art_root = art_root_const,
+            .art_bytes = string_start_const - art_root_const,
+            .string_start = string_start_const,
+            .string_bytes = arena - string_start_const,
+        };
+    }
+
+    // Smaller than the constants describe. Only synthetic arenas get here --
+    // the engine refuses anything under MIN_ARENA_SIZE, and the WAL tests
+    // build a few-hundred-kilobyte one to count sectors. Scaling the same
+    // structure down is better than the two alternatives: returning the
+    // constants anyway produces a table that underflows on the first
+    // subtraction, and panicking on a legal argument is a worse contract
+    // than returning something `validateRegions` can judge.
+    if (arena < ring_end + 64) {
+        // Too small even for the default ring. Shrink the ring to the
+        // largest power of two that leaves room for the three regions; a
+        // 256 KiB arena cannot hold 4096 slots, and returning a table whose
+        // record start is past the end of the mapping would just move the
+        // failure to whoever validated it.
+        var cap: usize = 16;
+        while (cap < RING_DEFAULT_CAPACITY) {
+            if (RING_OFFSET + ringBytes(cap * 2) + 64 > arena) break;
+            cap *= 2;
+        }
+        const small_ring_end: u32 = @intCast(RING_OFFSET + ringBytes(cap));
+        if (arena < small_ring_end + 64) {
+            // Not enough for any legal ring. Return a table that fails
+            // validation with a named error rather than one that indexes
+            // past the mapping.
+            return .{
+                .arena_bytes = arena,
+                .ring_capacity = 16,
+                .record_start = small_ring_end,
+                .record_bytes = 0,
+                .art_root = small_ring_end,
+                .art_bytes = 0,
+                .string_start = small_ring_end,
+                .string_bytes = 0,
+            };
+        }
+        const s_rec_start: u32 = small_ring_end + 8;
+        const s_spare: u32 = arena - s_rec_start;
+        const s_rec_bytes: u32 = std.mem.alignForward(u32, s_spare / 4, 8);
+        const s_art_root: u32 = s_rec_start + s_rec_bytes;
+        const s_art_bytes: u32 = std.mem.alignForward(u32, (s_spare - s_rec_bytes) / 2, 8);
+        const s_str_start: u32 = s_art_root + s_art_bytes;
+        return .{
+            .arena_bytes = arena,
+            .ring_capacity = @intCast(cap),
+            .record_start = s_rec_start,
+            .record_bytes = s_rec_bytes,
+            .art_root = s_art_root,
+            .art_bytes = s_art_bytes,
+            .string_start = s_str_start,
+            .string_bytes = arena - s_str_start,
+        };
+    }
+    const rec_start = rec_start_u32;
+    const spare = arena - rec_start;
+    const rec_bytes = std.mem.alignForward(u32, spare / 4, 8);
+    const art_root: u32 = @intCast(rec_start + rec_bytes);
+    const art_bytes: u32 = std.mem.alignForward(u32, (spare - rec_bytes) / 2, 8);
+    const str_start: u32 = @intCast(art_root + art_bytes);
     return .{
-        .arena_bytes = @intCast(arena_bytes),
-        .ring_capacity = @intCast(RING_DEFAULT_CAPACITY),
-        .record_start = @intCast(RECORD_START),
-        .record_bytes = @intCast(ART_ROOT_OFFSET - RECORD_START),
-        .art_root = ART_ROOT_OFFSET,
-        .art_bytes = @intCast(STRING_ARENA_START - ART_ROOT_OFFSET),
-        .string_start = STRING_ARENA_START,
-        .string_bytes = @intCast(arena_bytes - STRING_ARENA_START),
+        .arena_bytes = arena,
+        .ring_capacity = RING_DEFAULT_CAPACITY,
+        .record_start = rec_start,
+        .record_bytes = rec_bytes,
+        .art_root = art_root,
+        .art_bytes = art_bytes,
+        .string_start = str_start,
+        .string_bytes = arena - str_start,
     };
 }
 
@@ -418,4 +497,28 @@ test "validation rejects every way a table can be wrong" {
 
     // A mapping too small to hold a header at all.
     try std.testing.expectError(error.HeaderTooSmall, validateRegions(good, 16));
+}
+
+test "the default table is valid for a small synthetic arena too" {
+    // The WAL and recovery tests build arenas of a few hundred kilobytes.
+    // Getting a valid table out of this helper for them is what keeps
+    // `defaultRegions` a total function instead of one that panics on a
+    // legal argument.
+    const sizes = [_]usize{
+        layout_min_for_tests(),
+        256 * 1024,
+        1024 * 1024,
+        8 * 1024 * 1024,
+        MIN_ARENA_SIZE,
+        64 * 1024 * 1024,
+    };
+    for (sizes) |n| {
+        const r = defaultRegions(n);
+        try std.testing.expectEqual(@as(u32, @intCast(n)), r.arena_bytes);
+        try validateRegions(r, n);
+    }
+}
+
+fn layout_min_for_tests() usize {
+    return RING_OFFSET + ringBytes(RING_DEFAULT_CAPACITY) + 4096;
 }
