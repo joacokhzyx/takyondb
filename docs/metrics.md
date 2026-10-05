@@ -25,7 +25,7 @@ measurements, and [coverage.md](coverage.md) for what is and is not covered.
 | Zig tests | 83 in 28 files |
 | TypeScript unit tests | 129 in 28 files |
 | E2E suites | 14 scripts |
-| Documentation pages | 63 |
+| Documentation pages | 62 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
 | CI workflows | 2 |
