@@ -5,8 +5,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-Nothing yet. The work below shipped under [0.1.0](#010---2026-09-25); this
-section is where anything after it goes.
+### Changed
+
+- **The project has a mission, and the docs now measure it against the
+  code.** TakyonDB described itself as an experimental zero-copy
+  database, which is a mechanism and not a reason to exist, and it left
+  the reader to guess what the project was for. `docs/mission.md` states
+  it: Takyon is the data layer a server runs on, with storage, indexes,
+  cache and queries in one process over one arena, so a server spends
+  less CPU, memory and energy than it does running a database and a
+  cache beside it.
+
+  **Nothing about the engine changed.** No code, no on-disk format, no
+  wire contract, no package or segment name. `Takyon` is the product and
+  `TakyonDB` is the engine inside it; the repository, the npm package and
+  the daemon binary keep the `takyondb` name.
+
+  The mission is larger than the engine, so the same entry retires the
+  claims that could not survive it. The README no longer opens with
+  "insanely fast, zero-copy, lock-free": "zero-copy" now names what is
+  mapped and shared and points at `docs/performance-truth.md` for read
+  path cost, and "lock-free" is gone from the user-facing description
+  because what a caller experiences is a bounded ring that can refuse a
+  write. The Debian control file, the systemd unit, the Homebrew formula
+  and the npm description carried the same adjectives and now say what
+  the package is.
+
+  New pages: `docs/mission.md` (the mission, what it would replace, and
+  a "what we do not claim yet" section that names every gap with the
+  file documenting it) and `docs/infrastructure.md` (the four layers and
+  the design behind each roadmap gate). `ROADMAP.md` is now seven gates,
+  each with the experiment that closes it, and its former non-goal "SQL
+  is not a goal, this stays a KV + index engine" is replaced by "Gate 4
+  decides how far the query surface goes".
+
+  **Known gaps added by this change:** the cache tier that removes Redis
+  from a server's architecture does not exist, so the claim is a Gate 3
+  design rather than a feature; and the energy claim has no power
+  measurement behind it yet, which is Gate 5. Both are stated in
+  `docs/mission.md` and neither is described as shipped.
+
+### Removed
+
+- **Three documentation pages that contradicted each other.**
+  `docs/roadmap-visual.md`, `docs/executive-roadmap.md` and
+  `docs/final-status.md` duplicated `ROADMAP.md` and `CHANGELOG.md` while
+  carrying hand-written counts — the exact failure that made
+  `docs/final-status.md` claim 375 commits and 97 TypeScript tests when
+  the tree held 133 and 75. `docs/next-steps.md` is where an open limit
+  belongs and says so.
+
+### Fixed
+
+- **Pages that stated limits the code does not enforce.**
+  `docs/architecture/README.md` claimed a 64 MiB minimum arena when the
+  constant is 16 MiB, placed the record bump word at offset 2048 when it
+  is 296128, documented a v1 snapshot footer that recovery now rejects,
+  and listed four items as missing that shipped long ago (index
+  shrink-on-delete and the node freelist, the Vyukov ring, C-ABI
+  fuzzing, and `shm_unlink` ownership). `docs/operations.md` printed an
+  installer version that disagreed with the canonical one.
+  `docs/verify.md`, `docs/structure.md` and `docs/relational/limits.md`
+  now state commands and bounds the code enforces instead of counts that
+  were stale.
+
+The work below shipped under [0.1.0](#010---2026-09-25).
 
 ### Added
 
