@@ -26,6 +26,7 @@ anchor on this page, and CI runs it.
 |---|---|
 | [infrastructure.md](infrastructure.md) | The four layers, and the design behind each roadmap gate |
 | [architecture/README.md](architecture/README.md) | The arena map, the ring, the index, the WAL, recovery, vacuum |
+| [architecture/models.md](architecture/models.md) | How each model maps onto the arena, and which key namespace it owns |
 | [structure.md](structure.md) | How the repository is laid out |
 
 ## The relational model
