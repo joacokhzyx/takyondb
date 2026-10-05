@@ -45,7 +45,7 @@ runs it.
 | Page | What it answers |
 |---|---|
 | [relational/README.md](relational/README.md) | Index of the relational docs |
-| [relational/vision.md](relational/vision.md) | Goals and non-goals |
+| [relational/vision.md](relational/vision.md) | The relational layer as one model, what is true and what is not |
 | [relational/data-model.md](relational/data-model.md) | Types, schemas, rows, tables |
 | [relational/query-api.md](relational/query-api.md) | `QueryBuilder`, predicates, projections, ordering |
 | [relational/sql-subset.md](relational/sql-subset.md) | The supported `SELECT` subset |
@@ -77,20 +77,16 @@ runs it.
 
 | Page | What it answers |
 |---|---|
+| [../ROADMAP.md](../ROADMAP.md) | The seven gates, and the experiment that closes each one |
+| [next-steps.md](next-steps.md) | What is not done, and what the current behaviour is |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | How to contribute |
 | [../CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | Code of conduct |
+| [pr-checklist.md](pr-checklist.md) | What a pull request should include |
 | [clean-code.md](clean-code.md) | Code style rules |
 | [STYLEGUIDE.md](STYLEGUIDE.md) | Documentation style |
-| [styleguide-relational.md](styleguide-relational.md) | Relational documentation style |
-| [pr-checklist.md](pr-checklist.md) | What a pull request should include |
-| [open-source.md](open-source.md) | Open-source stance |
+| [support.md](support.md) | Where to ask, and what to include |
 | [governance.md](governance.md) | Decision making |
-| [roadmap-visual.md](roadmap-visual.md) | Roadmap at a glance |
-| [roadmap-relational.md](roadmap-relational.md) | Relational roadmap |
-| [executive-roadmap.md](executive-roadmap.md) | Roadmap for a non-engineer audience |
-| [conduct-summary.md](conduct-summary.md) | Summary of the code of conduct |
+| [open-source.md](open-source.md) | Open-source stance |
 | [license-note.md](license-note.md) | Licensing notes |
+| [conduct-summary.md](conduct-summary.md) | Summary of the code of conduct |
 | [thanks.md](thanks.md) | Credits |
-| [final-status.md](final-status.md) | Current verified state |
-| [next-steps.md](next-steps.md) | What is next |
-| [autonomy-log.md](autonomy-log.md) | Record of autonomous work sessions |
