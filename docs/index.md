@@ -9,6 +9,7 @@ runs it.
 | Page | What it answers |
 |---|---|
 | [../README.md](../README.md) | What TakyonDB is, and a quickstart you can run |
+| [mission.md](mission.md) | Why the project exists, what it replaces, and what it does not claim yet |
 | [quickstart-relational.md](quickstart-relational.md) | Relational engine quickstart |
 | [sdk.md](sdk.md) | The TypeScript SDK: schemas, layouts, key rules, lifecycle, how the addon is found |
 | [structure.md](structure.md) | How the repository is laid out |
