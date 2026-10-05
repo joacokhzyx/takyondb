@@ -64,3 +64,43 @@ Then, mechanically:
   hold, so it has been deleted from the remote and from local clones. The
   commit it pointed at is still reachable in the branch history. Nothing
   to reconcile at the next tag.
+
+## Repository metadata
+
+The strings a visitor sees before reading a single line of code. They live
+here because they are part of the identity, and a repository that changes
+its name without changing these is describing something that does not
+exist. Applying them needs repository admin rights, which is why they are
+written down instead of being changed silently by a release script.
+
+**Description** (Settings → General → Description):
+
+```text
+One engine, one arena, one process. Takyon's bet: a server should not need a database and a cache to store data, and software can be small, fast and honest at the same time.
+```
+
+**Topics** (Settings → General → Topics). Ten, because they are how the
+project is found, and a misspelled one is worse than a missing one:
+
+```text
+database  embedded-database  key-value  storage-engine  cache
+shared-memory  zig  typescript  nodejs  performance
+```
+
+**Labels.** The defaults plus these, so an issue or a pull request can say
+which gate it serves and which area it touches:
+
+```text
+gate:truth          gate:substrate      gate:durability   gate:cache
+gate:relational     gate:energy         gate:languages
+area:engine         area:sdk            area:daemon       area:docs
+area:packaging      security
+```
+
+`security` exists because `SECURITY.md` tells reporters to use it. It did
+not exist before, which is the kind of gap a policy page should not have.
+
+**Private vulnerability reporting** (Settings → Security → Enable). It is
+the path `SECURITY.md` asks for, and it keeps a report out of the public
+issue tracker from the first message.
+
