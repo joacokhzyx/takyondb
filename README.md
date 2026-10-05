@@ -1,66 +1,73 @@
 <div align="center">
   <img src="assets/logo.png" alt="TakyonDB Logo" width="200" />
   <h1>TakyonDB</h1>
-  <p><strong>Insanely fast, zero-copy, lock-free in-memory database bridging Zig and Node.js</strong></p>
-  
-  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-  [![Platform: Windows | Linux | macOS](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
-  [![Zig](https://img.shields.io/badge/Zig-0.12+-orange.svg)]()
-  [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)]()
+  <p><strong>One engine, one arena, one process: the data layer a server runs on.</strong></p>
 </div>
 
 ---
 
-## ⚡ What is TakyonDB?
+## The mission
 
-TakyonDB is an experimental, ultra-low latency memory-mapped database that obliterates standard Inter-Process Communication (IPC) bottlenecks. By leveraging a **Zero-Copy Architecture**, Node.js clients and the Zig-based storage daemon read and write to the exact same physical memory segments seamlessly. 
+A server that stores data usually runs more than one process to do it: a
+database for rows, a cache for hot values, and glue in between that
+carries bytes from one to the other. Each of those costs a process, a
+port, a connection pool, and memory that stays resident while nothing is
+happening.
 
-Instead of serializing and deserializing JSON over TCP sockets (like Redis or Memcached), TakyonDB lets your TypeScript code read and write the mapped arena directly through a `DataView`.
+Takyon is an attempt to collapse that into one engine over one mapped
+arena. The mission, what it would replace, and what it cannot do yet are
+written down in [docs/mission.md](docs/mission.md). The design behind it
+is in [docs/infrastructure.md](docs/infrastructure.md).
 
-> **On `SharedArrayBuffer`.** The addon hands your process an external
-> `ArrayBuffer` over the mapped region — one `mmap` per V8 isolate — not a
-> `SharedArrayBuffer`. Node exposes no way to wrap a raw pointer in a SAB, so
-> cross-worker access is mediated by the mapped pages themselves rather than by
-> V8 atomics, and `Atomics.wait` is not available on this buffer. Writes are
-> handed to the engine through a lock-free MPMC ring using Zig-level atomics.
-> Older revisions of this README claimed `SharedArrayBuffer`; that was never
-> true. See [docs/sdk.md](docs/sdk.md#lifecycle-and-memory-mapping).
+## What exists today
 
-### Key Features
-- **Zero-Copy Reads/Writes**: No JSON parsing, no TCP overhead, no context switching.
-- **Lock-Free Adaptive Radix Tree (ART)**: Deeply optimized indexing structure allowing multiple Node.js workers to query the database concurrently without blocking.
-- **O(1) Isomorphic Startup**: Instant crash recovery. The state is snapshotted and memory-mapped directly from the SSD, restoring gigabytes of data in milliseconds.
-- **Checksummed Write-Ahead Log (WAL)**: Every disk sector carries a CRC32 so torn writes are detected and truncated on recovery. This is corruption *detection*, not cryptographic integrity — CRC32 does not defend against deliberate tampering. See [SECURITY.md](SECURITY.md).
-- **Native TypeScript SDK**: Fluent, strongly-typed API that hides the complex C-ABI memory math.
+Experimental and pre-alpha. A Zig storage daemon, a C++ N-API bridge, and
+a TypeScript SDK over one shared arena.
 
----
+* **Key-value collections** with a compiled schema, addressed through an
+  adaptive radix tree in shared memory.
+* **A relational layer** — tables, filters, joins, aggregations,
+  transactions and a `SELECT` subset. Its rows currently live in a
+  JavaScript `Map`, not in the arena. See
+  [docs/relational/](docs/relational/).
+* **Durability** — a checksummed write-ahead log with a logical record for
+  index writes, verified snapshots that carry only the extents in use,
+  and recovery from both.
+* **An idle daemon that sleeps.** `scripts/e2e_idle_cpu_test.js` fails
+  the build if it stops.
 
-## 🏗 Architecture
-
-TakyonDB maps a single chunk of memory (`SharedArena`, minimum 64MB) containing:
-1. **IPC RingBuffer (`1024 + 256 KB`)**: Lock-free queue (192B header + 4096 x 64B slots by default) where Node.js pushes mutations.
-2. **Record Arena (`4096 - 2 MB`)**: Bump-allocated fixed-length rows, growing from `RECORD_START` up to `ART_ROOT_OFFSET`.
-3. **ART Index (`2 MB +`)**: Full `Node4 → 16 → 48 → 256` radix tree with tagged pointers rooted at `2 MB`.
-4. **Strings Arena (`10 MB +`)**: A bump-allocator for variable-length UTF-8 strings (bump word at `10 MB`, data from `10 MB + 4`).
-5. **Vacuum banks**: The string region is split in halves for double-buffered compaction by the background Vacuum thread.
-
-<div align="center">
-  <em>(See <code>docs/architecture/</code> for deeper technical dives)</em>
-</div>
+What it does not do yet is listed, with the file that documents each gap,
+in [docs/mission.md](docs/mission.md#what-we-do-not-claim-yet). There is
+no cache tier, no eviction, no explicit durability call, and region sizes
+are still compile-time constants.
 
 ---
 
-## 📦 Quickstart
+## Quickstart
 
-The whole flow below is exercised by `scripts/pack_smoke.js`, which packs the
-tarball, installs it into a directory outside this repository, and runs the same
-code against a live daemon on all three CI platforms. If it works there, it
-works from npm.
+```
+$ ./zig-out/bin/takyondb
+[TakyonDB-Daemon] Starting TakyonDB Standalone Server...
+[TakyonDB-Daemon] Admin endpoint listening on 127.0.0.1:7723
 
-### 1. Start the daemon
+$ printf 'PING\n' | nc 127.0.0.1 7723
+PONG
+```
 
-The storage engine runs as an independent daemon. Either install a packaged
-build:
+The admin endpoint answers one command per connection, then closes. The
+full command set is in [docs/operations.md](docs/operations.md).
+
+### 1. Build the daemon
+
+Needs Zig 0.14.1, the version CI pins.
+
+```bash
+zig build -Doptimize=ReleaseSafe
+./zig-out/bin/takyondb            # 64 MiB arena, default data dir
+./zig-out/bin/takyondb --help     # flags, admin protocol, signals
+```
+
+Or install a packaged build:
 
 ```bash
 # Debian/Ubuntu
@@ -70,23 +77,15 @@ sudo installer -pkg TakyonDB-0.1.0.pkg -target /
 # Windows: run TakyonDB-Setup-v0.1.0.exe
 ```
 
-…or build it from source (needs Zig 0.14.1, the version CI pins):
-
-```bash
-zig build -Doptimize=ReleaseSafe
-./zig-out/bin/takyondb            # 64 MiB arena, default data dir
-./zig-out/bin/takyondb --help     # flags, admin protocol, signals
-```
-
 ### 2. Install the SDK
 
 ```bash
 npm install takyondb
 ```
 
-The package ships a prebuilt N-API addon for your platform, so no toolchain is
-needed. If you are on a platform with no prebuild yet, the error tells you
-exactly that and lists the alternatives.
+The package ships a prebuilt N-API addon for your platform, so no
+toolchain is needed. On a platform with no prebuild yet, the error says
+so and lists the alternatives.
 
 ### 3. Connect
 
@@ -112,30 +111,41 @@ console.log(alice?.username); // "Alice"
 console.log(alice?.age);      // 28
 ```
 
-The arena size must match the daemon's. `new TakyonDB()` defaults to 64 MiB, so
-run the daemon with no arguments (or `--data-dir` for the WAL and snapshots).
+The arena size must match the daemon's. `new TakyonDB()` defaults to
+64 MiB, so run the daemon with no arguments, or pass `--data-dir` for the
+WAL and snapshots.
 
-### 4. Talk to the daemon over the admin port
+The daemon owns durability. A mapping without one is memory that
+disappears with the last process, and a write returns once the change is
+queued, not once it is on disk.
 
-```bash
-printf 'PING\nMETRICS\n' | nc 127.0.0.1 7723
-# PONG
-# METRICS ring_depth=0 wal_bytes=1130496 wal_segments=0 uptime_s=12 ...
-```
-
-> Status: pre-alpha. KV (`Collection`) plus relational
-> (`RelationalDatabase` / `Table` / `QueryBuilder`, SQL subset) in
-> `src/sdk/client/relational/` and `src/core/relational/`.
-> See [docs/relational/](docs/relational/) and
-> [docs/architecture/](docs/architecture/).
+`pack_smoke.js` exercises this whole flow: it packs the tarball, installs
+it outside this repository, and runs the same code against a live daemon
+on all three CI platforms.
 
 ---
 
-## 🧮 Relational (new)
+## How it is put together
+
+One shared arena holds a lock-free ring for mutations, a fixed-length
+record region, the radix index, and a region for variable-length
+strings. A client maps it and addresses the bytes; the daemon drains the
+ring into the log and takes snapshots. The byte map is in
+[docs/architecture/README.md](docs/architecture/README.md), and it is
+defined once in `src/core/memory/layout.zig` and mirrored in
+`src/sdk/client/layout.ts`.
+
+The arena is mapped rather than copied between processes, so data
+written through one mapping is resident once and shared by every other
+mapper. That is the narrow claim that survives measurement, and it is
+about the mapping, not about the read path. What the read path costs,
+including the per-record allocations in the SDK around it, is in
+[docs/performance-truth.md](docs/performance-truth.md).
+
+## Relational
 
 ```typescript
-import { RelationalDatabase } from 'takyondb';
-import { QueryBuilder } from 'takyondb';
+import { RelationalDatabase, QueryBuilder } from 'takyondb';
 
 const db = new RelationalDatabase();
 const users = db.createTable('users', [
@@ -146,48 +156,49 @@ users.insert({ id: 'u1', age: 28 });
 new QueryBuilder(users).where({ age: { gte: 18 } }).all();
 ```
 
-Tables use namespaced ART keys (`tbl:/idx:/__catalog__`), zero-copy scans,
-hash joins, single-pass aggs, batch tx, and a minimal `SELECT` parser.
-Zig core mirrors types/catalog/row/filter/agg/scan/query/join/tx with tests.
+Tables use namespaced index keys, zero-copy scans, hash joins,
+single-pass aggregations, batch transactions and a minimal `SELECT`
+parser. The Zig core mirrors the types, catalog, row, filter, aggregate,
+scan, query, join and transaction layers with tests.
 
----
+## Benchmarks
 
-## 🧪 Benchmarks
-
-Reproduce them yourself; every harness prints its hardware, workload and
-methodology, and writes a JSON record to `$BENCH_JSON_PATH` when set.
+Every published number has a harness, a workload and a hardware record.
+Reproduce them yourself:
 
 | Harness | What it measures |
 |---|---|
-| `node scripts/benchmark_chaos.js` | Saturated multi-worker run: 4 `worker_threads`, 200 000 ops (20 % read / 40 % insert / 40 % update), vacuum running, a checkpoint every 500 ms, against a live daemon. |
-| `node scripts/bench_scan.js [n]` | Native prefix and range scans vs point lookups, through the N-API addon against a live daemon. |
-| `node scripts/bench_relational.js` | Seeded relational workload (insert/scan/filter/join/agg) over the TypeScript engine. |
-| `node --expose-gc scripts/bench_proxy.js [n]` | TypeScript SDK overhead only, mocked bridge. Absolute cost of the shipped hot path. |
-| `node scripts/bench_pooling.js [n]` | The pooling optimization in isolation: shared vs per-operation codec/scratch. |
+| `node scripts/benchmark_chaos.js` | Saturated multi-worker run against a live daemon |
+| `node scripts/bench_scan.js [n]` | Native prefix and range scans vs point lookups |
+| `node scripts/bench_relational.js` | Seeded relational workload over the TypeScript engine |
+| `node --expose-gc scripts/bench_proxy.js [n]` | TypeScript SDK overhead only, mocked bridge |
+| `node scripts/bench_pooling.js [n]` | The pooling optimization in isolation |
 
-A run of the chaos harness on a 2× AMD EPYC 7763 (Linux, Node 24) with
-ReleaseSafe:
-
-| Metric | Latency |
-|--------|---------|
-| **p50** | `0.002 ms` |
-| **p95** | `0.004 ms` |
-| **p99** | `0.011 ms` |
-
-**Absolute numbers are machine specific and are not a target.** They are here
-so you can check your own hardware, not to be compared across machines. The
-one portable result is the isolated pooling delta in `bench_pooling.js`
-(-22 % to -73 % depending on percentile, averaged over identical code paths).
-Full methodology, including what each number does *not* include, is in
+Absolute numbers are machine specific and are not a target. What each
+one includes, and what it does not, is in
 [docs/performance-truth.md](docs/performance-truth.md).
 
----
+## Contributing
 
-## 🤝 Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Commits follow
+[Conventional Commits](https://www.conventionalcommits.org/) with a DCO
+sign-off (`git commit -s`).
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for our code of conduct and development guidelines.
-Ensure all commits follow the **Conventional Commits** specification and sign off with `git commit -s` (DCO).
+Verify before handing work over:
 
-## 📄 License
+```bash
+bash scripts/verify.sh --fast    # everything except the E2E suites
+bash scripts/verify.sh           # the same gates CI runs
+```
+
+## License
 
 TakyonDB is licensed under the [MIT License](LICENSE).
+
+<div align="center">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Windows, Linux, macOS" />
+  <img src="https://img.shields.io/badge/Zig-0.14.1-orange.svg" alt="Zig 0.14.1" />
+  <img src="https://img.shields.io/badge/TypeScript-Ready-blue.svg" alt="TypeScript ready" />
+</div>

@@ -33,4 +33,4 @@ NODE_PATH=../src/sdk/ts/node_modules \
 
 The engine used by these examples is pure TypeScript and needs no native addon.
 For the shared-memory path (ART, WAL, native scans) see the
-[quickstart](../../README.md#-quickstart) and [sdk](../../docs/sdk.md).
+[quickstart](../../README.md#quickstart) and [sdk](../../docs/sdk.md).
