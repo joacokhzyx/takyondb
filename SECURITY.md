@@ -34,7 +34,11 @@ worth of durability.
   `SCAN` and `RANGE`, and can trigger a checkpoint.
 * The relational catalog and rows live in the same arena with the same
   bounds checks as the key-value path; there is no additional isolation
-  between models.
+  between models. Today the rows are in the SDK's own heap, so the
+  relational surface is the JavaScript one, and its checks are its own.
+* A `where` clause cannot reach the engine: predicates are evaluated in
+  the SDK against objects it already holds, so the C ABI is not on that
+  path.
 
 ## Reporting a Vulnerability
 

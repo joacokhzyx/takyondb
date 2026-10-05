@@ -19,6 +19,8 @@ anchor on this page, and CI runs it.
 | [sdk.md](sdk.md) | The TypeScript SDK: schemas, keys, lifecycle, how the addon is found |
 | [versioning.md](versioning.md) | Version policy and compatibility |
 | [relational/README.md](relational/README.md) | The relational model: quickstart, glossary, harnesses, test strategy |
+| [relational/query-api.md](relational/query-api.md) | `QueryBuilder`, joins, transactions, the SQL entry points |
+| [relational/indexes.md](relational/indexes.md) | Key namespaces, `ArtMirror`, native secondary indexes |
 
 ## Understand it
 
@@ -40,6 +42,7 @@ anchor on this page, and CI runs it.
 | [relational/sql-subset.md](relational/sql-subset.md) | The supported `SELECT` subset |
 | [relational/operations.md](relational/operations.md) | Catalog, backup, migration |
 | [relational/limits.md](relational/limits.md) | Sizes and shapes, and the gate that relaxes each one |
+| [relational/performance.md](relational/performance.md) | What each relational path costs, and what the benchmark does not measure |
 
 ## Trust it
 
@@ -47,7 +50,6 @@ anchor on this page, and CI runs it.
 |---|---|
 | [performance-truth.md](performance-truth.md) | Every published number: how to reproduce it and what it excludes |
 | [energy.md](energy.md) | How an energy claim is measured, and what hardware that needs |
-| [relational/performance.md](relational/performance.md) | What the relational paths cost, and what they do not include |
 | [next-steps.md](next-steps.md) | What is not done, and what you get today instead |
 | [../ROADMAP.md](../ROADMAP.md) | The seven gates, and the experiment that closes each one |
 | [metrics.md](metrics.md) | Generated project counts |

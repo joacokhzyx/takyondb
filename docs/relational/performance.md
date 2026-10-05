@@ -1,65 +1,78 @@
-# Rendimiento relacional
+# What the relational paths cost
 
-- Lectura punto PK: mismo motor ART que el KV, a traves del addon
-  (`ArtMirror`, prefijo `tbl:<tabla>:<pk>`). No hay medicion propia de PK
-  relacional: la cifra de chaos (`p50 ~0.002 ms`) es del camino KV y es una
-  referencia, no una medida de este camino.
-- Scan: `O(n)` sobre filas, con proyeccion temprana. `table.scan()` copia cada
-  fila (`{...r}`), asi que el scan **si** asigna; la proyeccion reduce el
-  trabajo posterior, no la copia.
-- Filtro: `matchesWhere` sobre objetos JS, **no** una comparacion en
-  `DataView` y **no** sin alloc: esa afirmacion estaba en esta pagina y era
-  falsa. Ahora la clausula se compila **una vez** por consulta (cache
-  `WeakMap` sobre el propio objeto `where`) en vez de por fila: antes cada fila
-  llamaba `Object.entries(where)` y cada `like` compilaba un `new RegExp` por
-  fila *y* por predicado. Medido sobre 20k filas (3 corridas por estado, rango
-  completo): **3122-5207 us -> 735-754 us**, ~4.3x, con los rangos sin
-  solaparse. `in` con 8+ elementos pasa a un `Set` compilado una vez.
-  Colateralmente, `like` ahora escapa los metacaracteres de RegExp, asi que un
-  `.` en el patron es un punto literal y no un comodin.
-  El camino SIMD (`filterU32/filterF64` en
-  `src/core/relational/column.zig`) existe y esta expuesto por C-ABI y N-API,
-  pero el filtro relacional de TS **todavia no lo invoca**.
-- Join hash: build en `Map<val, pk[]>`, probe streaming. `left.scan()` y
-  `right.scan()` copian todas las filas antes del probe.
-- Agregacion: single-pass en TS con `Math.min(...vals)` / `Math.max(...vals)`,
-  que Makefan sobre la pila de llamadas y es un riesgo para columnas grandes;
-  iterar en un bucle avoids el limite. Los kernels Zig
-  (`kahanSum`/`kahanSumSelected`/`minSelected`/`maxSelected`) estan en
-  `src/core/relational/column.zig`, expuestos por C-ABI
-  (`takyon_filter_u32/f64`, `takyon_agg_*_selected`) y N-API (`filter_u32/f64`,
-  `agg_sum*`), y replicados en `pushdown.ts` con fallback TS identico. El
-  columnarizado arena→kernel (zero-copy) sigue siendo trabajo futuro: hoy el TS
-  columnariza filas en `Float64Array`.
-- Strings: bump + vacuum con doble buffer ya existente.
+This page is deliberately mostly about what is *not* measured, because
+the interesting number in this layer is the distance between the engine
+and the query.
 
-Nota sobre el bench: `benchmarks/relational/bench.js` mide el motor de TS sin
-pushdown nativo, asi que **no** mide los kernels SIMD. Reporta su hardware,
-sus semillas por tabla y su metodologia en la salida JSON; ver
-[../performance-truth.md](../performance-truth.md) para que significan (y que
-no significan) sus numeros.
+## Point read by primary key
 
-Harnesses: `benchmarks/relational/bench.js` (seeded) con wrappers por
-operacion (`insert/scan/filter/join/agg.js`), o `node scripts/bench_relational.js`.
+The same radix tree the key-value path uses, reached through the addon:
+`tbl:<table>:<pk>` to a record offset, via `ArtMirror`.
 
-## Cómo correr
+There is **no measurement of the relational primary-key path on its own.**
+The chaos benchmark's p50 belongs to the key-value path and is a
+reference, not a measurement of this one.
+[../performance-truth.md](../performance-truth.md) has the number and what
+it excludes.
 
-```bash
-cd src/sdk/ts && npm run build   # dist requerido por el bench
-node benchmarks/relational/bench.js all        # todas las suites
-node benchmarks/relational/filter.js           # una suite
-node scripts/bench_relational.js               # entrada CI
-```
+## Scan
 
-Nativo (requiere `zig build`):
+`table.scan()` is `O(n)` over rows **and it allocates**: it copies every
+row, so a scan of *n* rows allocates *n* objects. A projection reduces the
+work done afterwards; it does not avoid the copy.
 
-```bash
-node scripts/bench_scan.js 10000  # point vs prefix scan vs rango
-```
+The native scan path does not copy — it returns record offsets out of the
+index — which is why the two are not interchangeable. It is also bounded:
+at most 4096 offsets per call, no cursor. The TypeScript path has no such
+bound because it owns the iteration.
 
-Workload: `20k` filas, semillas LCG por tabla (`users: 42`, `orders: 7`),
-`p50/p95/p99` via `performance.now()`, mas `best_p50_ms` como minimo entre
-repeticiones. Reporta hardware completo (plataforma, arch, modelo de CPU,
-nucleos, memoria, version de Node). Corre como gate en `Takyon Relational Suite`
-(solo completamiento y aserciones de filas: los tiempos son informativos
-porque el hardware compartido de CI no es una referencia estable).
+## Filter
+
+Predicates run against JavaScript objects. Not a `DataView` comparison,
+not allocation-free.
+
+The clause is compiled **once per query** rather than once per row: the
+previous version called `Object.entries(where)` for every row and built a
+`new RegExp` for every `like` predicate of every row. Measured over 20,000
+rows, three runs per state, full range: **3122–5207 µs before, 735–754 µs
+after**, about 4.3x, with non-overlapping ranges. `in` with eight or more
+elements compiles a `Set` once for the same reason.
+
+The SIMD path (`filterU32` / `filterF64` in
+`src/core/relational/column.zig`) exists, is exported through the C ABI
+and the N-API layer, and is **not called by the relational filter**.
+
+## Join
+
+A hash join: `Map<value, rows[]>` to build, then a streaming probe. Both
+sides call `scan()`, so both sides copy every row before the probe starts.
+
+## Aggregates
+
+Single-pass, in TypeScript. `Math.min(...values)` and `Math.max(...values)`
+spread onto the call stack and are a hazard for a wide column; iterating
+in a loop avoids the limit.
+
+The Zig kernels (`kahanSum`, `kahanSumSelected`, `minSelected`,
+`maxSelected`) exist, are exported, and have an identical TypeScript
+fallback in `pushdown.ts` with parity tests. Columnarizing arena rows into
+a `Float64Array` before calling them is still future work: today the
+TypeScript side does that copy, so the kernel would not be reading arena
+memory anyway.
+
+## Strings
+
+The engine's bump allocator and vacuum, double-buffered. The relational
+layer adds nothing to it.
+
+## What the benchmark measures
+
+`node scripts/bench_relational.js` measures the TypeScript engine. Its
+methodology line says "no IPC/daemon, no native pushdown", and that is the
+honest scope: **it does not measure the SIMD kernels**, because no query
+reaches them.
+
+It reports its hardware, its per-table seeds and its methodology in the
+JSON record. CI gates it on completion, not on a number: shared runners
+are not a stable timing reference, and a timing gate would be flaky by
+construction.

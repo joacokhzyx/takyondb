@@ -71,6 +71,7 @@ marketing.
 "Not in scope now" is not "never". Each row names the gate that reopens it,
 because a non-goal without an owner is a decision nobody made.
 
-Reference: [data-model.md](data-model.md), [query-api.md](query-api.md),
-[indexes.md](indexes.md), [transactions.md](transactions.md),
-[performance.md](performance.md), [limits.md](limits.md).
+Reference: [README.md](README.md), [data-model.md](data-model.md),
+[query-api.md](query-api.md), [indexes.md](indexes.md),
+[operations.md](operations.md), [performance.md](performance.md),
+[limits.md](limits.md).
