@@ -49,6 +49,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **The repository's public surface says what the project is.** The
+  GitHub description claimed the project "obliterates standard Inter-Process
+  Communication bottlenecks", and the topics included `eficiency`, which is
+  not a word. `SECURITY.md` told reporters to open a public issue with a
+  `security` label that does not exist in the repository. `CONTRIBUTING.md`
+  asked contributors to maintain "extreme performance and safety
+  standards" and suggested a branch called `feature/amazing-performance`.
+
+  The description, topics and labels are now written down in
+  `docs/release.md` as a checklist, because applying them needs
+  repository admin rights a release script should not have. `SECURITY.md`
+  points at GitHub's private vulnerability reporting and lists three attack
+  surface facts it previously omitted: every client maps the arena
+  read-write including readers, the admin endpoint is unauthenticated, and
+  CRC32 detects torn writes rather than resisting tampering.
+  `CONTRIBUTING.md` states the project's actual refusal criteria, which
+  start with never publishing a claim you cannot reproduce. The issue and
+  PR templates ask which roadmap gate a change serves and which contracts
+  it touches.
+
+  The README gained the two sections a repository cannot be trusted
+  without: a status table that says there is no release and no tag, and a
+  "when not to use this" list.
 - **The project has a mission, and the docs now measure it against the
   code.** TakyonDB described itself as an experimental zero-copy
   database, which is a mechanism and not a reason to exist, and it left
@@ -89,6 +112,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Removed
 
+- **Thirty-one documentation pages, and three checks so they cannot come
+  back.** `docs/` held 57 pages: twenty were under thirty lines, eleven
+  were duplicates, three were Spanish stubs of English pages, and two
+  documented an API that does not exist -- `query-api.md` showed
+  `new RelationalDatabase(takyon)` and `db.from('users')`, and
+  `transactions.md` showed `db.transaction(tx => ...)`; none of the three
+  has ever existed, and a reader following either page would have written
+  code that could not run.
+
+  Every surviving page under `docs/` is now written against the source:
+  the database and table methods, the builder's surface, `hashJoin`'s
+  argument order, `Transaction`'s constructor, the SQL parser's entry
+  points and error text, `ArtMirror`, `NativeSecondaryIndex` and the
+  catalog functions. `docs/` is down to 26 pages.
+
+  `scripts/docs_check.js` gained three checks, each mutation-tested to
+  confirm it can fail: a page under thirty lines of content (opt-out with
+  `<!-- docs-check:allow-short -->`), a page not reachable from
+  `docs/index.md`, and two pages sharing a title. Thirty is the floor in
+  this repository's own style guide, and it is a floor for stubs rather
+  than a target: the two model READMEs are short because they are indexes.
+
+- **`scripts/e2e_zerocopy_test.js`, which was the compiled output of
+  `scripts/e2e_zerocopy_test.ts`.** CI ran the compiled copy and the E2E
+  runner ran the source, so the two could drift with nothing to notice it
+  -- and `.gitignore`'s own note says a generated `.js` must not be
+  committed. The source is what CI runs now, and the path is ignored.
+- **`scripts/e2e_relational_test.js`,** a four-line wrapper that shelled
+  out to the command CI already runs. Nothing executed it, and it inflated
+  the E2E count by one.
 - **The `v1.0.0` tag.** It pointed at commit `b10c94a`, 373 commits before
   this entry, and it never had a release behind it: zero releases have
   ever been published from this repository. So the tag asserted a version
