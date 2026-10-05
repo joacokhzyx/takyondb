@@ -26,7 +26,7 @@ for what is and is not gated.
 | Zig tests | 86 in 29 files |
 | TypeScript unit tests | 129 in 28 files |
 | E2E suites | 15 scripts |
-| Documentation pages | 37 |
+| Documentation pages | 34 |
 | Benchmark harnesses | 11 |
 | Runnable examples | 10 |
 | CI workflows | 2 |
