@@ -14,6 +14,25 @@
 //   - a code fence is never left unterminated
 //   - no link points at a file that was renamed away
 //
+// Plus three checks about the shape of docs/, added because the pages were
+// not failing any of the above while being unusable:
+//
+//   - MIN_PAGE_LINES: a page under the floor is a section, not a URL. Thirty
+//     lines is where this repository's own style guide draws the line, and
+//     twenty pages were under it. A page can opt out with
+//     `<!-- docs-check:allow-short -->` and a reason, for the cases where
+//     short is genuinely correct.
+//   - Reachability: every page under docs/ must be reachable from
+//     docs/index.md by following links. An orphan is a page nobody finds,
+//     and a page nobody finds rots without anyone noticing it rotted.
+//   - No two pages may share a title, which is what a copy-paste produces.
+//
+// The gate is deliberately not "short pages are bad". docs/architecture/
+// and the two model READMEs are short because they are indexes, and they
+// are the ones a reader opens first. The gate exists so that a stub cannot
+// be created by accident and stay by inertia; a deliberate short page is a
+// judgement call that has to be written down.
+
 // Usage:
 //   node scripts/docs_check.js           # check
 //   node scripts/docs_check.js --fix-hint  # add TODO hints (advisory only)
@@ -103,6 +122,46 @@ function linksOf(content) {
     return links;
 }
 
+/** A docs/ page shorter than this is a section of something else. */
+const MIN_PAGE_LINES = 30;
+const ALLOW_SHORT = '<!-- docs-check:allow-short -->';
+const DOCS_INDEX = path.join(REPO_ROOT, 'docs', 'index.md');
+const DOCS_ROOT = path.join(REPO_ROOT, 'docs') + path.sep;
+
+/** Lines that carry no content: blanks, fences, and HTML comments. */
+function proseLines(content) {
+    let inFence = false;
+    let n = 0;
+    for (const line of content.split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) {
+            inFence = !inFence;
+            continue;
+        }
+        if (inFence) continue;
+        const t = line.trim();
+        // Blank lines and HTML comments carry no content. List items do:
+        // a page that is nothing but a list is a real page.
+        if (t === '' || /^<!--/.test(t)) continue;
+        n += 1;
+    }
+    return n;
+}
+
+/** The first H1 of a page, slugged the way GitHub would. */
+function titleOf(content) {
+    let inFence = false;
+    for (const line of content.split('\n')) {
+        if (/^\s*(```|~~~)/.test(line)) {
+            inFence = !inFence;
+            continue;
+        }
+        if (inFence) continue;
+        const m = /^#\s+(.+?)\s*#*\s*$/.exec(line);
+        if (m) return slug(m[1]);
+    }
+    return null;
+}
+
 const problems = [];
 const files = markdownFiles();
 const cache = new Map();
@@ -168,8 +227,85 @@ for (const file of files) {
     }
 }
 
+// --- shape checks over docs/ -------------------------------------------------
+
+const docsPages = files.filter((f) => f.startsWith(DOCS_ROOT));
+
+// 1. Minimum page length, with an explicit opt-out.
+for (const file of docsPages) {
+    const rel = path.relative(REPO_ROOT, file);
+    const content = read(file);
+    if (content === null) continue;
+    if (content.includes(ALLOW_SHORT)) continue;
+    const lines = proseLines(content);
+    if (lines < MIN_PAGE_LINES) {
+        problems.push({
+            file: rel,
+            line: 0,
+            msg: `page has ${lines} lines of content, under the ${MIN_PAGE_LINES}-line floor: fold it into a parent or delete it (${ALLOW_SHORT} opts out, with a reason)`,
+        });
+    }
+}
+
+// 2. Duplicate titles.
+{
+    const byTitle = new Map();
+    for (const file of docsPages) {
+        const content = read(file);
+        if (content === null) continue;
+        const title = titleOf(content);
+        if (!title) continue;
+        if (!byTitle.has(title)) byTitle.set(title, []);
+        byTitle.get(title).push(path.relative(REPO_ROOT, file));
+    }
+    for (const [title, owners] of byTitle) {
+        if (owners.length > 1) {
+            problems.push({
+                file: owners[0],
+                line: 0,
+                msg: `title "${title}" is also used by: ${owners.slice(1).join(', ')}`,
+            });
+        }
+    }
+}
+
+// 3. Reachability from docs/index.md.
+if (fs.existsSync(DOCS_INDEX)) {
+    const indexContent = read(DOCS_INDEX) || '';
+    const queue = [DOCS_INDEX];
+    const seen = new Set([path.resolve(DOCS_INDEX)]);
+    while (queue.length > 0) {
+        const current = queue.shift();
+        const currentContent = read(current) || '';
+        for (const { target } of linksOf(currentContent)) {
+            if (/^(https?:|mailto:|data:|#)/i.test(target)) continue;
+            const [filePart] = target.split('#');
+            if (!filePart) continue;
+            const resolved = path.resolve(path.dirname(current), filePart);
+            if (!resolved.startsWith(DOCS_ROOT)) continue;
+            if (!fs.existsSync(resolved) || fs.statSync(resolved).isDirectory()) continue;
+            if (seen.has(resolved)) continue;
+            seen.add(resolved);
+            queue.push(resolved);
+        }
+    }
+    for (const file of docsPages) {
+        const abs = path.resolve(file);
+        if (abs === path.resolve(DOCS_INDEX)) continue;
+        if (seen.has(abs)) continue;
+        problems.push({
+            file: path.relative(REPO_ROOT, file),
+            line: 0,
+            msg: 'orphan: not reachable from docs/index.md. Link it from a page a reader would visit, or delete it.',
+        });
+    }
+}
+
 if (!QUIET) {
-    console.log(`[docs-check] ${files.length} markdown files, ${problems.length} problem(s)`);
+    console.log(
+        `[docs-check] ${files.length} markdown files, ${docsPages.length} under docs/, ` +
+            `${problems.length} problem(s)`
+    );
 }
 if (problems.length > 0) {
     for (const p of problems) {
