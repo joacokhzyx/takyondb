@@ -34,21 +34,31 @@ the generated `docs/metrics.md` and the CI gates that keep them honest.
 
 ## Gate 1: a substrate that is configured, not compiled
 
-**In the way:** every other gate. The record region ends where the index
-root begins no matter how large the arena is, the index is a fixed
-region, and the error a caller sees on exhaustion names a constant they
-cannot change.
+**In the way:** every other gate. The record region ended where the index
+root began no matter how large the arena was, the index was a fixed
+region, and the error a caller saw on exhaustion named a constant they
+could not change.
 
-**Deliverable:** region boundaries and capacities as header values read
-and validated at attach; a configuration file whose absence changes
-nothing; the snapshot footer carrying the region table; startup refusing
-an impossible configuration with a message that names the field.
+**Shipped.** Arena layout v3: region boundaries are header values read
+and validated on attach; `takyon.json` configures them, and its absence
+changes nothing; the snapshot footer carries the table so recovery can
+refuse a snapshot whose regions are not the arena's; startup refuses an
+impossible configuration with the relation that failed named. The engine,
+the C ABI, the vacuum, the log flusher, snapshots, recovery and the
+TypeScript SDK all read the table instead of a constant.
 
-**Exit criterion:** a 2 GiB arena holding 500,000 records through the
-shipped SDK, with a checkpoint and a crash-recovery round trip.
+**Exit criterion:** a large arena holding far more records than the
+default layout could, through the shipped SDK, with a checkpoint and a
+crash-recovery round trip. `scripts/e2e_regions_test.js` runs it, sizes
+itself to the host's shared memory, prints the plan it ran next to the
+gate's numbers, and refuses to run on a host too small to prove the
+property.
 
-**Rough size:** the header table and its version bump are days; making
-the snapshot and recovery carry relocated regions is one to two weeks.
+The gate asks for 2 GiB and 500,000 records. On a 64 MiB `/dev/shm` the
+suite runs 150,000 records in a configured region that the default layout
+would have capped at 56,281 -- the property, at the scale the machine
+allows. Growing a segment with `mremap` or a new section is still future
+work: regions are configurable, but the arena is still fixed at startup.
 
 ## Gate 2: an explicit durability contract
 

@@ -42,84 +42,98 @@ compile-time constants.
 
 ### The problem
 
-`src/core/memory/layout.zig` fixes every region boundary as a
-compile-time constant. `ART_ROOT_OFFSET` is 2 MiB, the string arena
-starts at 10 MiB, and the record region is whatever lies between them.
-The record allocator in `src/sdk/takyon.ts` therefore has a ceiling
-that does not move when the caller asks for a bigger arena, and its
-out-of-memory message tells the user to change a constant they cannot
-change. The index has the same problem in reverse: eight MiB whether
-the workload needs forty keys or four million.
+`src/core/memory/layout.zig` fixed every region boundary as a
+compile-time constant. `ART_ROOT_OFFSET` was 2 MiB, the string arena
+started at 10 MiB, and the record region was whatever lay between them.
+The record allocator therefore had a ceiling that did not move when the
+caller asked for a bigger arena, and its out-of-memory message named a
+constant the user could not change. The index had the same problem in
+reverse: eight MiB whether the workload needed forty keys or four
+million.
 
-The same file already reserves 1 KiB at offset 0 for a global header
-and writes only the arena magic and layout version into it. The space
-for a runtime layout is allocated and unused.
+The same file already reserved 1 KiB at offset 0 for a global header
+and wrote only the arena magic and layout version into it. The space for
+a runtime layout was allocated and unused.
 
-### The decision
+### The decision, shipped as arena layout v3
 
-Region boundaries become header values. Their *field offsets* stay
-compile-time constants, so the header can always be parsed; their
-*values* are read from the mapped segment and validated on attach.
+Region boundaries are header values. Their *field offsets* stayed
+compile-time constants, so the header can always be parsed before
+anything inside it is trusted; their *values* are read from the mapping
+and checked against it before the first read or write.
 
-| Field | Meaning | Today |
+| Field | Meaning | Default |
 |---|---|---|
-| `arena_bytes` | Total mapped size | passed as the daemon's positional argument |
-| `ring_capacity` | Slots in the ring | `RING_DEFAULT_CAPACITY` |
-| `record_start`, `record_bytes` | Fixed-length record region | derived from constants |
-| `art_root`, `art_bytes` | Radix index region | `ART_ROOT_OFFSET`, up to the string arena |
-| `string_start`, `string_bytes` | Variable-length region | `STRING_ARENA_START` |
-| `clock_ms` | Monotonic clock, see the cache gate | does not exist |
+| `arena_bytes` | Total mapped size | the daemon's positional argument |
+| `ring_capacity` | Slots in the ring | 4096 |
+| `record_start`, `record_bytes` | Fixed-length record region | derived from the arena |
+| `art_root`, `art_bytes` | Radix index region | 8 MiB |
+| `string_start`, `string_bytes` | Variable-length region | the remainder |
+| `clock_ms` | Monotonic clock, for the cache gate | reserved, unread |
 
-`LAYOUT_VERSION` goes from 2 to 3. An attach that reads version 2 uses
-the compile-time defaults and says so; an attach that reads a version
-it does not know refuses, because a wrong region table silently
-corrupts the arena rather than failing.
+`validateRegions` checks every relation between the regions -- ring
+capacity is a power of two, records start after the ring, no region runs
+into the next, the index root is eight-byte aligned, the string bump word
+has room and is aligned -- because the failure mode of a bad table is
+silent corruption rather than an error.
 
-`src/sdk/client/layout.ts` keeps mirroring the *field offsets*, so the
-TypeScript client and the Zig engine still have exactly one place that
-knows the map. The change stays inside the rule that the two files must
-agree.
+A version 2 arena is refused rather than adapted to. Its header carries
+no table, so attaching would mean guessing the regions. A version it does
+not know at all is refused for the same reason the snapshot footer
+refuses one.
 
-The snapshot footer gains the region table alongside the extent lengths
-it already carries, and recovery refuses a footer whose layout version
-does not match. `docs/relational/migration.md` gets the upgrade note: a
-version 2 snapshot cannot be converted, only deleted and rebuilt.
+`src/sdk/client/layout.ts` mirrors the field offsets and the rules, and
+the SDK reads the table from the mapping at attach -- a client that fell
+back to the constants would write records into whatever the configured
+arena put at 2 MiB, which is now the index.
+
+### What the snapshot needed
+
+The footer carries the region table alongside the extent lengths. The
+lengths alone cannot say where those bytes belong: a snapshot of a 2 GiB
+arena and one of a 64 MiB arena produce the same four numbers, and
+scattering the first at the second's offsets corrupts the arena instead
+of failing. Recovery refuses a snapshot whose table is not the one it is
+restoring into, and says which file to delete.
 
 ### Configuration
 
-One file, `takyon.json`, read by the daemon at startup. CLI flags
-override it, and the absence of the file changes nothing, because every
-key has a default equal to today's constant.
+`src/server/config.zig`: one JSON file, every key optional, every default
+the constant it replaces. CLI flags override it, and no file is
+indistinguishable from an empty one. Unknown keys are refused, because a
+typo in `record_bytes` that silently kept the default is the failure this
+file exists to remove.
 
 ```json
 {
-  "arena_bytes": 268435456,
-  "ring_capacity": 16384,
-  "regions": { "record_bytes": 67108864, "art_bytes": 134217728 },
+  "regions": { "record_bytes": 268435456, "art_bytes": 536870912, "ring_capacity": 65536 },
   "checkpoint_sec": 60,
   "admin_port": 7723,
-  "namespaces": {
-    "cache:session": { "model": "cache", "durability": "never", "policy": "allkeys-lru" },
-    "app:users": { "model": "relational" }
-  }
+  "energy": true
 }
 ```
 
-JSON rather than TOML because `std.json` is in the Zig standard library
-and a second parser is a second thing to audit.
+Sizes are honoured in the order records, index, strings and the
+boundaries are derived from them. An earlier shape kept the default index
+root and applied sizes on top, which made a 64 MiB record region
+impossible on any arena: records were asked to end where the index
+began. Asking for room means putting the index after it.
 
-Every field is validated at startup against the constraint it
-violates, and a bad configuration exits with a message naming the
-field, the value and the limit. It does not fail later, at the first
-insert that happens to cross the boundary.
+The arena size itself is never read from the file. A file that disagreed
+with an explicit flag would be silently overriding a decision the
+operator made in front of it.
 
 ### The experiment that closes it
 
-A 2 GiB arena holding 500,000 records of a realistic width, through the
-shipped SDK, with a checkpoint and a crash-recovery round trip. It
-passes when the record region is set by configuration rather than by a
-constant, and when a configuration that cannot fit is refused at
-startup with a message that names the field.
+Shipped, and run by `scripts/e2e_regions_test.js`: a large arena holding
+far more records than the default layout could, through the shipped SDK,
+with a checkpoint, a SIGKILL and a reboot with the same configuration,
+every record recovered with its value. The suite sizes itself to the
+host's shared memory, prints the plan it ran next to the gate's numbers,
+and refuses to run on a host too small to prove the property.
+
+Growing a live segment is still future work. Regions are configurable;
+the mapping is fixed at startup.
 
 ---
 

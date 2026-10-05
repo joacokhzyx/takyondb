@@ -10,7 +10,7 @@ decision someone has to argue about.
 |---|---|---|---|
 | Columns per table | `1..32` | `schema.ts`, `persist.zig` | Not planned; the 4-byte null bitmap is sized by it |
 | Table name | Must match `[a-zA-Z_][a-zA-Z0-9_]*` | `schema.ts` | Not planned |
-| Primary key | `1..256 B` UTF-8, NUL-free | inherited from the index | Gate 1 |
+| Primary key | `1..256 B` UTF-8, NUL-free | inherited from the index | Not planned; it is the index key rule |
 | Secondary indexes per table | `16` | `multiroot.zig` (`MAX_INDEXES`) | Not planned |
 | Index key prefix | `80 B`, plus a `0x1F` separator | `multiroot.zig` | Not planned |
 | Results per query call | `10 000` rows | `executor.zig` (`MAX_RESULT_ROWS`) | Gate 4 |
@@ -30,8 +30,9 @@ are consequences of keys having to survive a byte-oriented tree.
 The rest are consequences of a choice that has not been made yet, and they
 are why Gate 1 comes before the others:
 
-* **The primary key length** comes from the index, which is why
-  configurable regions come first.
+* **The primary key length** comes from the index. Gate 1 made the region
+  boundaries configurable, and this row is still where it was, which is
+  the honest outcome: the key rule was never a region problem.
 * **The result caps** come from a scan that cannot be resumed. A cursor
   would lift the 4096 bound on its own, so the cap is a missing feature
   rather than a shape.

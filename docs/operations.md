@@ -12,9 +12,10 @@ zig build run -Doptimize=ReleaseSafe [-- <mem_bytes>]
 
 * Single optional positional arg: arena size in bytes, default `64 * 1024 * 1024`.
   Non-numeric input logs a warning and falls back to 64 MB.
-* `--data-dir`, `--checkpoint-sec`, `--port`, `--no-energy` and
-  `--energy-root` are the flags. `takyondb --help` lists them with their
-  defaults; see [Energy counters](#energy-counters) for the last two.
+* `--data-dir`, `--checkpoint-sec`, `--port`, `--config`, `--no-energy`
+  and `--energy-root` are the flags. `takyondb --help` lists them with
+  their defaults; see [Region sizes](#region-sizes) for `--config` and
+  [Energy counters](#energy-counters) for the last two.
 * Recovery + WAL paths are the relative files `data.takyon` (plus
   `data.takyon.snap`) in the daemon's **working directory** — run from the
   repo root unless you intend to create them elsewhere.
@@ -24,6 +25,77 @@ zig build run -Doptimize=ReleaseSafe [-- <mem_bytes>]
 * Shutdown: `SIGINT`/`Ctrl+C` triggers a graceful WAL drain + shutdown;
   the daemon owns the segment name and unlinks it on the way out
   (`SIGKILL` skips it — recovery path is snapshot + WAL replay).
+
+## Region sizes
+
+The arena is three regions -- records, index, strings -- and their sizes
+are configuration, not compile-time constants. Before arena layout v3
+the record region ended wherever the index root sat at 2 MiB, so a larger
+arena bought a larger string region and nothing else.
+
+The daemon stamps the table into the segment header, and every client
+reads it from there. A client that assumed the old constants would write
+records into the index.
+
+```bash
+cat > takyon.json <<'EOF'
+{
+  "regions": {
+    "record_bytes": 268435456,
+    "art_bytes": 536870912,
+    "ring_capacity": 65536
+  },
+  "checkpoint_sec": 60,
+  "admin_port": 7723,
+  "energy": true
+}
+EOF
+
+./zig-out/bin/takyondb 1073741824 --data-dir /var/lib/takyondb --config takyon.json
+```
+
+| Key | Meaning | Default |
+|---|---|---|
+| `regions.record_bytes` | Bytes for the record region | Whatever the arena has left after the index and strings |
+| `regions.art_bytes` | Bytes for the index region | 8 MiB, or half of what is left behind the records |
+| `regions.string_bytes` | Reserved for strings; the index grows to fill the rest | The remainder |
+| `regions.ring_capacity` | Ring slots. A power of two, at least 16 | 4096 |
+| `data_dir`, `checkpoint_sec`, `admin_port`, `energy` | The matching flags | The flag defaults |
+
+Three rules that are not obvious:
+
+* **Sizes are honoured in the order records, index, strings, and the
+  boundaries are derived from them.** Asking for 64 MiB of records moves
+  the index root after them. An operator who wants big records is not
+  also doing arithmetic about where the index lands.
+* **Unknown keys are refused.** A typo in `record_bytes` that silently
+  kept the default is the failure this file exists to remove.
+* **Every default equals the constant it replaces.** No file, an empty
+  file and a file full of defaults produce the same arena.
+
+A configuration that cannot describe the arena is refused at startup,
+with the relation that failed named:
+
+```text
+[TakyonDB-Daemon] ERROR: the region table is not valid for this arena (RegionsOverlap).
+  Every region is a size in takyon.json; the boundaries are derived from them.
+```
+
+The arena size itself always comes from the command line, never from the
+file. A file that disagreed with an explicit flag would be silently
+overriding a decision the operator made in front of it.
+
+### Changing regions on an existing database
+
+A snapshot records the region table it was written with, and recovery
+refuses a snapshot whose table is not the one it is restoring into --
+the extent lengths alone cannot say where those bytes belong. So:
+
+* **Growing a region** is safe. Start the daemon with the new table; there
+  is no snapshot to disagree with yet.
+* **Shrinking or moving a region** means the existing snapshot is void.
+  Start the daemon without the old snapshot file (or with the log only)
+  and let it rebuild from the write-ahead log.
 
 ## Admin TCP endpoint (`127.0.0.1:7723`, `--port`)
 

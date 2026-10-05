@@ -9,15 +9,6 @@ If a limit here is fixed, delete the entry and record it in the changelog.
 
 ## The limits that shape what the engine can be
 
-### Region sizes are compile-time constants
-
-`src/core/memory/layout.zig` fixes the index root at 2 MiB and the string
-region at 10 MiB, so the record region is bounded by where the index
-begins no matter how large the arena is. The allocator's exhaustion error
-in `src/sdk/takyon.ts` names `MAX_RECORD_ARENA`, a constant the caller
-cannot change. A larger arena buys a larger string region and nothing
-else. Gate 1.
-
 ### No durability call
 
 A write returns once the change is in the ring. The `fsync` happens later
@@ -42,6 +33,26 @@ change it. A push into a full ring returns a failure, the SDK throws, and
 by then the client has already written the value into the arena. There is
 no wait, no retry, no typed error and no saturation counter in `METRICS`,
 so an operator cannot see it without writing a harness. Gate 2.
+
+## What the substrate does not do yet
+
+Region sizes are configuration now, so `record_bytes` is a number in
+`takyon.json` rather than a compile-time constant. Three things follow,
+and none of them is "the gate is not finished":
+
+* **The arena is still fixed at startup.** Regions are configurable; the
+  mapping is not. Growing a live segment needs `mremap` on POSIX or a new
+  section on Windows, with a generation counter so clients re-attach.
+  Nothing that needs it has needed it yet.
+* **A layout change costs the snapshot.** The footer carries the region
+  table, so a snapshot taken with one table cannot be restored into an
+  arena with another. That is the correct behaviour -- the extent lengths
+  alone cannot say where the bytes belong -- and it means shrinking a
+  region voids the snapshot.
+* **A layout version 2 segment is refused.** Its header has no table, and
+  guessing one does not fail, it corrupts. The upgrade step is to remove
+  the shared segment; the data is in the log and the snapshot, not in the
+  segment.
 
 ## Native path coverage
 

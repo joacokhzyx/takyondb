@@ -113,10 +113,11 @@ documents it.
   but their rows are lost with the process, and the native pushdown
   kernels are not reached from the query path. See
   [relational/performance.md](relational/performance.md).
-* **Region sizes are compile-time constants.** The record region ends
-  where the index root begins (`src/core/memory/layout.zig`), so a
-  larger arena does not buy more records. The error message names a
-  constant the user cannot change.
+* **Regions are configurable; the arena is not.** `record_bytes` is a
+  number in `takyon.json` since arena layout v3, so a large arena holds
+  far more than the 1.72 MiB the old constants allowed. What does *not*
+  work yet is growing a live segment: the mapping is fixed at startup,
+  and shrinking a region voids the existing snapshot.
 * **Scans are capped and cannot be resumed.** A native prefix or range
   scan returns a bounded number of offsets and takes no cursor, so a
   table larger than the cap cannot be read through the native path.

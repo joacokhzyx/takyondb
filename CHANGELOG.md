@@ -7,6 +7,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Arena layout version 3: the region sizes are configuration.**
+  `record_bytes`, `art_bytes` and `ring_capacity` live in `takyon.json`
+  and in the segment header, and every consumer reads them: the engine,
+  the C ABI, the vacuum, the log flusher, snapshots, recovery and the
+  TypeScript SDK. A 2 GiB arena with a 64 MiB record region now starts;
+  before this the record region ended wherever the index root sat at
+  2 MiB, a larger arena bought a larger string region and nothing else,
+  and the allocator's exhaustion message named `MAX_RECORD_ARENA`, a
+  constant the caller could not change.
+
+  Sizes are honoured in the order records, index, strings and the
+  boundaries are derived from them, so asking for room puts the index
+  after it. Every default equals the constant it replaces, so no file and
+  an empty file are the same arena, and an unknown key is refused rather
+  than ignored.
+
+  **This is a break in the on-disk contract.** A layout version 2 segment
+  carries no table and is refused rather than adapted to, because
+  guessing the regions does not fail, it corrupts; removing the shared
+  segment is the upgrade step, and the data is in the log and the
+  snapshot rather than in the segment. A version 2 *snapshot* is refused
+  by version, as it always was, and recovery falls back to log-only
+  replay. Snapshots written by this build carry the region table, so
+  recovery can refuse one whose regions are not the arena's: the four
+  extent lengths alone cannot say where those bytes belong.
+
+  The bridge's shared-memory cap went from 1 GiB to the u32 the request
+  arrives in, because a 1 GiB cap refused exactly the request this makes
+  legal.
+
+  `scripts/e2e_regions_test.js` is the gate's exit criterion as an
+  executable claim: a configured record region holding over five times
+  what the default layout could, through the shipped SDK, surviving a
+  checkpoint, a SIGKILL and a reboot. It sizes itself to the host's
+  shared memory, prints the plan it ran next to the gate's numbers, and
+  refuses to run on a host too small to prove the property.
+
+  Known gaps, unchanged by this: the arena is still fixed at startup, so
+  growing a live segment needs `mremap` or a new section; and shrinking
+  a region voids the existing snapshot, because the footer records the
+  table it was written with.
 - **The daemon can measure its own energy, or say that it cannot.**
   `src/core/energy.zig` samples the platform's energy counter at 1 Hz and
   reports `energy_source`, `energy_uj`, `energy_samples` and

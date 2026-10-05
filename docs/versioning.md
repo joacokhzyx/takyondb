@@ -19,6 +19,10 @@ all: a `v1.0.0` tag once existed from before the SDK was versioned, it
 never had a release behind it, and it was deleted because it claimed a
 version the project does not hold.
 
+The arena layout version moves independently of the package version. It is
+`3`; it was `2` for the whole of `0.1.0`, and the difference is a break
+in the on-disk contract rather than a release.
+
 ## Semver, honestly applied
 
 Takyon is pre-alpha, so the guarantee is about the shape of a release, not
@@ -28,6 +32,14 @@ about stability within one. The parts that break in practice are named:
   mirrored in `layout.ts`. Changing an offset needs a layout version bump
   and the recovery path's refusal to reinterpret what it does not
   understand.
+
+  **Layout version 3, in `[Unreleased]`, is a break.** The region
+  boundaries moved from compile-time constants into the segment header, so
+  a v2 segment carries no table and cannot be attached to. The daemon
+  refuses it and says so; an operator removes the shared segment, which
+  costs nothing because the data lives in the WAL and the snapshot, not in
+  the segment. A v2 *snapshot* is refused by version for the same reason
+  it always was, and its recovery falls back to log-only replay.
 * **The WAL sector format**, including the `kind` byte on a log record.
   Pre-existing logs have to keep replaying, which is why the byte sits in
   former padding.
