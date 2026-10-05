@@ -56,7 +56,7 @@ anchor on this page, and CI runs it.
 | Page | What it answers |
 |---|---|
 | [verify.md](verify.md) | The checks, what each one catches, and what CI adds |
-| [e2e.md](e2e.md) | What an E2E suite has to be, and how to register one |
+| [e2e.md](e2e.md) | What an E2E suite owes, and how to register one |
 | [relational/troubleshooting.md](relational/troubleshooting.md) | Common failures, and the questions the docs do not answer |
 | [STYLEGUIDE.md](STYLEGUIDE.md) | Naming, formatting, headers, tests |
 | [release.md](release.md) | Cutting a release, and the repository's public metadata |

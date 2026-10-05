@@ -1,89 +1,102 @@
-# TakyonDB E2E Tests
+# E2E suites
 
-Relational smoke runs without daemon: see `e2e-relational.md`
-(`scripts/e2e_relational_test.js`).
+An E2E suite is the only kind of test here that can catch a bug the unit
+suites structurally cannot: the engine is a daemon, a mapped segment, a
+write-ahead log and a crash. Each property that matters most here was
+found by one of these, not by reading code.
 
-E2E suites exercise the real daemon (`zig-out/bin/takyondb[.exe]`) plus the
-compiled N-API addon (`zig-out/bin/takyondb_bridge.node`). Run them via the
-harness (all seven suites, timeouts enforced, nonzero exit on failure):
+This page describes what a suite owes. **It does not list the suites**:
+the list lives in `scripts/run-e2e.js`, and the count in
+[metrics.md](metrics.md) is generated from the tree. An earlier revision
+enumerated them by hand and said "all seven suites" while the runner held
+fourteen, which is the way a list like that rots.
+
+## Running them
 
 ```bash
-zig build -Doptimize=ReleaseSafe   # daemon + bridge
-cd scripts && npm run test:e2e
+zig build -Doptimize=ReleaseSafe      # the suites need a ReleaseSafe build
+cd scripts && npm run test:e2e        # every suite, timeouts enforced
 ```
 
-Or typecheck without running: `cd scripts && npm run typecheck`.
-Single suites: `node scripts/e2e_vacuum_test.js`,
-`node scripts/e2e_scan_test.js`, `node scripts/e2e_admin_scan_test.js`,
-`node scripts/e2e_crash_auto_test.js`,
-`node scripts/benchmark_chaos.js`, or (from `scripts/` with `NODE_PATH`
-pointing at `src/sdk/ts/node_modules`) `node -r ts-node/transpile-only
-scripts/e2e_zerocopy_test.ts` and `e2e_corruption_test.ts`. Note:
-`e2e_zerocopy_test.js` is self-contained and is what CI runs; the stale
-`e2e_corruption_test.js` companion (it required nonexistent TS paths)
-was removed — run the `.ts` via ts-node. Shared spawn/timeout helpers
-live in `scripts/helpers/daemon.ts`.
+A single suite runs the same way the runner runs it:
 
-CI (`build-and-test`) currently runs only `e2e_zerocopy_test.js` and
-`benchmark_chaos.js` on all three OSes.
+```bash
+node scripts/e2e_scan_test.js                                  # plain JS
+cd scripts && NODE_PATH=../src/sdk/ts/node_modules \
+  node -r ts-node/register/transpile-only e2e_zerocopy_test.ts  # TypeScript
+```
 
-## Prerequisites (all suites)
+Typecheck only, without running anything:
+`cd scripts && npm run typecheck`.
 
-* `zig-out/bin/takyondb{,_bridge.node}` must exist (`zig build`).
-* Stale state must be removed first: suites delete `./data.takyon` (and
-  `data.takyon.snap` where applicable) relative to the repo root at startup —
-  do not run two suites concurrently against the same files.
-* Suites that spawn the daemon expect it at
-  `zig-out/bin/takyondb` (`takyondb.exe` on Windows) and give it ~1 s to map
-  shared memory before connecting.
-* Memory sizes are per-suite constants (16 MB for zerocopy/crash-recovery,
-  64 MB for vacuum/chaos); each `worker_thread` re-maps via
-  `initSharedMemory` (no shared `SharedArrayBuffer` yet).
+## What a suite must do
 
-## Suites
+1. **Own its daemon.** `startDaemon` / `withDaemon` from
+   `scripts/helpers/daemon.js`. Never spawn one by hand: `withDaemon`
+   guarantees teardown on every exit path, and a suite that leaks a daemon
+   holds the shared segment and the admin port, which poisons every suite
+   after it. That happened, and the symptom was a later suite passing
+   against a stranger's arena.
+2. **Use an isolated `--data-dir`.** Suites share `data.takyon` in the
+   working directory, and the WAL seeds its byte counters from the live
+   file size, so a leftover file silently shifts every accounting
+   assertion.
+3. **Fail loudly.** A non-zero exit and a message naming the assertion.
+   A suite that prints a failure and exits 0 is worse than no suite.
+4. **Assert something that can distinguish success from a broken
+   system.** The question to ask of every assertion: what would this print
+   if the thing under test were completely broken? One crash-recovery
+   suite used to connect twice and disconnect once, so its "reboot" phase
+   re-read the process's own pre-crash memory and passed for any daemon
+   that started at all. A whole class of durability bugs was hidden behind
+   that.
+5. **Clean up after itself**, including when an assertion fails.
 
-1. **Zero-copy (`scripts/e2e_zerocopy_test.{ts,js}`)** — 4 workers insert
-   10 000 `ID-xxxxx` keys via `insert_index` (value offsets `4096 + id*64`),
-   then the main thread `search_index`es all 10 000. Asserts zero insert
-   failures, zero missing keys, and reports insert/search latency.
-2. **Corruption (`scripts/e2e_corruption_test.{ts,js}`)** — boots the daemon,
-   writes a healthy delta, SIGKILLs it, overwrites 5 bytes of `data.takyon`
-   at offset 20 with `0xFF` (simulated torn write), and reboots. Asserts the
-   daemon logs `CRC32 corruption detected` and truncates the bad sector
-   without panicking.
-3. **Crash recovery (`scripts/e2e_crash_auto_test.js`)** — fully
-   self-driving on an isolated `--data-dir`: phase 1 inserts 5000
-   `SNAP-xxxxx` keys, checkpoints, writes 4086 bytes of `0xAA` residual
-   payload + `notifyArena`, SIGKILLs the daemon itself, reboots, and
-   asserts all 5000 snapshot keys resolve **and** the residual WAL bytes
-   are intact. (The legacy `e2e_crash_recovery_test.ts` needs a manual
-   SIGKILL and is kept for interactive debugging only.)
-4. **Vacuum (`scripts/e2e_vacuum_test.js`)** — boots the daemon on the real
-   64 MB layout, inserts `user:1`, starts vacuum, and performs 20 000 string
-   updates. Asserts no string-arena OOM (compaction keeps up) and the final
-   read equals `Generation_X_19999`.
-5. **Chaos benchmark (`scripts/benchmark_chaos.js`)** — 4 workers × 50 000
-   mixed read/insert/update ops with periodic checkpoints and vacuum
-   running. Asserts completion (kills the daemon, exits 0) and reports
-   p50/p95/p99/max latency; numbers are informational, not gates.
-6. **Scan (`scripts/e2e_scan_test.js`)** — boots the daemon, inserts 2000
-   `SCAN-xxxxx` + 500 `OTHER-xxxxx` keys, and asserts native
-   `scan_prefix` returns exact sets plus truncation/empty cases, and
-   `scan_range` returns exact bounded ranges.
-7. **Admin scan (`scripts/e2e_admin_scan_test.js`)** — boots the daemon,
-   inserts 40 keys, and asserts the TCP admin protocol (`PING`, unknown
-   command, full/capped scans, bounded/unbounded ranges, bad-arg
-   rejections).
-8. **Catalog reboot (`scripts/e2e_catalog_reboot_test.js`)** — boots the
-   daemon on an isolated `--data-dir`, persists `users` + `orders`
-   descriptors as `__catalog__` records via `CatalogRecordStore`,
-   checkpoints, SIGKILLs, reboots, and asserts both descriptors decode
-   identically with no JSON sidecar (requires the SDK dist build).
-9. **Refcount (`scripts/e2e_refcount_test.js`)** — boots the daemon,
-   connects twice over one mapping, drops the first client, and asserts
-   the second still reads/writes; then drops it and asserts a fresh
-   connect works (guards use-after-unmap on shared mappings).
-10. **Graceful unlink (`scripts/e2e_graceful_unlink_test.js`)** — boots
-    the daemon, SIGINTs it, and asserts a clean exit plus the freed OS
-    segment name on POSIX (Windows unlink is a no-op: only the exit is
-    asserted there).
+## Registering one
+
+Add an entry to `SUITES` in `scripts/run-e2e.js`:
+
+```js
+{ name: 'short-descriptive-name', file: 'e2e_thing_test.js', ts: false },
+```
+
+`ts: true` runs it through `ts-node`. `needsDist: true` builds the SDK
+first, for suites that import from `dist`. The runner reads the list to
+print the suite count, so nothing else needs updating — that is why the
+count in the harness output is computed rather than typed, and why this
+page does not list them either.
+
+If the suite needs a CI job of its own, that goes in a workflow, and the
+workflow name is a link target people paste: renaming one means fixing
+every reference to it in the same commit.
+
+## The properties only a suite can check
+
+Three of them have no unit-test equivalent, and each one exists because it
+was wrong once:
+
+| Property | Suite | What it caught |
+|---|---|---|
+| A daemon at idle must not burn CPU | `e2e_idle_cpu_test.js` | Two background loops using `yield` as their idle action, holding 1.8 cores forever |
+| A killed daemon must recover what it acknowledged | `e2e_crash_auto_test.js` | Index writes that were never logged, so a key indexed after the last checkpoint was gone after a crash |
+| A torn log must not abort the daemon | `e2e_corruption_test.ts` | An offset parsed out of payload bytes overflowing `u32`, panicking before the daemon served a single request |
+
+The energy suite is the fourth kind: it asserts the *absence* of a
+number. With no readable energy counter the daemon must report zero
+microjoules, because a figure invented from CPU time is not a measurement.
+See [energy.md](energy.md).
+
+## Prerequisites and known constraints
+
+* `zig-out/bin/takyondb{,_bridge.node}` must exist. Build them first; a
+  bare `zig build` is a Debug build and these suites need the one you ship.
+* Do not run two suites concurrently against the same working directory.
+* Arena sizes are per-suite constants, chosen to fit what the suite
+  writes.
+* Every `worker_thread` maps the segment with `initSharedMemory`. There is
+  no `SharedArrayBuffer`: Node exposes no way to wrap a raw pointer in
+  one, so each worker gets an external `ArrayBuffer` over the same pages.
+  [sdk.md](sdk.md) has the details.
+* Only Linux runs the whole set locally. The Windows and macOS legs are
+  cross-compiled by `scripts/verify.sh` and run in CI, and
+  `e2e_idle_cpu_test.js` skips where `/proc` is absent.
