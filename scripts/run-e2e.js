@@ -23,6 +23,7 @@ const SUITES = [
   { name: 'chaos', file: 'benchmark_chaos.js', ts: false },
   { name: 'index-persist', file: 'e2e_index_persist_test.js', ts: false },
   { name: 'energy', file: 'e2e_energy_test.js', ts: false },
+  { name: 'regions', file: 'e2e_regions_test.js', ts: false },
 ];
 
 function cleanStaleShm() {

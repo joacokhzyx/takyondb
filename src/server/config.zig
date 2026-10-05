@@ -140,7 +140,14 @@ pub fn regionsFor(defaults: layout.Regions, over: ?RegionOverrides) layout.Regio
     // string region that ends before the end of the arena is arithmetic
     // nobody wants to do by hand.
     const remaining = if (art_root >= defaults.arena_bytes) 0 else defaults.arena_bytes - art_root;
-    const art_bytes: u32 = if (o.art_bytes) |v| v else @min(defaults.art_bytes, @max(8, remaining / 2));
+    // Rounded up to the eight-byte grid: the string bump word that follows
+    // it is read through an align-cast u32, so an index size that is not a
+    // multiple of eight would trap on the first string allocation rather
+    // than be refused here.
+    const art_bytes: u32 = if (o.art_bytes) |v|
+        std.mem.alignForward(u32, v, 8)
+    else
+        std.mem.alignForward(u32, @min(defaults.art_bytes, @max(8, remaining / 2)), 8);
 
     // An operator who asked for more records than the arena has gets a
     // table that fails `validateRegions` with a named error, not a

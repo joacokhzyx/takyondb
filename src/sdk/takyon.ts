@@ -246,8 +246,11 @@ export class TakyonDB {
      *   `loadBindings`). Pass it explicitly to inject a mock, a
      *   pre-resolved addon, or a test double.
      * @param memorySize - Segment size in bytes. The default is 64 MiB; the
-     *   bridge accepts 1 byte to 1 GiB, and `layout.ts` needs room for the
-     *   ring, the ART root at 2 MiB, and the string arena at 10 MiB.
+     *   bridge accepts 1 byte to 4294967295. The size has to match the
+     *   daemon's, and the region boundaries come from the arena's own
+     *   header rather than from this argument: a client that assumed the
+     *   old constants would write records where a configured arena put its
+     *   index.
      * @throws {Error} If no bindings are supplied and no addon is found, or
      *   if the mapping fails.
      * @throws {RangeError} If `memorySize` is outside the bridge's accepted

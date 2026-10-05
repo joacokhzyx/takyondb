@@ -155,6 +155,8 @@ pub const RegionError = error{
     ArtRootMisplaced,
     /// The string region leaves no room for its bump word.
     StringRegionTooSmall,
+    /// The string bump word is not eight-byte aligned.
+    StringStartMisaligned,
     /// The arena is smaller than the header needs.
     HeaderTooSmall,
 };
@@ -327,6 +329,13 @@ pub fn validateRegions(r: Regions, mapped_bytes: usize) RegionError!void {
     // so the root must be four-byte aligned at minimum; eight keeps the
     // bump word and the first node naturally aligned.
     if (r.art_root % 8 != 0) return error.ArtRootMisplaced;
+    // The string bump word is read and written through a `u32`, and both
+    // allocators align-cast their pointers, so a boundary that is not
+    // eight-aligned is a trap the moment the first string is allocated
+    // rather than an error at startup. An unaligned index size is how it
+    // happens: a region size that is a round number of bytes is not
+    // necessarily a multiple of eight.
+    if (r.string_start % 8 != 0) return error.StringStartMisaligned;
     const art_end: usize = @as(usize, r.art_root) + r.art_bytes;
     if (art_end > r.string_start) return error.RegionsOverlap;
 
@@ -491,6 +500,14 @@ test "validation rejects every way a table can be wrong" {
     r = good;
     r.string_bytes = 4;
     try std.testing.expectError(error.StringRegionTooSmall, validateRegions(r, 64 * 1024 * 1024));
+
+    // A string region that starts unaligned: the bump word is read through
+    // an align-cast u32, so this traps on the first allocation instead of
+    // failing at startup.
+    r = good;
+    r.string_start = r.string_start + 2;
+    r.string_bytes = r.string_bytes - 2;
+    try std.testing.expectError(error.StringStartMisaligned, validateRegions(r, 64 * 1024 * 1024));
 
     // A table built for a different arena size than the one mapped.
     try std.testing.expectError(error.RegionsExceedArena, validateRegions(good, 128 * 1024 * 1024));

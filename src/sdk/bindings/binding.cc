@@ -22,8 +22,12 @@
 #define TAKYON_MAX_INLINE 48
 // Maximum key length accepted by the ART index (mirrors MAX_KEY_LEN).
 #define TAKYON_MAX_KEY 256
-// Sanity cap for shared-memory mapping requests (1 GiB).
-#define TAKYON_MAX_SHM ((size_t)1024 * 1024 * 1024)
+// Sanity cap for shared-memory mapping requests. 4 GiB rather than the
+// 1 GiB it used to be: regions are configurable now, so a large arena with a
+// proportionate index is a legitimate request, and a 1 GiB cap refused it
+// while the default layout could not have used the space anyway. The real
+// limit is the u32 the request arrives in.
+#define TAKYON_MAX_SHM ((size_t)0xFFFFFFFF)
 
 extern "C" {
     void* takyon_connect_shm(const char* name, size_t size);
@@ -101,7 +105,7 @@ napi_value InitSharedMemory(napi_env env, napi_callback_info info) {
     uint32_t size = 0;
     CHECK_NAPI(napi_get_value_uint32(env, args[0], &size));
     if (size == 0 || (size_t)size > TAKYON_MAX_SHM) {
-        napi_throw_range_error(env, nullptr, "size must be between 1 and 1 GiB");
+        napi_throw_range_error(env, nullptr, "size must be between 1 and 4294967295 bytes");
         return nullptr;
     }
 

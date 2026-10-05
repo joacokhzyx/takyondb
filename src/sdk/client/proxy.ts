@@ -36,14 +36,14 @@ export interface TakyonBindings {
      * `Atomics.wait` throws on it. Cross-worker coordination comes from the
      * shared pages, not from V8 atomics.
      *
-     * @param size - Segment size in bytes, 1 to 1 GiB.
+     * @param size - Segment size in bytes, 1 to 4294967295.
      * @returns The mapped region, or `null` on failure. `null` covers a
      *   failed mapping and a request for a second segment while one is
      *   already attached: the engine owns exactly one mapping, so a
      *   differing size or name is refused rather than served (see
      *   `resolveShmName` in `exports.zig`). A repeat call with the same
      *   size returns the same pages and increments the engine's refcount.
-     * @throws {RangeError} If `size` is 0 or above 1 GiB.
+     * @throws {RangeError} If `size` is 0 or above 4294967295.
      */
     initSharedMemory(size: number): ArrayBuffer | null;
 
@@ -364,7 +364,7 @@ export class TakyonClient {
     /**
      * @param bindings - The native engine surface. A mock implementing the
      *   same interface is enough; the unit tests pass one.
-     * @param size - Segment size in bytes, 1 to 1 GiB.
+     * @param size - Segment size in bytes, 1 to 4294967295.
      * @throws {Error} If `size` is not a positive integer.
      * @throws {Error} If `initSharedMemory` returns null, which is the
      *   bridge's signal that the mapping failed.

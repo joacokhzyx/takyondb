@@ -90,6 +90,12 @@ jobs:
         cd scripts
         NODE_PATH=../src/sdk/ts/node_modules node -r ts-node/register/transpile-only e2e_zerocopy_test.ts
 
+    - name: Run configured-regions E2E
+      # The substrate gate's exit criterion, at whatever scale the runner's
+      # shared memory allows. The suite refuses to run rather than pass
+      # vacuously when /dev/shm is too small to prove the property.
+      run: node scripts/e2e_regions_test.js
+
     - name: Run energy-reporting E2E
       # The sampler is new code on the idle path, and this suite is the only
       # thing that proves it stays quiet without a sensor and actually
