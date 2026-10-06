@@ -752,7 +752,7 @@ export class TakyonClient {
                         }
                         const { written: strLen } = sharedEncoder.encodeInto(value, encodeScratch);
 
-                        if (regions.stringStart + 4 >= targetBuffer.byteLength) {
+                        if (stringDataStart(regions) >= targetBuffer.byteLength) {
                             throw new Error(
                                 `shared memory (${targetBuffer.byteLength} bytes) too small for string arena at ${regions.stringStart}`
                             );

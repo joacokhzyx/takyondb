@@ -1277,6 +1277,36 @@ test "ART insert, search and overwrite" {
     try std.testing.expect(try idx.rootType() == .Node4);
 }
 
+test "ART survives variable-length keys sharing a prefix" {
+    // The one shape the other tests do not produce: keys of DIFFERENT lengths
+    // under a shared prefix, which is what a collection of short string keys
+    // ('K0'..'K2999') looks like to the index. The daemon reproduces this
+    // without any concurrency -- ART-CORRUPT on a Node48 whose count exceeds
+    // its capacity, then an out-of-bounds in descendOrSplit.
+    //
+    // Pinned here so the reproduction does not depend on a live daemon, and
+    // so the fix has something to turn green.
+    var buf: [8 * 1024 * 1024]u8 = undefined;
+    @memset(&buf, 0);
+    var idx = ArtIndex.init(buf[0..], 0, 4, 8);
+
+    var keybuf: [16]u8 = undefined;
+    var n: usize = 0;
+    while (n < 3000) : (n += 1) {
+        const k = try std.fmt.bufPrint(keybuf[0..], "K{d}", .{n});
+        try idx.insert(k, @intCast(5000 + n));
+    }
+    n = 0;
+    while (n < 3000) : (n += 1) {
+        const k = try std.fmt.bufPrint(keybuf[0..], "K{d}", .{n});
+        const found = idx.search(k) orelse {
+            std.debug.print("[test] key '{s}' missing after {d} inserts\n", .{ k, n });
+            return error.TestExpectedEqual;
+        };
+        try std.testing.expectEqual(@as(u32, @intCast(5000 + n)), found);
+    }
+}
+
 test "ART prefix keys share terminator slots" {
     var buf: [64 * 1024]u8 = undefined;
     @memset(&buf, 0);

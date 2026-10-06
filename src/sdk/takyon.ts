@@ -4,7 +4,7 @@
  */
 
 import { TakyonClient, TakyonBindings, MappedObject, utf8ByteLength, BackpressureError } from './client/proxy';
-import { TakyonSchema, FieldType } from './client/schema';
+import { TakyonSchema, FieldType, RECORD_ALIGNMENT, alignUp } from './client/schema';
 import { loadBindings } from './client/addon';
 import { MAX_KEY_LEN } from './client/layout';
 
@@ -314,6 +314,14 @@ export class TakyonDB {
      * word backwards, so the space is consumed permanently even after
      * `Collection.delete`.
      *
+     * The size is rounded up to {@link RECORD_ALIGNMENT} before the bump
+     * moves, so a caller that passes an unaligned size (this method is
+     * `@internal`, and `schema.totalSize` is already a whole number of units)
+     * cannot leave the next record starting off a boundary. Recovery rounds
+     * the bump the same way after a crash; the two have to agree or the
+     * index rebuilt from the log names offsets that are no longer record
+     * starts.
+     *
      * @param size - Record size in bytes, matching `schema.totalSize`.
      * @returns The absolute arena offset of the allocation.
      * @throws {Error} If `size` is not a positive integer, or the
@@ -331,11 +339,14 @@ export class TakyonDB {
         // Single shared bump word (see layout.zig). Atomics make the
         // allocation itself thread-safe across workers. The view is
         // pooled on the client, so an insert allocates no view.
+        const stride = alignUp(size, RECORD_ALIGNMENT);
         const atomicArr = this.client.getRecordBumpView();
+        // Seeded at the region start, which is already a multiple of the
+        // alignment; the stride is what keeps it that way.
         Atomics.compareExchange(atomicArr, 0, 0, regions.recordStart);
-        const allocatedOffset = Atomics.add(atomicArr, 0, size);
+        const allocatedOffset = Atomics.add(atomicArr, 0, stride);
 
-        if (allocatedOffset + size > regions.recordStart + regions.recordBytes) {
+        if (allocatedOffset + stride > regions.recordStart + regions.recordBytes) {
             throw new Error(
                 `Out of record memory: this arena's record region is ` +
                     `${regions.recordBytes} bytes. Raise "regions": { "record_bytes": N } ` +

@@ -53,13 +53,22 @@ pub const FLAGS_OFFSET: usize = 44;
 /// stays reserved so a later version has somewhere to go.
 pub const HEADER_BYTES: usize = 48;
 
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 /// The layout version this build refuses to attach to, named so the error
 /// can be specific. A v2 segment carries no region table, so attaching to
 /// one would mean guessing the regions, and a wrong guess corrupts the
 /// arena rather than failing.
 pub const LAYOUT_VERSION_NO_TABLE: u32 = 2;
+
+/// The version whose *regions* are this build's but whose record packing is
+/// not. From v3 to v4 the region table did not move, but records became
+/// aligned (see `TakyonSchema`) and string payloads moved 4 bytes up. A v3
+/// segment is refused rather than adapted to for the same reason v2 is: the
+/// old records are laid out at offsets this build does not use, and reading
+/// them with the new offsets returns a plausible number from the wrong
+/// field. Refusing says "recreate the segment"; adapting would corrupt it.
+pub const LAYOUT_VERSION_UNALIGNED_RECORDS: u32 = 3;
 
 /// RingBuffer header footprint: 7x cache lines (448B). One line each for
 /// head, tail, capacity, the durable position and three saturation counters,
@@ -98,7 +107,14 @@ pub const ART_START: usize = ART_ROOT_OFFSET + 8;
 /// Variable-length UTF-8 string arena (bump allocator, see proxy.ts).
 pub const STRING_ARENA_START: usize = 10 * 1024 * 1024;
 pub const STRING_BUMP_OFFSET: usize = STRING_ARENA_START;
-pub const STRING_DATA_START: usize = STRING_ARENA_START + 4;
+/// First byte available to string payloads.
+///
+/// 8 past the bump word, not 4: the bump is advanced by whole alignment
+/// units (allocString rounds every payload length up to 8) and recovery
+/// rounds the re-derived bump the same way, so payloads that start 4-aligned
+/// would leave the allocator disagreeing with recovery by 4 bytes on every
+/// restart. The 4 unused bytes are the price of one agreement.
+pub const STRING_DATA_START: usize = STRING_ARENA_START + 8;
 
 /// Minimum arena size that can host records + ART + strings.
 pub const MIN_ARENA_SIZE: usize = 16 * 1024 * 1024;
@@ -205,7 +221,9 @@ pub const Regions = struct {
 
     /// First byte of string payloads, after the bump word.
     pub fn stringDataStart(self: Regions) usize {
-        return self.string_start + 4;
+        // 8, matching STRING_DATA_START: bump word plus alignment padding, so
+        // the first payload and every payload after it is 8-aligned.
+        return self.string_start + 8;
     }
 
     /// Byte offset of the arena's shared clock. Not read by anything yet.
@@ -377,12 +395,18 @@ pub fn writeRegions(mem: []u8, r: Regions) void {
 /// the table is refused rather than defaulted: guessing the regions of an
 /// arena built for different ones does not fail, it corrupts. The caller
 /// gets the version it found in `found_version` so it can say which.
-pub fn readRegions(mem: []const u8) error{ HeaderTooSmall, NoRegionTable, BadMagic }!Regions {
+pub fn readRegions(mem: []const u8) error{ HeaderTooSmall, NoRegionTable, UnalignedRecords, BadMagic }!Regions {
     if (mem.len < HEADER_BYTES) return error.HeaderTooSmall;
     const magic = std.mem.readInt(u32, mem[MAGIC_OFFSET..][0..4], .little);
     if (magic != ARENA_MAGIC) return error.BadMagic;
     const version = std.mem.readInt(u32, mem[VERSION_OFFSET..][0..4], .little);
-    if (version < 3) return error.NoRegionTable;
+    // v2 has no table at all. v3 has this build's table but packs records
+    // without alignment, so its records live at offsets this build does not
+    // read them from. Both are refused, and refused separately, because the
+    // two mean different things to whoever has to fix it: one needs a
+    // reconfigured segment, the other needs records rebuilt.
+    if (version <= LAYOUT_VERSION_NO_TABLE) return error.NoRegionTable;
+    if (version <= LAYOUT_VERSION_UNALIGNED_RECORDS) return error.UnalignedRecords;
     return .{
         .arena_bytes = std.mem.readInt(u32, mem[ARENA_BYTES_OFFSET..][0..4], .little),
         .ring_capacity = std.mem.readInt(u32, mem[RING_CAPACITY_OFFSET..][0..4], .little),
@@ -453,6 +477,23 @@ test "the table round-trips through a mapped arena" {
     try std.testing.expectEqual(given.string_bytes, back.string_bytes);
     try std.testing.expectEqual(given.recordBumpOffset(), back.recordBumpOffset());
     try validateRegions(back, mem.len);
+}
+
+test "a v3 arena is refused: its records are packed at offsets this build does not use" {
+    // Same table, different record packing. Reading it anyway would return a
+    // number from the wrong field of every record, which is the failure the
+    // v2 refusal exists to avoid.
+    var mem: [4096]u8 = undefined;
+    @memset(&mem, 0);
+    std.mem.writeInt(u32, mem[MAGIC_OFFSET..][0..4], ARENA_MAGIC, .little);
+    std.mem.writeInt(u32, mem[VERSION_OFFSET..][0..4], LAYOUT_VERSION_UNALIGNED_RECORDS, .little);
+    try std.testing.expectError(error.UnalignedRecords, readRegions(&mem));
+
+    // And the version this build writes is accepted, so the refusal is not
+    // simply "refuse everything".
+    writeRegions(&mem, defaultRegions(mem.len));
+    _ = try readRegions(&mem);
+    try std.testing.expectEqual(@as(u32, LAYOUT_VERSION), readVersion(&mem).?);
 }
 
 test "an arena with no region table is refused, not guessed" {

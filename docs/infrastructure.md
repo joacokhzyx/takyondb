@@ -190,15 +190,33 @@ Payload sizes chosen so that sector boundaries land in every possible
 position. It runs at least a hundred trials, because the bug class
 this replaces only appeared on some runs.
 
-That test is `scripts/e2e_crash_property_test.js`. It is written and it
-fails: a committed record can come back with a corrupted string length
-after a crash with no checkpoint. Four recovery bugs it already caught
-are fixed (a key's string address logged where the format wanted its
-record address; an index surviving a crash with entries whose records
-were gone; an index operation naming a record the log never received;
-the producer-position publication described above). The remaining one is
-tracked in [next-steps.md](next-steps.md), and the harness marks the
-suite `xfail` so it cannot be forgotten.
+That test is `scripts/e2e_crash_property_test.js`, and it passes: a
+hundred trials, 70,000 committed records, every one recovered exactly.
+It caught five bugs, and the fifth is the one that shows what a
+randomized property test is for. The reader told padding from a split
+entry by looking at the bytes -- an all-zero tail is padding -- and the
+tail of a split entry is zero whenever the entry's payload is: an
+eight-zero-byte inline delta is a `float64` field set to 0.0 or a `uint32`
+set to 0, both of which the SDK writes routinely. Dropping that carry
+left the next sector being parsed from the middle of an entry, where its
+bytes were read as a header, so every entry behind it in that sector was
+applied to offsets the log never named. The rule is now the writer's own
+guarantee instead of a guess: the idle flush refuses to emit a sector
+whose slack is under `MIN_PADDING`, so a tail shorter than that cannot be
+padding and is carried whatever it contains.
+
+No deterministic test would have found that one, because it takes a
+specific payload length at a specific byte position in a specific sector,
+after a specific amount of concurrent traffic. The other four -- a key's
+string address logged where the format wanted its record address, an index
+surviving a crash with entries whose records were gone, an index
+operation naming a record the log never received, and the
+producer-position publication above -- were all in the same suite and all
+looked like working code.
+
+Two limits remain and are in [next-steps.md](next-steps.md): the flusher
+can wedge with nothing in the daemon to report it, and the whole argument
+rests on `fsync` meaning what it says.
 
 ---
 

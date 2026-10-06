@@ -28,7 +28,7 @@ export const MAGIC_OFFSET = 0;
 /** Byte offset of the arena layout version. */
 export const VERSION_OFFSET = 4;
 /** Arena layout version this SDK was written against. */
-export const LAYOUT_VERSION = 3;
+export const LAYOUT_VERSION = 4;
 
 /** Byte offset of the shared record bump word. */
 export const RECORD_BUMP_OFFSET = RING_OFFSET + RING_HEADER_BYTES + RING_DEFAULT_CAPACITY * (DELTA_SIZE + RING_SEQ_BYTES);
@@ -47,8 +47,15 @@ export const ART_START = ART_ROOT_OFFSET + 8;
 export const STRING_ARENA_START = 10 * 1024 * 1024;
 /** Byte offset of the shared string bump word. */
 export const STRING_BUMP_OFFSET = STRING_ARENA_START;
-/** First byte available to string payloads. */
-export const STRING_DATA_START = STRING_ARENA_START + 4;
+/**
+ * First byte available to string payloads: 8 past the bump word, so payloads
+ * are 8-aligned. Mirrors `STRING_DATA_START` in
+ * `src/core/memory/layout.zig`, and for the same reason: the bump advances in
+ * whole alignment units and recovery re-derives it and rounds up, so a
+ * 4-aligned payload would leave the two allocators disagreeing by 4 bytes
+ * after every restart.
+ */
+export const STRING_DATA_START = STRING_ARENA_START + 8;
 
 /** Smallest arena `layout.zig` pins, in bytes. */
 export const MIN_ARENA_SIZE = 16 * 1024 * 1024;
@@ -111,6 +118,15 @@ export const HEADER_BYTES = 48;
 
 /** The first arena layout whose regions live in the header. */
 export const LAYOUT_VERSION_WITH_TABLE = 3;
+/**
+ * Carries this build's region table but packs records without alignment.
+ *
+ * Refused rather than adapted to: a v3 record's fields live at offsets this
+ * build does not read them from, so reading it returns a plausible number
+ * from the wrong field. Mirrors `LAYOUT_VERSION_UNALIGNED_RECORDS` in
+ * `src/core/memory/layout.zig`.
+ */
+export const LAYOUT_VERSION_UNALIGNED_RECORDS = 3;
 
 /** One arena's region boundaries, as the header reports them. */
 export interface Regions {
@@ -141,7 +157,7 @@ export function artBumpOffset(regions: Regions): number {
 
 /** First string payload byte, after the bump word. */
 export function stringDataStart(regions: Regions): number {
-  return regions.stringStart + 4;
+  return regions.stringStart + 8;
 }
 
 /**
@@ -160,11 +176,19 @@ export function readRegions(buffer: ArrayBuffer): Regions {
     throw new Error('not a Takyon arena: magic mismatch');
   }
   const version = view.getUint32(VERSION_OFFSET, true);
-  if (version < LAYOUT_VERSION_WITH_TABLE) {
+  if (version <= LAYOUT_VERSION_UNALIGNED_RECORDS) {
+    // Two refusals, two different repairs, and the message has to say which:
+    // version 2 has no region table at all (the engine must be restarted with
+    // this build), version 3 has the table but packs records at offsets this
+    // build does not read (the records must be rebuilt).
     throw new Error(
-      `arena is layout version ${version}; this SDK speaks ${LAYOUT_VERSION_WITH_TABLE} or later. ` +
-        'The engine writes region boundaries into the header from version 3, and a client that ' +
-        'guessed them would write into the wrong regions. Restart the daemon with this build.'
+      version < LAYOUT_VERSION_WITH_TABLE
+        ? `arena is layout version ${version}; this SDK speaks ${LAYOUT_VERSION} or later. ` +
+            'The engine writes region boundaries into the header from version 3, and a client ' +
+            'that guessed them would write into the wrong regions. Restart the daemon with this build.'
+        : `arena is layout version ${version}, which packs records without alignment; this SDK ` +
+            `speaks ${LAYOUT_VERSION}. Reading it would return a value from the wrong field of ` +
+            'every record. Recreate the segment (or reload the data) with this build.'
     );
   }
   return {

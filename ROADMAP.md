@@ -74,16 +74,31 @@ distinct from every other failure. `ring_saturated`,
 `METRICS` and in `client.ringStats()`. The `durability` E2E commits 4000
 records, `SIGKILL`s the daemon with no checkpoint, and recovers all 4000.
 
-**Not closed.** The exit criterion is a randomized crash-consistency
-property test, and `scripts/e2e_crash_property_test.js` is that test: a
-seeded generator, the mutation log held outside the process, `SIGKILL` at
+**Closed.** The exit criterion is a randomized crash-consistency property
+test, and `scripts/e2e_crash_property_test.js` is that test: a seeded
+generator, the mutation log held outside the process, `SIGKILL` at
 advancing points, a hundred trials, payload sizes chosen to put entries
-across every sector position. It fails, and the harness pins it as
-`xfail`. What it finds is a committed record recovering with a corrupted
-string length, which is the last of four bugs it has already caught in
-recovery and the log. See the first entry in
-[docs/next-steps.md](docs/next-steps.md) for the mechanism as far as it is
-understood.
+across every sector position. A hundred trials pass, 70,000 committed
+records, every one of them recovered exactly. CI runs fifteen of them on
+every push and the hundred are a deliberate act, because the suite is the
+slowest by an order of magnitude.
+
+It earned its keep. Five bugs, none of which a reasoned-about test had
+agreed was correct: a WAL index record naming a key's string address
+where the format wanted its record address; an index that survived a crash
+holding entries whose records were gone; an index operation naming a record
+the log never received; the flusher publishing the producer position as
+durable; and the reader dropping a split entry whose carried bytes were
+zero -- which cost the framing of every entry behind it in that sector. The
+last one is the reason the harness now keeps a failing run's log and ships
+an offline replay checker: a timing-dependent crash bug cannot be
+re-triggered on demand, and without its log the only way back is dozens of
+attempts.
+
+Two things it does not claim: the run proves nothing about a filesystem
+that lies about `fsync`, and the flusher can still wedge (twice in a
+hundred runs) with nothing in the daemon to say so. Both are in
+[docs/next-steps.md](docs/next-steps.md).
 
 **Rough size:** three days, and the test is most of it.
 

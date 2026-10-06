@@ -110,6 +110,20 @@ jobs:
       if: runner.os == 'Linux'
       run: node scripts/e2e_idle_cpu_test.js
 
+    - name: Run crash-consistency E2E (randomized)
+      # The Gate 2 exit criterion: SIGKILL at advancing points, and an
+      # assertion that everything committed before each one came back. It
+      # found four recovery bugs that every deterministic suite had agreed
+      # was correct, so it runs on every push rather than on a schedule.
+      #
+      # Fifteen trials here. The criterion is a hundred, and that is a
+      # deliberate act rather than something every push should pay for:
+      #   TAKYON_CRASH_TRIALS=100 node scripts/e2e_crash_property_test.js
+      # SIGKILL is not a thing a runner does differently, so no OS gate.
+      run: node scripts/e2e_crash_property_test.js
+      env:
+        TAKYON_CRASH_TRIALS: '15'
+
     - name: Clean stale SHM between suites
       # Suites leave differently-sized segments behind (no shm_unlink
       # ownership yet): 16MB POSIX SHM on Linux, 16MB file on macOS

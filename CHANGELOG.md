@@ -44,9 +44,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   because it currently fails on a real defect, tracked in
   `docs/next-steps.md`; `run-e2e` reports an XPASS if it starts passing.
 
+### Changed
+
+- **Records are aligned, and string payloads start 8-aligned** (arena
+  layout version 4). A record used to be packed with no padding and the
+  record bump was advanced by its exact size, while recovery re-derived that
+  bump from the log and rounded it up to 8. After a restart the two
+  allocators disagreed by 4 bytes, so the index rebuilt from the log
+  resolved keys to offsets that were no longer record boundaries.
+
+  **This is a break in the on-disk contract**, and an old segment is refused
+  rather than adapted to: its records live at offsets this build does not
+  read, so reading it returns a plausible number from the wrong field. A v3
+  segment and a v2 one are refused separately, with different messages,
+  because they need different repairs -- one needs records rebuilt, the
+  other needs the engine restarted. Removing the shared segment is the
+  upgrade step; the data is in the log and the snapshot.
+
 ### Fixed
 
-Four recovery bugs, all of the same shape and all found by that property
+Five recovery bugs, all of the same shape and all found by that property
 test rather than by reasoning:
 
 - **A WAL index operation recorded the wrong offset.** The header's
@@ -74,8 +91,6 @@ test rather than by reasoning:
   lost exactly the writes it promised. It publishes the consumer position
   now, which is what a synced sector actually covers.
 
-### Changed
-
 - **The ring header grows from 192 to 448 bytes** (three cache lines to
   seven) to hold `durable_tail` and three saturation counters, one line
   each: the producer, the consumer and the flusher all write that struct,
@@ -89,13 +104,25 @@ test rather than by reasoning:
   success, so the engine could not be detached from a process that had
   upgraded.
 
+- **A split WAL entry was dropped whenever its carried bytes were zero.**
+  The reader told padding from a split entry by content -- an all-zero tail
+  is padding -- and the tail of a split entry is zero whenever the payload
+  is: an eight-zero-byte inline delta is a `float64` field set to 0.0 or a
+  `uint32` set to 0, both of which the SDK writes routinely. Dropping that
+  carry left the next sector parsed from the middle of an entry, where its
+  bytes were read as a header, so every entry behind it in that sector was
+  applied to offsets the log never named. The rule is the writer's own
+  guarantee now: the idle flush refuses to emit a sector whose slack is
+  under `MIN_PADDING`, so a shorter tail cannot be padding and is carried
+  whatever it contains.
+
 ### Still open
 
-A committed record can recover with a corrupted string length after a
-`SIGKILL` with no checkpoint: the arena is a persistent segment and keeps
-bytes the log never described. Same class as the four above; not yet
-root-caused. See the first entry in `docs/next-steps.md`. Gate 2 is
-delivered but not closed.
+The flusher thread can wedge: two of a hundred crash-property runs had
+`commit()` time out with `durable_tail` frozen while the client kept
+pushing, and nothing in the daemon reports that state. Not reproduced on
+demand, so the entry in `docs/next-steps.md` is a lead rather than a
+conclusion. Gate 2 is closed; this is the next thing to look at.
 
 - **Arena layout version 3: the region sizes are configuration.**
   `record_bytes`, `art_bytes` and `ring_capacity` live in `takyon.json`

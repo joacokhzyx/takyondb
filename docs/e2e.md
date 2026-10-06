@@ -61,7 +61,10 @@ Add an entry to `SUITES` in `scripts/run-e2e.js`:
 ```
 
 `ts: true` runs it through `ts-node`. `needsDist: true` builds the SDK
-first, for suites that import from `dist`. The runner reads the list to
+first, for suites that import from `dist`. A suite may also carry its own
+`timeoutMs` and `env`, so a suite that is an order of magnitude slower
+than the rest is not killed by a budget sized for the quick ones, and a
+suite with a knob gets it set where it belongs. The runner reads the list to
 print the suite count, so nothing else needs updating — that is why the
 count in the harness output is computed rather than typed, and why this
 page does not list them either.
@@ -95,9 +98,23 @@ The randomized one is the fifth kind, and the most productive per line
 written. `e2e_crash_property_test.js` generates mutations from a seed,
 keeps the mutation log outside the process, `SIGKILL`s the daemon at
 advancing points, and asserts what survived. A deterministic suite proves
-one path; this one found four recovery bugs in recovery, each of which a
-reasoned-about test had agreed was correct. It is currently `xfail`: it
-finds a fifth. See [next-steps.md](next-steps.md).
+one path; this one found five recovery bugs, each of which a
+reasoned-about test had agreed was correct -- including one that needs a
+specific payload length at a specific byte position in a specific sector,
+which no hand-written case would have reached.
+
+Two things make it usable rather than a flake generator. It has modes
+(`TAKYON_CRASH_MODE=single|noalloc|scalar|full`) that each remove one
+ingredient, so a failure names its own cause instead of requiring a
+guess. And a failing run keeps its data directory and prints the command to
+replay that log offline, because a timing-dependent crash bug cannot be
+re-triggered on demand; `TAKYON_WAL_REPLAY=<path> zig build test` frames
+the captured file against the writer's own invariant and then runs the
+engine's replay on it, so the two can be compared rather than trusted.
+
+It runs 15 trials on every push and 100 when the gate is being closed
+(`TAKYON_CRASH_TRIALS=100`), which is an order of magnitude slower than any
+other suite.
 
 ## Prerequisites and known constraints
 

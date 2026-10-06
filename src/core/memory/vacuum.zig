@@ -96,7 +96,10 @@ pub fn runVacuumOnce(arena: *SharedArena, index: *art.ArtIndex, regions: layout.
 pub fn runVacuumOnceMulti(arena: *SharedArena, index: *art.ArtIndex, regions: layout.Regions, offsets: []const u32, wal: ?*WalManager) !void {
     const allocator = std.heap.page_allocator;
     if (arena.memory.len < minArenaForVacuum()) return error.ArenaTooSmall;
-    if (regions.string_start + 4 > arena.memory.len) return error.ArenaTooSmall;
+    // 8, not 4: string payloads start after the bump word plus alignment
+    // padding, and a payload area that does not fit is a different failure
+    // from an arena that cannot host the index at all.
+    if (regions.stringDataStart() > arena.memory.len) return error.ArenaTooSmall;
     if (regions.string_start + regions.string_bytes > arena.memory.len) return error.ArenaTooSmall;
 
     // 1. Collect live record offsets from every node type.

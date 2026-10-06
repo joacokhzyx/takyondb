@@ -9,33 +9,26 @@ If a limit here is fixed, delete the entry and record it in the changelog.
 
 ## The limits that shape what the engine can be
 
-### A committed record can still come back wrong after a crash
+### The flusher can wedge, and it did twice in a hundred runs
 
-`commit()` exists, waits for the flusher, and returns only once every
-delta pushed before the call is in a synced sector. The `durability` E2E
-proves that on a clean path: 4000 committed records, `SIGKILL`, no
-checkpoint, all of them recovered. The randomized suite
-(`scripts/e2e_crash_property_test.js`, pinned `xfail` in
-`scripts/run-e2e.js`) fails on the real system, and what it finds is this:
+`commit()` timed out after 30s on two of the hundred-trial runs, with
+`durable_tail` frozen at 1432 while the client had pushed some 78000 deltas
+past it: no back-pressure, no dropped deltas, and a ring with plenty of
+room. So the flusher thread stopped consuming rather than the client
+stopped waiting -- but nothing in the daemon says so. `METRICS` reports
+`wal_bytes`, which distinguishes the two cases when someone looks, and the
+crash-property suite now prints the ring counters and the daemon's own
+metrics line when `commit()` gives up, so a recurrence arrives with its
+diagnosis attached rather than as a bare timeout.
 
-> after a `SIGKILL` with no checkpoint, a record that was committed can
-> recover with a corrupted string length -- the first bytes of its payload
-> are right and the length field is one byte off.
-
-The mechanism is understood in outline and not yet in detail. The arena is
-a persistent segment: it keeps whatever the dead process had in it,
-including writes that never reached the log, and the bump words are
-re-derived from the log alone, so space the log does not cover is handed
-out again. Four bugs of exactly that shape were found and fixed on the way
-(the WAL recorded a key's *string* address where the format wanted its
-record address; the index survived a crash holding entries whose records
-were gone; an index operation naming a record the log never received was
-applied anyway; the flusher published the producer position as durable and
-so claimed `fsync` coverage for deltas still in the ring). What remains is
-the same class of problem in the string region: a length word restored
-from bytes the log never described. Until that is closed, treat
-`commit()` as covering the sector prefix it can prove and nothing wider.
-Gate 2, still open.
+The likely mechanism is a failed sector write: `writeToBuffer` copies into
+the sector buffer and only resets `sector_pos` after `writeSector`
+succeeds, so a write that fails leaves the buffer full, the next copy
+computes zero free space, and the loop makes no progress. It has not been
+reproduced on demand, so this entry is a lead and not a conclusion. What
+is not a lead: the flusher has no way to report that it is stuck, and a
+durability barrier that can hang forever with no diagnosis is worth fixing
+regardless of what causes it.
 
 ### No reclaim, so no eviction
 

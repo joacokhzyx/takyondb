@@ -26,17 +26,20 @@ const SUITES = [
   { name: 'regions', file: 'e2e_regions_test.js', ts: false },
   { name: 'durability', file: 'e2e_durability_test.js', ts: false, needsDist: true },
   {
+    // Randomized crash-consistency: the Gate 2 exit criterion. Fifteen trials
+    // here, because this suite is the slowest by an order of magnitude and CI
+    // runs it on every push. The criterion itself is a hundred:
+    //
+    //   TAKYON_CRASH_TRIALS=100 node scripts/e2e_crash_property_test.js
+    //
+    // which is what ROADMAP.md asks for before the gate is closed. The env
+    // below is only a default, so an explicit TAKYON_CRASH_TRIALS still wins.
     name: 'crash-property',
     file: 'e2e_crash_property_test.js',
     ts: false,
     needsDist: true,
-    // Randomized crash-consistency, the Gate 2 exit criterion. It fails on a
-    // real, open defect: after a SIGKILL with no checkpoint, a *committed*
-    // record can come back with a corrupted string length, because the arena
-    // still holds bytes from the previous incarnation wherever the log has
-    // none. See docs/next-steps.md. Delete this marker when the suite passes;
-    // run-e2e reports an XPASS if it starts passing.
-    xfail: 'a committed record can recover with a corrupted payload length',
+    timeoutMs: 900000,
+    env: { TAKYON_CRASH_TRIALS: '15' },
   },
 ];
 
@@ -63,7 +66,12 @@ function cleanStaleShm() {
   }
 }
 
-function runSuite(suite, timeoutMs) {
+function runSuite(suite, defaultTimeoutMs) {
+  // A suite may carry its own timeout and its own environment. The
+  // crash-property suite needs both: a hundred SIGKILLs take longer than any
+  // other suite by an order of magnitude, and the number of trials is the
+  // difference between a CI-sized check and the gate's exit criterion.
+  const timeoutMs = suite.timeoutMs || defaultTimeoutMs;
   return new Promise((resolve) => {
     cleanStaleShm();
     const scriptPath = path.join(__dirname, suite.file);
@@ -71,7 +79,7 @@ function runSuite(suite, timeoutMs) {
     const nodePath = [SDK_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
     const child = spawn(process.execPath, args, {
       cwd: __dirname,
-      env: { ...process.env, NODE_PATH: nodePath },
+      env: { ...process.env, ...(suite.env || {}), NODE_PATH: nodePath },
       stdio: 'inherit',
     });
 

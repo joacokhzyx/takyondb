@@ -7,7 +7,10 @@ describe('shared layout', () => {
         expect(layout.RECORD_START).toBeGreaterThan(layout.RECORD_BUMP_OFFSET + 4);
         expect(layout.ART_ROOT_OFFSET).toBeGreaterThan(layout.RECORD_START);
         expect(layout.STRING_ARENA_START).toBeGreaterThan(layout.ART_ROOT_OFFSET);
-        expect(layout.STRING_DATA_START).toBe(layout.STRING_BUMP_OFFSET + 4);
+        // 8, so payloads are aligned and the bump recovery re-derives is the
+        // same number this side derives: 4 here would make the two disagree
+        // by 4 bytes after every restart.
+        expect(layout.STRING_DATA_START).toBe(layout.STRING_BUMP_OFFSET + 8);
         expect(layout.MIN_ARENA_SIZE).toBeGreaterThanOrEqual(layout.STRING_ARENA_START);
     });
 
@@ -48,9 +51,14 @@ describe('shared layout', () => {
     it('exposes header magic/version constants and 16MB minimum arena', () => {
         expect(layout.MAGIC_OFFSET).toBe(0);
         expect(layout.VERSION_OFFSET).toBe(4);
-        expect(layout.LAYOUT_VERSION).toBe(layout.LAYOUT_VERSION_WITH_TABLE);
+        // The table arrived in v3; aligned records arrived in v4. So the
+        // current version is strictly above "has a table", which is exactly
+        // why a client cannot read a v3 arena by checking for a table.
+        expect(layout.LAYOUT_VERSION).toBe(layout.LAYOUT_VERSION_UNALIGNED_RECORDS + 1);
+        expect(layout.LAYOUT_VERSION).toBeGreaterThan(layout.LAYOUT_VERSION_WITH_TABLE);
         expect(layout.MIN_ARENA_SIZE).toBe(16 * 1024 * 1024);
     });
+
 });
 
 describe('region table', () => {
@@ -91,6 +99,18 @@ describe('region table', () => {
         layout.writeRegions(buffer, r);
         expect(layout.readRegions(buffer)).toEqual(r);
         expect(() => layout.validateRegions(layout.readRegions(buffer), bytes)).not.toThrow();
+    });
+
+    it('refuses a v3 arena by version, and says which repair it needs', () => {
+        const buf = arenaOf(layout.MIN_ARENA_SIZE);
+        const view = new DataView(buf);
+        // v3: the table this build would read, records packed the old way.
+        view.setUint32(layout.VERSION_OFFSET, layout.LAYOUT_VERSION_UNALIGNED_RECORDS, true);
+        expect(() => layout.readRegions(buf)).toThrow(/recreate the segment/i);
+
+        // v2: no table at all, so the engine has to be restarted.
+        view.setUint32(layout.VERSION_OFFSET, layout.LAYOUT_VERSION_WITH_TABLE - 1, true);
+        expect(() => layout.readRegions(buf)).toThrow(/restart the daemon/i);
     });
 
     it('refuses a segment with no table rather than guessing', () => {
